@@ -35,7 +35,7 @@ class CandidateBarView(
     private var offset = 0f
 
     private var composing = ""
-    private var editActive = false
+    private var activeTool = -1
 
     private var contentAlpha = 0f
     private var targetVisible = false
@@ -153,9 +153,10 @@ class CandidateBarView(
         invalidate()
     }
 
-    fun setEditActive(active: Boolean) {
-        if (active == editActive) return
-        editActive = active
+    /** 高亮当前打开的页面对应的工具栏图标(-1 表示没有)。 */
+    fun setActiveTool(tool: Int) {
+        if (tool == activeTool) return
+        activeTool = tool
         invalidate()
     }
 
@@ -275,7 +276,7 @@ class CandidateBarView(
         for (i in 0 until n) {
             val cx = inset + cellW * (i + 0.5f)
 
-            if (i == TOOL_EDIT && editActive) {
+            if (i == activeTool) {
                 pillPaint.color = palette.pill
                 pillPaint.alpha = a
                 tmp.set(cx - cellW * 0.44f, cy - rowH * 0.42f, cx + cellW * 0.44f, cy + rowH * 0.42f)
@@ -294,18 +295,18 @@ class CandidateBarView(
         val u = iconU
         path.reset()
         when (which) {
-            0 -> { // 设置:圆角六边形 + 圆
+            TOOL_SETTINGS -> { // 圆角六边形 + 圆
                 for (k in 0 until 6) {
                     val ang = Math.toRadians(30.0 + 60.0 * k)
-                    val px = cx + u * 1.0f * Math.cos(ang).toFloat()
-                    val py = cy + u * 1.0f * Math.sin(ang).toFloat()
+                    val px = cx + u * Math.cos(ang).toFloat()
+                    val py = cy + u * Math.sin(ang).toFloat()
                     if (k == 0) path.moveTo(px, py) else path.lineTo(px, py)
                 }
                 path.close()
                 canvas.drawPath(path, iconPaint)
                 canvas.drawCircle(cx, cy, u * 0.38f, iconPaint)
             }
-            1 -> { // 键盘:圆角矩形 + 键帽小点 + 空格条
+            TOOL_SWITCH_IME -> { // 键盘:圆角矩形 + 键帽小点 + 空格条
                 tmp.set(cx - u * 1.05f, cy - u * 0.72f, cx + u * 1.05f, cy + u * 0.72f)
                 canvas.drawRoundRect(tmp, u * 0.25f, u * 0.25f, iconPaint)
                 val dr = u * 0.1f
@@ -316,7 +317,14 @@ class CandidateBarView(
                 }
                 canvas.drawLine(cx - u * 0.5f, cy + u * 0.38f, cx + u * 0.5f, cy + u * 0.38f, iconPaint)
             }
-            2 -> { // 光标编辑:‹I›
+            TOOL_EMOJI -> { // 笑脸:圆 + 两只眼 + 嘴
+                canvas.drawCircle(cx, cy, u * 0.95f, iconPaint)
+                canvas.drawCircle(cx - u * 0.33f, cy - u * 0.25f, u * 0.1f, dotPaint)
+                canvas.drawCircle(cx + u * 0.33f, cy - u * 0.25f, u * 0.1f, dotPaint)
+                tmp.set(cx - u * 0.52f, cy - u * 0.38f, cx + u * 0.52f, cy + u * 0.52f)
+                canvas.drawArc(tmp, 25f, 130f, false, iconPaint)
+            }
+            TOOL_EDIT -> { // 光标编辑:‹I›
                 canvas.drawLine(cx, cy - u * 0.8f, cx, cy + u * 0.8f, iconPaint)
                 canvas.drawLine(cx - u * 0.28f, cy - u * 0.8f, cx + u * 0.28f, cy - u * 0.8f, iconPaint)
                 canvas.drawLine(cx - u * 0.28f, cy + u * 0.8f, cx + u * 0.28f, cy + u * 0.8f, iconPaint)
@@ -329,6 +337,12 @@ class CandidateBarView(
                 path.lineTo(cx + u * 1.1f, cy)
                 path.lineTo(cx + u * 0.75f, cy + u * 0.38f)
                 canvas.drawPath(path, iconPaint)
+            }
+            TOOL_CLIPBOARD -> { // 剪刀:两个圆环 + 交叉的两刃
+                canvas.drawCircle(cx - u * 0.5f, cy + u * 0.55f, u * 0.3f, iconPaint)
+                canvas.drawCircle(cx + u * 0.5f, cy + u * 0.55f, u * 0.3f, iconPaint)
+                canvas.drawLine(cx - u * 0.38f, cy + u * 0.3f, cx + u * 0.6f, cy - u * 0.85f, iconPaint)
+                canvas.drawLine(cx + u * 0.38f, cy + u * 0.3f, cx - u * 0.6f, cy - u * 0.85f, iconPaint)
             }
             else -> { // 收起键盘:向下的 V
                 path.moveTo(cx - u * 0.7f, cy - u * 0.25f)
@@ -369,10 +383,12 @@ class CandidateBarView(
     }
 
     companion object {
-        const val TOOLS = 4
+        const val TOOLS = 6
         const val TOOL_SETTINGS = 0
         const val TOOL_SWITCH_IME = 1
-        const val TOOL_EDIT = 2
-        const val TOOL_HIDE = 3
+        const val TOOL_EMOJI = 2
+        const val TOOL_EDIT = 3
+        const val TOOL_CLIPBOARD = 4
+        const val TOOL_HIDE = 5
     }
 }
