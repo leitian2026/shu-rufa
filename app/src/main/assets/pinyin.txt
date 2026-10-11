@@ -1,0 +1,224 @@
+# 启动用的小词库。格式: 词<Tab>拼音(音节用空格分开)<Tab>词频
+# 要换成完整词库,用 tools/convert_rime_dict.py 从 Rime 词库转换后覆盖本文件。
+的	de	9000
+一	yi	8000
+是	shi	8000
+不	bu	7800
+了	le	7800
+我	wo	7700
+你	ni	7600
+他	ta	7000
+她	ta	6000
+它	ta	3000
+们	men	6500
+这	zhe	7000
+那	na	6500
+有	you	7200
+在	zai	7200
+人	ren	7000
+大	da	6800
+中	zhong	6800
+国	guo	6500
+来	lai	6600
+去	qu	6500
+上	shang	6600
+下	xia	6500
+好	hao	7000
+和	he	6500
+说	shuo	6400
+会	hui	6500
+很	hen	6400
+到	dao	6500
+也	ye	6400
+都	dou	6400
+要	yao	6600
+就	jiu	6600
+能	neng	6200
+可	ke	6200
+以	yi	6300
+吗	ma	6000
+吧	ba	5800
+呢	ne	5800
+啊	a	5500
+什	shen	5500
+么	me	5500
+为	wei	5800
+想	xiang	5900
+看	kan	5900
+做	zuo	5600
+给	gei	5800
+对	dui	5900
+没	mei	6000
+把	ba	5500
+天	tian	5800
+时	shi	5700
+候	hou	5000
+现	xian	5200
+今	jin	5200
+明	ming	5200
+年	nian	5700
+月	yue	5500
+日	ri	5500
+号	hao	4500
+点	dian	5300
+分	fen	5300
+钟	zhong	3500
+小	xiao	5800
+多	duo	5600
+少	shao	5000
+谢	xie	4800
+爱	ai	5200
+家	jia	5400
+学	xue	5300
+生	sheng	5500
+工	gong	5200
+作	zuo	5200
+吃	chi	5000
+喝	he	4000
+睡	shui	4000
+走	zou	4800
+开	kai	5000
+关	guan	4600
+手	shou	4800
+机	ji	5000
+电	dian	5100
+话	hua	5000
+水	shui	4800
+火	huo	4000
+山	shan	4300
+木	mu	3900
+口	kou	3900
+目	mu	3500
+田	tian	3300
+白	bai	4200
+用	yong	5200
+八	ba	4000
+九	jiu	4200
+十	shi	4800
+二	er	5200
+三	san	5200
+四	si	4800
+五	wu	4800
+六	liu	4500
+七	qi	4500
+女	nv	5500
+子	zi	6000
+你好	ni hao	9500
+谢谢	xie xie	9000
+再见	zai jian	8000
+对不起	dui bu qi	7500
+没关系	mei guan xi	7000
+不客气	bu ke qi	6500
+早上好	zao shang hao	6000
+晚安	wan an	6000
+我们	wo men	9000
+你们	ni men	8000
+他们	ta men	8000
+她们	ta men	5000
+中国	zhong guo	9000
+北京	bei jing	7000
+上海	shang hai	7000
+东京	dong jing	6500
+日本	ri ben	7500
+美国	mei guo	7000
+朋友	peng you	8000
+喜欢	xi huan	8000
+爱你	ai ni	7000
+我爱你	wo ai ni	7500
+知道	zhi dao	8000
+不知道	bu zhi dao	7500
+可以	ke yi	8500
+不可以	bu ke yi	5000
+什么	shen me	9000
+怎么	zen me	8500
+怎么样	zen me yang	7000
+为什么	wei shen me	8000
+因为	yin wei	7500
+所以	suo yi	7500
+但是	dan shi	7500
+如果	ru guo	7000
+已经	yi jing	7000
+现在	xian zai	8500
+今天	jin tian	9000
+明天	ming tian	8500
+昨天	zuo tian	8000
+时间	shi jian	8000
+时候	shi hou	8000
+什么时候	shen me shi hou	7000
+工作	gong zuo	8500
+学习	xue xi	8000
+学生	xue sheng	7500
+老师	lao shi	7500
+同学	tong xue	6500
+手机	shou ji	8000
+电脑	dian nao	7500
+电话	dian hua	7500
+电视	dian shi	6000
+微信	wei xin	7000
+网络	wang luo	6500
+输入法	shu ru fa	7000
+输入	shu ru	6500
+隐私	yin si	6000
+设置	she zhi	6500
+开始	kai shi	7500
+结束	jie shu	6500
+问题	wen ti	8000
+没有	mei you	9000
+有没有	you mei you	6500
+还是	hai shi	7500
+还有	hai you	6500
+一起	yi qi	7500
+一下	yi xia	7500
+一个	yi ge	8500
+这个	zhe ge	8500
+那个	na ge	8000
+这里	zhe li	7000
+那里	na li	6500
+哪里	na li	7000
+今年	jin nian	6500
+明年	ming nian	6000
+去年	qu nian	6000
+吃饭	chi fan	7500
+睡觉	shui jiao	7000
+起床	qi chuang	6000
+回家	hui jia	7500
+上班	shang ban	7000
+下班	xia ban	6500
+上学	shang xue	5500
+高兴	gao xing	7000
+漂亮	piao liang	6500
+好吃	hao chi	6500
+好看	hao kan	6500
+快乐	kuai le	7000
+生日快乐	sheng ri kuai le	6500
+新年快乐	xin nian kuai le	5500
+大家	da jia	7500
+自己	zi ji	7500
+别人	bie ren	6500
+应该	ying gai	7000
+可能	ke neng	7500
+当然	dang ran	7000
+真的	zhen de	7500
+非常	fei chang	7000
+特别	te bie	6500
+比较	bi jiao	6500
+觉得	jue de	7500
+需要	xu yao	7500
+希望	xi wang	7000
+努力	nu li	6500
+帮助	bang zhu	6500
+谢谢你	xie xie ni	6500
+中文	zhong wen	6500
+英文	ying wen	6500
+汉字	han zi	6000
+笔画	bi hua	6500
+拼音	pin yin	6500
+你好吗	ni hao ma	6500
+好的	hao de	7000
+女人	nv ren	5500
+女孩	nv hai	5500
+女儿	nv er	5500
+男人	nan ren	5500
+孩子	hai zi	6500
+儿子	er zi	6000
+旅行	lv xing	5500
