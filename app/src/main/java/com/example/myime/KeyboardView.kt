@@ -105,7 +105,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         radius = context.dpf(if (wide) 10f else 8f)
         shadowH = context.dpf(2f)
         slideY = context.dpf(10f)
-        fixedHeight = context.dpi(if (wide) 279f else 224f)
+        fixedHeight = context.keyboardHeightPx()
         iconW = context.dpf(if (wide) 13f else 11f)
         iconH = context.dpf(if (wide) 9f else 8f)
 
