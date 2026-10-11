@@ -6,24 +6,39 @@
 
 1. 把本目录推到 GitHub 仓库。
 2. 仓库页 → **Actions** → *Build release APK (manual)* → **Run workflow**。
-3. 跑完后在该次运行页底部的 Artifacts 下载 `myime-release-apk`,解压得到 `app-release.apk`。
+3. 跑完后在该次运行页底部的 Artifacts 下载名为 `myime-v版本号-build序号` 的产物,解压得到 `app-release.apk`。
 4. 手机安装 → 打开「我的输入法」App → 按两个按钮启用并切换。
 
 不会自动构建:工作流只有 `workflow_dispatch` 触发器。
 
-### 签名(建议配置一次)
-不配置时用 debug 密钥,每次构建的密钥不同,**覆盖安装前要先卸载旧版**。想固定密钥:
+### 签名与覆盖安装
+覆盖安装需要三件事同时满足:**包名不变、签名密钥不变、versionCode 只增不减**。
+
+- 包名固定为 `com.example.myime`。
+- 签名:仓库里自带 `signing/myime.jks`(密码 `myime-self-use`,别名 `myime`),每次构建都用它,所以后续版本可以直接覆盖安装。
+- versionCode 由版本号加 CI 运行序号自动算出,同一版本号重复构建也会继续增大。
+- ⚠️ 这把密钥在仓库里,**仓库请设为私有**。如果要公开仓库,请改用 Secrets:删掉 `signing/myime.jks`,自己生成密钥,
+  然后在仓库 Settings → Secrets and variables → Actions 添加 `KEYSTORE_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD`。
+  有 Secrets 时会优先使用 Secrets。
+- 换了密钥后,手机上用旧密钥装的版本必须先卸载一次。
 
 ```
 keytool -genkeypair -v -keystore release.jks -alias myime -keyalg RSA -keysize 2048 -validity 36500
 base64 -w0 release.jks        # macOS: base64 -i release.jks
 ```
-仓库 Settings → Secrets and variables → Actions,添加:
-`KEYSTORE_BASE64`(上面的输出)、`KEYSTORE_PASSWORD`、`KEY_ALIAS`(myime)、`KEY_PASSWORD`。
-`*.jks` 已在 .gitignore,不要提交。
 
-### 以后开启 R8
-`app/build.gradle.kts` 里把 `isMinifyEnabled`、`isShrinkResources` 改成 `true`。
+### 版本号怎么改
+只改根目录 `version.properties`,格式是 **主版本.次版本.修订号**(例如 1.4.2):
+
+| 改动类型 | 怎么升 | 例子 |
+|---|---|---|
+| 大版本:大改版、重大功能变化 | 主版本 +1,次版本和修订清零 | 1.4.2 → 2.0.0 |
+| 小版本:新增功能,向下兼容 | 次版本 +1,修订清零 | 1.4.2 → 1.5.0 |
+| 修订:只修 bug、调细节 | 修订 +1 | 1.4.2 → 1.4.3 |
+
+- 还没稳定时用 `0.x.y`,觉得可以长期用了再发 `1.0.0`。
+- 不用手动管 versionCode,构建时自动计算:`主×10,000,000 + 次×100,000 + 修订×1,000 + 构建号`。
+- 每次构建的产物名里带版本号和构建序号,如 `myime-v0.1.0-build3`,方便对应。
 
 ## 使用
 - 「切换」键:拼音 → 笔画 → 英文 循环;「123」键进符号页。
