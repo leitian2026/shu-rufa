@@ -2,7 +2,9 @@ package com.example.myime
 
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.CornerPathEffect
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
@@ -16,7 +18,7 @@ import android.view.View
  * 整个键盘只有这一个 View,所有按键在同一块 Canvas 上绘制。
  *
  * 流畅度相关的设计:
- *  - onDraw 里不分配对象(Paint、RectF、字体度量都提前算好)
+ *  - onDraw 里不分配对象(Paint、Path、RectF、字体度量都提前准备好)
  *  - 按键高亮的消退用"帧时间"计算:每帧只读一次 drawingTime,所有按键同步推进,
  *    并用 postInvalidateOnAnimation 对齐 vsync
  *  - 模式切换只动 alpha / translationY(不触发重新布局),并启用硬件图层
@@ -30,32 +32,48 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     private var palette = Palette(context)
 
-    private var rows: List<Row> = emptyList()
+    private var layout: Layout? = null
     private var keys: Array<KeySpec> = emptyArray()
     private var rects: Array<RectF> = emptyArray()
     private var isDown = BooleanArray(0)
     private var releasedAt = LongArray(0)
+    private var subIndex = IntArray(0)
     private val pointerKey = SparseIntArray()
 
-    private val gap = context.dpf(5f)
-    private val padX = context.dpf(4f)
-    private val padY = context.dpf(6f)
-    private val radius = context.dpf(8f)
-    private val fixedHeight = context.dpi(224f)
-    private val subShift = context.dpf(9f)
-    private val subY = context.dpf(24f)
-    private val slideY = context.dpf(10f)
+    // 尺寸(refresh() 里按是否宽屏重新计算)
+    private var padX = 0f
+    private var padTop = 0f
+    private var padBottom = 0f
+    private var radius = 0f
+    private var shadowH = 0f
+    private var slideY = 0f
+    private var hitSlopX = 0f
+    private var hitSlopY = 0f
+    private var fixedHeight = 0
+    private var iconW = 0f
+    private var iconH = 0f
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pressPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val letterPaint = textPaint(context.spf(22f))
-    private val funcPaint = textPaint(context.spf(15f))
-    private val strokePaint = textPaint(context.spf(30f))
-    private val subPaint = textPaint(context.spf(12f))
-    private val letterBase = baseline(letterPaint)
-    private val funcBase = baseline(funcPaint)
-    private val strokeBase = baseline(strokePaint)
-    private val subBase = baseline(subPaint)
+    private val letterPaint = centered()
+    private val funcPaint = centered()
+    private val strokePaint = centered()
+    private val multiPaint = centered()
+    private val richPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
+    private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private var letterBase = 0f
+    private var funcBase = 0f
+    private var strokeBase = 0f
+    private var multiBase = 0f
+    private var richBase = 0f
+
+    private val shadowRect = RectF()
+    private val segRect = RectF()
+    private val path = Path()
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private var repeatSpec: KeySpec? = null
@@ -68,54 +86,85 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         }
     }
 
-    private fun textPaint(size: Float) = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textAlign = Paint.Align.CENTER
-        textSize = size
+    init {
+        applyMetrics()
     }
+
+    private fun centered() = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
 
     private fun baseline(p: Paint): Float {
         val fm = p.fontMetrics
         return -(fm.ascent + fm.descent) / 2f
     }
 
-    fun refreshTheme() {
+    private fun applyMetrics() {
+        val wide = context.isWide()
+        padX = context.dpf(if (wide) 42f else 4f)
+        padTop = context.dpf(5f)
+        padBottom = context.dpf(if (wide) 12f else 6f)
+        radius = context.dpf(if (wide) 10f else 8f)
+        shadowH = context.dpf(2f)
+        slideY = context.dpf(10f)
+        fixedHeight = context.dpi(if (wide) 279f else 224f)
+        iconW = context.dpf(if (wide) 13f else 11f)
+        iconH = context.dpf(if (wide) 9f else 8f)
+
+        letterPaint.textSize = context.spf(if (wide) 26f else 21f)
+        funcPaint.textSize = context.spf(if (wide) 17f else 14f)
+        strokePaint.textSize = context.spf(if (wide) 34f else 28f)
+        multiPaint.textSize = context.spf(if (wide) 20f else 17f)
+        richPaint.textSize = context.spf(if (wide) 21f else 16f)
+        iconPaint.strokeWidth = context.dpf(1.8f)
+        iconPaint.pathEffect = CornerPathEffect(context.dpf(1.6f))
+
+        letterBase = baseline(letterPaint)
+        funcBase = baseline(funcPaint)
+        strokeBase = baseline(strokePaint)
+        multiBase = baseline(multiPaint)
+        richBase = baseline(richPaint)
+    }
+
+    /** 每次开始输入时调用:跟随深色模式、屏幕宽度变化。 */
+    fun refresh() {
         palette = Palette(context)
+        applyMetrics()
+        layoutKeys()
+        requestLayout()
         invalidate()
     }
 
     // ---------------------------------------------------------------- 布局
 
-    fun setLayout(newRows: List<Row>, animate: Boolean) {
-        val flat = ArrayList<KeySpec>()
-        for (r in newRows) flat.addAll(r.keys)
-
-        // 只是标签/高亮变了(比如大写键),结构不变:保留按压状态,不重算
-        if (!animate && sameShape(newRows, flat)) {
-            rows = newRows
-            keys = flat.toTypedArray()
+    fun setLayout(l: Layout, animate: Boolean) {
+        // 只是标签/高亮变了(大写键、分词键等),几何不变:保留按压状态,不重算
+        if (!animate && sameShape(l)) {
+            layout = l
+            keys = l.keys.toTypedArray()
             invalidate()
             return
         }
 
         stopRepeat()
-        rows = newRows
-        keys = flat.toTypedArray()
+        layout = l
+        keys = l.keys.toTypedArray()
         rects = Array(keys.size) { RectF() }
         isDown = BooleanArray(keys.size)
         releasedAt = LongArray(keys.size) { -1L }
+        subIndex = IntArray(keys.size)
         pointerKey.clear()
         layoutKeys()
         invalidate()
         if (animate) playSwitchAnimation()
     }
 
-    private fun sameShape(newRows: List<Row>, flat: List<KeySpec>): Boolean {
-        if (keys.size != flat.size || rows.size != newRows.size) return false
-        for (i in rows.indices) {
-            if (rows[i].heightWeight != newRows[i].heightWeight) return false
-        }
+    private fun sameShape(l: Layout): Boolean {
+        val old = layout ?: return false
+        if (old.cols != l.cols || old.rows != l.rows || old.gapX != l.gapX || old.gapY != l.gapY) return false
+        if (keys.size != l.keys.size) return false
         for (i in keys.indices) {
-            if (keys[i].type != flat[i].type || keys[i].weight != flat[i].weight) return false
+            val a = keys[i]
+            val b = l.keys[i]
+            if (a.x != b.x || a.y != b.y || a.w != b.w || a.h != b.h) return false
         }
         return true
     }
@@ -143,24 +192,20 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     }
 
     private fun layoutKeys() {
-        if (width == 0 || height == 0 || rows.isEmpty()) return
-        val totalUnits = rows.sumOf { it.heightWeight.toDouble() }.toFloat()
-        val unitH = (height - 2 * padY - gap * (totalUnits - 1f)) / totalUnits
-        var y = padY
-        var k = 0
-        for (row in rows) {
-            val rowH = unitH * row.heightWeight + gap * (row.heightWeight - 1f)
-            val s = row.keys.sumOf { it.weight.toDouble() }.toFloat()
-            val unitW = (width - 2 * padX - gap * (s - 1f)) / s
-            var x = padX
-            for (key in row.keys) {
-                val w = unitW * key.weight + gap * (key.weight - 1f)
-                rects[k].set(x, y, x + w, y + rowH)
-                x += w + gap
-                k++
-            }
-            y += rowH + gap
+        val l = layout ?: return
+        if (width == 0 || height == 0 || rects.size != keys.size) return
+        val gx = context.dpf(l.gapX)
+        val gy = context.dpf(l.gapY)
+        val pitchX = (width - 2 * padX + gx) / l.cols
+        val pitchY = (height - padTop - padBottom + gy) / l.rows
+        for (i in keys.indices) {
+            val k = keys[i]
+            val left = padX + k.x * pitchX
+            val top = padTop + k.y * pitchY
+            rects[i].set(left, top, left + k.w * pitchX - gx, top + k.h * pitchY - gy)
         }
+        hitSlopX = gx / 2f
+        hitSlopY = gy / 2f
     }
 
     // ---------------------------------------------------------------- 绘制
@@ -171,24 +216,46 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         var fading = false
         for (i in keys.indices) {
             val k = keys[i]
-            if (k.type == ActionType.SPACER) continue
             val r = rects[i]
 
-            fill.color = when {
-                k.active -> palette.accent
-                k.function -> palette.functionKey
-                else -> palette.key
+            val face: Int
+            val shadow: Int
+            val onFace: Int
+            if (k.primary || k.active) {
+                face = palette.accent
+                shadow = palette.accentShadow
+                onFace = palette.onAccent
+            } else if (k.function) {
+                face = palette.functionKey
+                shadow = palette.functionShadow
+                onFace = palette.text
+            } else {
+                face = palette.key
+                shadow = palette.keyShadow
+                onFace = palette.text
             }
+
+            shadowRect.set(r.left, r.top + shadowH, r.right, r.bottom + shadowH)
+            fill.color = shadow
+            canvas.drawRoundRect(shadowRect, radius, radius, fill)
+            fill.color = face
             canvas.drawRoundRect(r, radius, radius, fill)
 
             val a = pressAmount(i, now)
             if (a > 0f) {
-                pressPaint.color = palette.accent
-                pressPaint.alpha = (a * 110f).toInt()
-                canvas.drawRoundRect(r, radius, radius, pressPaint)
+                pressPaint.color = palette.pressTint
+                pressPaint.alpha = (a * palette.pressAlpha).toInt()
+                val m = k.multi
+                if (m != null) {
+                    val seg = r.height() / m.size
+                    segRect.set(r.left, r.top + seg * subIndex[i], r.right, r.top + seg * (subIndex[i] + 1))
+                    canvas.drawRoundRect(segRect, radius, radius, pressPaint)
+                } else {
+                    canvas.drawRoundRect(r, radius, radius, pressPaint)
+                }
                 if (!isDown[i]) fading = true
             }
-            drawLabel(canvas, k, r)
+            drawLabel(canvas, k, r, onFace)
         }
         if (fading) postInvalidateOnAnimation()
     }
@@ -205,31 +272,127 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         return 1f - Motion.interpolator.getInterpolation(t)
     }
 
-    private fun drawLabel(canvas: Canvas, k: KeySpec, r: RectF) {
+    private fun drawLabel(canvas: Canvas, k: KeySpec, r: RectF, color: Int) {
+        val cx = r.centerX()
+        val cy = r.centerY()
+
+        val multi = k.multi
+        if (multi != null) {
+            multiPaint.color = color
+            val seg = r.height() / multi.size
+            for (j in multi.indices) {
+                canvas.drawText(multi[j].label, cx, r.top + seg * (j + 0.5f) + multiBase, multiPaint)
+            }
+            return
+        }
+        if (k.icon != Icon.NONE) {
+            drawIcon(canvas, k.icon, cx, cy, color)
+            return
+        }
+        if (k.rich != 0) {
+            drawRich(canvas, k.rich, cx, cy + richBase)
+            return
+        }
         val label = k.label
         if (label.isEmpty()) return
+
         val paint: Paint
         val base: Float
-        if (k.type == ActionType.STROKE) {
+        if (k.type == ActionType.STROKE && label != "*") {
             paint = strokePaint
             base = strokeBase
-        } else if (k.function || k.type == ActionType.SPACE || label.length > 1) {
+        } else if (label == "*") {
+            paint = letterPaint
+            base = letterBase
+        } else if (k.function || label.length > 1) {
             paint = funcPaint
             base = funcBase
         } else {
             paint = letterPaint
             base = letterBase
         }
-        val color = if (k.active) palette.onAccent else palette.text
-        val cx = r.centerX()
-        val cy = r.centerY()
-        val sub = k.sub
         paint.color = color
-        canvas.drawText(label, cx, cy + base - (if (sub != null) subShift else 0f), paint)
-        if (sub != null) {
-            subPaint.color = color
-            subPaint.alpha = 150
-            canvas.drawText(sub, cx, cy + subY + subBase, subPaint)
+        canvas.drawText(label, cx, cy + base, paint)
+    }
+
+    /** 「中/英」:当前语言加粗,另一个变淡。 */
+    private fun drawRich(canvas: Canvas, which: Int, cx: Float, baseY: Float) {
+        val wZ = richPaint.measureText("中")
+        val wS = richPaint.measureText("/")
+        val wE = richPaint.measureText("英")
+        val x = cx - (wZ + wS + wE) / 2f
+
+        richPaint.isFakeBoldText = which == 1
+        richPaint.color = if (which == 1) palette.text else palette.textFaint
+        canvas.drawText("中", x, baseY, richPaint)
+
+        richPaint.isFakeBoldText = false
+        richPaint.color = palette.textFaint
+        canvas.drawText("/", x + wZ, baseY, richPaint)
+
+        richPaint.isFakeBoldText = which == 2
+        richPaint.color = if (which == 2) palette.text else palette.textFaint
+        canvas.drawText("英", x + wZ + wS, baseY, richPaint)
+        richPaint.isFakeBoldText = false
+    }
+
+    private fun drawIcon(canvas: Canvas, kind: Int, cx: Float, cy: Float, color: Int) {
+        iconPaint.color = color
+        val w = iconW
+        val h = iconH
+        path.reset()
+        when (kind) {
+            Icon.BACKSPACE -> {
+                path.moveTo(cx - w, cy)
+                path.lineTo(cx - w * 0.35f, cy - h)
+                path.lineTo(cx + w, cy - h)
+                path.lineTo(cx + w, cy + h)
+                path.lineTo(cx - w * 0.35f, cy + h)
+                path.close()
+                canvas.drawPath(path, iconPaint)
+                canvas.drawLine(cx - w * 0.1f, cy - h * 0.4f, cx + w * 0.55f, cy + h * 0.4f, iconPaint)
+                canvas.drawLine(cx + w * 0.55f, cy - h * 0.4f, cx - w * 0.1f, cy + h * 0.4f, iconPaint)
+            }
+            Icon.ENTER -> {
+                path.moveTo(cx + w * 0.8f, cy - h * 0.7f)
+                path.lineTo(cx + w * 0.8f, cy + h * 0.2f)
+                path.lineTo(cx - w * 0.8f, cy + h * 0.2f)
+                canvas.drawPath(path, iconPaint)
+                canvas.drawLine(cx - w * 0.8f, cy + h * 0.2f, cx - w * 0.8f + h * 0.55f, cy + h * 0.2f - h * 0.55f, iconPaint)
+                canvas.drawLine(cx - w * 0.8f, cy + h * 0.2f, cx - w * 0.8f + h * 0.55f, cy + h * 0.2f + h * 0.55f, iconPaint)
+            }
+            Icon.SPACE -> {
+                val sw = w * 1.4f
+                path.moveTo(cx - sw, cy - h * 0.35f)
+                path.lineTo(cx - sw, cy + h * 0.35f)
+                path.lineTo(cx + sw, cy + h * 0.35f)
+                path.lineTo(cx + sw, cy - h * 0.35f)
+                canvas.drawPath(path, iconPaint)
+            }
+            Icon.UP -> {
+                path.moveTo(cx - w * 0.55f, cy + h * 0.3f)
+                path.lineTo(cx, cy - h * 0.35f)
+                path.lineTo(cx + w * 0.55f, cy + h * 0.3f)
+                canvas.drawPath(path, iconPaint)
+            }
+            Icon.DOWN -> {
+                path.moveTo(cx - w * 0.55f, cy - h * 0.3f)
+                path.lineTo(cx, cy + h * 0.35f)
+                path.lineTo(cx + w * 0.55f, cy - h * 0.3f)
+                canvas.drawPath(path, iconPaint)
+            }
+            Icon.LEFT -> {
+                path.moveTo(cx + h * 0.3f, cy - h * 0.75f)
+                path.lineTo(cx - h * 0.4f, cy)
+                path.lineTo(cx + h * 0.3f, cy + h * 0.75f)
+                canvas.drawPath(path, iconPaint)
+            }
+            Icon.RIGHT -> {
+                path.moveTo(cx - h * 0.3f, cy - h * 0.75f)
+                path.lineTo(cx + h * 0.4f, cy)
+                path.lineTo(cx - h * 0.3f, cy + h * 0.75f)
+                canvas.drawPath(path, iconPaint)
+            }
         }
     }
 
@@ -251,12 +414,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     private fun hit(x0: Float, y0: Float): Int {
         val x = x0.coerceIn(padX, width - padX)
-        val y = y0.coerceIn(padY, height - padY)
-        val h = gap / 2f
+        val y = y0.coerceIn(padTop, height - padBottom)
         for (i in rects.indices) {
-            if (keys[i].type == ActionType.SPACER) continue
             val r = rects[i]
-            if (x >= r.left - h && x <= r.right + h && y >= r.top - h && y <= r.bottom + h) return i
+            if (x >= r.left - hitSlopX && x <= r.right + hitSlopX &&
+                y >= r.top - hitSlopY && y <= r.bottom + hitSlopY
+            ) return i
         }
         return -1
     }
@@ -264,13 +427,20 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private fun pointerDown(id: Int, x: Float, y: Float) {
         val i = hit(x, y)
         if (i < 0) return
-        val spec = keys[i]
+        var spec = keys[i]
+        val multi = spec.multi
+        if (multi != null) {
+            val r = rects[i]
+            val idx = ((y - r.top) / r.height() * multi.size).toInt().coerceIn(0, multi.size - 1)
+            subIndex[i] = idx
+            spec = multi[idx]
+        }
         isDown[i] = true
         releasedAt[i] = -1L
         pointerKey.put(id, i)
         performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
         listener.onKey(spec) // 可能触发 setLayout,会重置上面的状态
-        if (spec.type == ActionType.BACKSPACE) startRepeat(spec, id)
+        if (spec.repeatable) startRepeat(spec, id)
         invalidate()
     }
 
