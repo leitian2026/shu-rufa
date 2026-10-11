@@ -19,13 +19,19 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      # GitHub 的 Ubuntu 机器已预装 Android SDK(ANDROID_HOME)。
+      # 这里只确认许可证已接受,AGP 会自动补装缺的平台包。
+      - name: Accept Android SDK licenses
+        run: |
+          SDKM=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)
+          echo "sdkmanager: $SDKM"
+          yes | "$SDKM" --licenses > /dev/null || true
 
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
-      # 可选:配置了 KEYSTORE_BASE64 等 Secrets 就用自己的签名密钥
+      # 可选:配置了 KEYSTORE_BASE64 等 Secrets 就改用 Secrets 里的密钥
       - name: Prepare signing key (optional)
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -33,10 +39,15 @@ jobs:
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-            echo "Using custom keystore."
+            echo "Using keystore from Secrets."
           else
-            echo "No keystore secret set, falling back to debug signing."
+            echo "No keystore secret, using signing/myime.jks from the repo."
           fi
+
+      - name: Read version
+        run: |
+          . ./version.properties
+          echo "VERSION=$MAJOR.$MINOR.$PATCH" >> "$GITHUB_ENV"
 
       - name: Build release APK
         env:
@@ -47,6 +58,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: myime-release-apk
+          name: myime-v${{ env.VERSION }}-build${{ github.run_number }}
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
