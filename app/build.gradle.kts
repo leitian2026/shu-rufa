@@ -1,12 +1,32 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
-// 签名:CI 里如果配置了 KEYSTORE_* 环境变量就用你自己的密钥,
-// 否则退回 debug 密钥(自用能装,但每次构建的密钥不同,覆盖安装需先卸载旧版)。
-val keystorePath: String? = System.getenv("KEYSTORE_PATH")
-val hasReleaseKey: Boolean = keystorePath != null && file(keystorePath).exists()
+// ---------------------------------------------------------------- 版本号
+// versionName 给人看:主.次.修订,取自根目录 version.properties
+// versionCode 给系统比较,必须只增不减,覆盖安装才会成功:
+//   主*10,000,000 + 次*100,000 + 修订*1,000 + 构建号(CI 的运行序号,本地为 0,最大 999)
+// 同一个版本号重复构建,构建号也会让 versionCode 继续变大。
+val versionProps = Properties().apply {
+    rootProject.file("version.properties").inputStream().use { load(it) }
+}
+val verMajor = versionProps.getProperty("MAJOR").trim().toInt()
+val verMinor = versionProps.getProperty("MINOR").trim().toInt()
+val verPatch = versionProps.getProperty("PATCH").trim().toInt()
+val buildNumber = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0).coerceIn(0, 999)
+
+// ---------------------------------------------------------------- 签名
+// 覆盖安装要求每次构建用同一把密钥。优先级:
+//   1) 环境变量 KEYSTORE_PATH(+ KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD),来自 GitHub Secrets
+//   2) 仓库里的 signing/myime.jks(自用,密码见下)
+//   3) 都没有才退回 debug 密钥(此时无法覆盖安装)
+val envKeystore: String? = System.getenv("KEYSTORE_PATH")?.takeIf { file(it).exists() }
+val repoKeystore: File? = rootProject.file("signing/myime.jks").takeIf { it.exists() }
+val repoKeystorePassword = "myime-self-use"
+val hasReleaseKey: Boolean = envKeystore != null || repoKeystore != null
 
 android {
     namespace = "com.example.myime"
@@ -16,17 +36,24 @@ android {
         applicationId = "com.example.myime"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = verMajor * 10_000_000 + verMinor * 100_000 + verPatch * 1_000 + buildNumber
+        versionName = "$verMajor.$verMinor.$verPatch"
     }
 
     signingConfigs {
         if (hasReleaseKey) {
             create("release") {
-                storeFile = file(keystorePath!!)
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
+                if (envKeystore != null) {
+                    storeFile = file(envKeystore)
+                    storePassword = System.getenv("KEYSTORE_PASSWORD")
+                    keyAlias = System.getenv("KEY_ALIAS")
+                    keyPassword = System.getenv("KEY_PASSWORD")
+                } else {
+                    storeFile = repoKeystore
+                    storePassword = repoKeystorePassword
+                    keyAlias = "myime"
+                    keyPassword = repoKeystorePassword
+                }
             }
         }
     }
