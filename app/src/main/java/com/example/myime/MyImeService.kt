@@ -1,14 +1,17 @@
 package com.example.myime
 
+import android.content.Intent
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.InputType
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
 import java.util.concurrent.Executors
 
@@ -23,11 +26,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private var keyboardView: KeyboardView? = null
     private var candidateBar: CandidateBarView? = null
 
-    private var textMode = Mode.PINYIN   // 用户选的文字模式
-    private var mode = Mode.PINYIN       // 当前显示的模式(可能是符号)
-    private var secureField = false      // 密码框:只允许英文/符号,不使用组合区
+    private var textMode = Mode.PINYIN      // 最近使用的文字模式(拼音/笔画/英文)
+    private var chineseMode = Mode.PINYIN   // 最近使用的中文方式(拼音/笔画)
+    private var mode = Mode.PINYIN          // 当前显示的页面(也可能是符号/数字/编辑)
+    private var secureField = false         // 密码框:只允许英文/符号,不使用组合区
     private var shift = false
-    private var enterLabel = "回车"
+    private var selecting = false           // 光标编辑页的「选择」状态
+    private var enterLabel: String? = null  // null = 用回车图标
+    private var layoutComposing = false
 
     private val composing = StringBuilder()
     private var candidates: List<Candidate> = emptyList()
@@ -52,14 +58,20 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     override fun onEvaluateFullscreenMode(): Boolean = false
 
     override fun onCreateInputView(): View {
-        val bar = CandidateBarView(this) { index -> onCandidatePicked(index) }
+        val bar = CandidateBarView(this, { index -> onCandidatePicked(index) }, { tool -> onTool(tool) })
         val kb = KeyboardView(this, this)
-        kb.setLayout(Layouts.build(mode, enterLabel, shift), animate = false)
         candidateBar = bar
         keyboardView = kb
+        refreshLayout(animate = false)
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpi(44f)))
+            addView(
+                bar,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ),
+            )
             addView(
                 kb,
                 LinearLayout.LayoutParams(
@@ -76,6 +88,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         queryGen++
         candidates = emptyList()
         candidatesFor = ""
+        layoutComposing = false
+        selecting = false
 
         val cls = info.inputType and InputType.TYPE_MASK_CLASS
         val variation = info.inputType and InputType.TYPE_MASK_VARIATION
@@ -83,10 +97,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         var forced: Mode? = null
         when (cls) {
             InputType.TYPE_CLASS_NUMBER -> {
-                forced = Mode.SYMBOL
+                forced = Mode.NUMBER
                 if (variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD) secureField = true
             }
-            InputType.TYPE_CLASS_PHONE, InputType.TYPE_CLASS_DATETIME -> forced = Mode.SYMBOL
+            InputType.TYPE_CLASS_PHONE, InputType.TYPE_CLASS_DATETIME -> forced = Mode.NUMBER
             InputType.TYPE_CLASS_TEXT -> {
                 if (variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
                     variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
@@ -108,10 +122,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         shift = false
         if (mode == Mode.ENGLISH) shift = capsWanted(info)
 
-        keyboardView?.refreshTheme()
-        candidateBar?.refreshTheme()
-        keyboardView?.setLayout(Layouts.build(mode, enterLabel, shift), animate = false)
+        keyboardView?.refresh()
+        candidateBar?.refresh()
+        candidateBar?.setComposing("")
         candidateBar?.setCandidates(emptyList(), animate = false)
+        refreshLayout(animate = false)
     }
 
     override fun onFinishInput() {
@@ -148,13 +163,19 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             ActionType.BACKSPACE -> backspace()
             ActionType.ENTER -> enter()
             ActionType.SPACE -> space()
-            ActionType.MODE -> cycleMode()
-            ActionType.SYMBOL -> toggleSymbol()
+            ActionType.LANG -> toggleLang()
+            ActionType.METHOD -> switchMethod()
+            ActionType.SEPARATOR -> typeSeparator()
+            ActionType.SYMBOL -> when (spec.value) {
+                "symbol" -> gotoPage(Mode.SYMBOL)
+                "number" -> gotoPage(Mode.NUMBER)
+                else -> leavePage()
+            }
             ActionType.SHIFT -> {
                 shift = !shift
                 refreshLayout(animate = false)
             }
-            ActionType.SPACER -> Unit
+            ActionType.EDIT -> onEdit(spec.value)
         }
     }
 
@@ -176,6 +197,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun typeStroke(c: Char) {
         if (mode != Mode.STROKE) return
         composing.append(c)
+        showComposing()
+        requery()
+    }
+
+    /** 分词键:在拼音输入里插入音节边界。 */
+    private fun typeSeparator() {
+        if (mode != Mode.PINYIN || composing.isEmpty()) return
+        if (composing[composing.length - 1] == '\'') return
+        composing.append('\'')
         showComposing()
         requery()
     }
@@ -234,17 +264,26 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         afterCommit()
     }
 
-    private fun cycleMode() {
-        if (secureField) return
+    // ------------------------------------------------------------ 页面切换
+
+    private fun flushRawNow() {
         currentInputConnection?.let { ic ->
             ic.beginBatchEdit()
             flushRaw(ic)
             ic.endBatchEdit()
         }
-        textMode = when (textMode) {
-            Mode.PINYIN -> Mode.STROKE
-            Mode.STROKE -> Mode.ENGLISH
-            else -> Mode.PINYIN
+    }
+
+    /** 中/英:在最近用的中文方式和英文之间切换。 */
+    private fun toggleLang() {
+        if (secureField) return
+        if (mode != Mode.PINYIN && mode != Mode.STROKE && mode != Mode.ENGLISH) return
+        flushRawNow()
+        if (mode == Mode.ENGLISH) {
+            textMode = chineseMode
+        } else {
+            chineseMode = mode
+            textMode = Mode.ENGLISH
         }
         mode = textMode
         shift = false
@@ -252,21 +291,79 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         refreshLayout(animate = true)
     }
 
-    private fun toggleSymbol() {
-        if (mode == Mode.SYMBOL) {
-            mode = if (secureField) Mode.ENGLISH else textMode
-            shift = false
-            if (mode == Mode.ENGLISH) shift = capsWanted(currentInputEditorInfo)
-        } else {
-            currentInputConnection?.let { ic ->
-                ic.beginBatchEdit()
-                flushRaw(ic)
-                ic.endBatchEdit()
-            }
-            mode = Mode.SYMBOL
-            shift = false
-        }
+    /** 拼音 ↔ 笔画。 */
+    private fun switchMethod() {
+        if (secureField) return
+        if (mode != Mode.PINYIN && mode != Mode.STROKE) return
+        flushRawNow()
+        val next = if (mode == Mode.STROKE) Mode.PINYIN else Mode.STROKE
+        chineseMode = next
+        textMode = next
+        mode = next
         refreshLayout(animate = true)
+    }
+
+    private fun gotoPage(target: Mode) {
+        flushRawNow()
+        selecting = false
+        mode = target
+        refreshLayout(animate = true)
+    }
+
+    private fun leavePage() {
+        selecting = false
+        mode = if (secureField) Mode.ENGLISH else textMode
+        shift = false
+        if (mode == Mode.ENGLISH) shift = capsWanted(currentInputEditorInfo)
+        refreshLayout(animate = true)
+    }
+
+    private fun onTool(tool: Int) {
+        when (tool) {
+            CandidateBarView.TOOL_SETTINGS -> {
+                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+            CandidateBarView.TOOL_SWITCH_IME -> {
+                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
+            }
+            CandidateBarView.TOOL_EDIT -> {
+                if (mode == Mode.EDIT) leavePage() else gotoPage(Mode.EDIT)
+            }
+            CandidateBarView.TOOL_HIDE -> requestHideSelf(0)
+        }
+    }
+
+    // ------------------------------------------------------------ 光标编辑页
+
+    private fun sendKey(code: Int, meta: Int = 0) {
+        val ic = currentInputConnection ?: return
+        val t = SystemClock.uptimeMillis()
+        ic.sendKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_DOWN, code, 0, meta))
+        ic.sendKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_UP, code, 0, meta))
+    }
+
+    private fun onEdit(v: String) {
+        val ic = currentInputConnection ?: return
+        val meta = if (selecting) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0
+        when (v) {
+            "tab" -> sendKey(KeyEvent.KEYCODE_TAB)
+            "copy" -> ic.performContextMenuAction(android.R.id.copy)
+            "paste" -> ic.performContextMenuAction(android.R.id.paste)
+            "cut" -> ic.performContextMenuAction(android.R.id.cut)
+            "all" -> ic.performContextMenuAction(android.R.id.selectAll)
+            "up" -> sendKey(KeyEvent.KEYCODE_DPAD_UP, meta)
+            "down" -> sendKey(KeyEvent.KEYCODE_DPAD_DOWN, meta)
+            "left" -> sendKey(KeyEvent.KEYCODE_DPAD_LEFT, meta)
+            "right" -> sendKey(KeyEvent.KEYCODE_DPAD_RIGHT, meta)
+            "home" -> sendKey(KeyEvent.KEYCODE_MOVE_HOME, meta)
+            "end" -> sendKey(KeyEvent.KEYCODE_MOVE_END, meta)
+            "del" -> sendKey(KeyEvent.KEYCODE_FORWARD_DEL)
+            "select" -> {
+                selecting = !selecting
+                refreshLayout(animate = false)
+            }
+            "back" -> leavePage()
+        }
     }
 
     // ------------------------------------------------------------ 组合与候选
@@ -289,11 +386,22 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         's' -> '丨'
         'p' -> '丿'
         'n' -> '丶'
+        '*' -> '*'
         else -> '乙'
     }
 
     private fun showComposing() {
         currentInputConnection?.setComposingText(displayComposing(), 1)
+    }
+
+    /** 组合内容变了:更新预览条;「分词/笔画」「清除/回车」这类键的文字也随之切换。 */
+    private fun onComposingChanged() {
+        candidateBar?.setComposing(displayComposing())
+        val c = composing.isNotEmpty()
+        if (c != layoutComposing) {
+            layoutComposing = c
+            refreshLayout(animate = false)
+        }
     }
 
     /** 查询放后台线程;用代数丢弃过期结果。 */
@@ -309,6 +417,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             applyCandidates(code, emptyList())
             return
         }
+        onComposingChanged()
         worker.execute {
             val result = try {
                 engine.query(code)
@@ -323,6 +432,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         candidatesFor = code
         candidates = list
         candidateBar?.setCandidates(list.map { it.text })
+        onComposingChanged()
     }
 
     private fun clearCandidates() {
@@ -378,8 +488,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     // ------------------------------------------------------------ 其他
 
+    private fun kbState() = KbState(enterLabel, shift, composing.isNotEmpty(), selecting)
+
     private fun refreshLayout(animate: Boolean) {
-        keyboardView?.setLayout(Layouts.build(mode, enterLabel, shift), animate)
+        keyboardView?.setLayout(Layouts.build(mode, kbState(), isWide()), animate)
+        candidateBar?.setEditActive(mode == Mode.EDIT)
     }
 
     private fun afterCommit() {
@@ -397,10 +510,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         return ic.getCursorCapsMode(info.inputType) != 0
     }
 
-    private fun enterLabelFor(info: EditorInfo): String {
+    /** 返回 null 表示没有特殊动作,键盘上显示回车图标。 */
+    private fun enterLabelFor(info: EditorInfo): String? {
         val custom = info.actionLabel?.toString()
         if (!custom.isNullOrBlank()) return custom
-        if ((info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0) return "回车"
+        if ((info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0) return null
         return when (info.imeOptions and EditorInfo.IME_MASK_ACTION) {
             EditorInfo.IME_ACTION_GO -> "前往"
             EditorInfo.IME_ACTION_SEARCH -> "搜索"
@@ -408,7 +522,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             EditorInfo.IME_ACTION_NEXT -> "下一项"
             EditorInfo.IME_ACTION_PREVIOUS -> "上一项"
             EditorInfo.IME_ACTION_DONE -> "完成"
-            else -> "回车"
+            else -> null
         }
     }
 }
