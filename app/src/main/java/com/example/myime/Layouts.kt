@@ -10,7 +10,7 @@ enum class ActionType {
     EDIT,       // 光标编辑页里的各个键
 }
 
-enum class Mode { PINYIN, STROKE, ENGLISH, SYMBOL, NUMBER, EDIT }
+enum class Mode { PINYIN, STROKE, ENGLISH, SYMBOL, NUMBER, EDIT, EMOJI, CLIPBOARD }
 
 object Icon {
     const val NONE = 0
@@ -69,6 +69,8 @@ object Layouts {
         Mode.SYMBOL -> symbol(s, wide)
         Mode.NUMBER -> number(s, wide)
         Mode.EDIT -> edit(s, wide)
+        // 表情、剪贴板是独立的面板视图,不走按键布局;这里只是占位,不会显示
+        Mode.EMOJI, Mode.CLIPBOARD -> qwerty(Mode.PINYIN, s, wide)
     }
 
     // ---------------------------------------------------------------- 工具
