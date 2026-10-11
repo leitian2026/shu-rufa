@@ -1,5 +1,6 @@
 package com.example.myime
 
+import android.content.ClipboardManager
 import android.content.Intent
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
@@ -25,6 +26,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     private var keyboardView: KeyboardView? = null
     private var candidateBar: CandidateBarView? = null
+    private var emojiPanel: EmojiPanelView? = null
+    private var clipPanel: ClipboardPanelView? = null
+
+    // 剪贴板历史:只保存在内存里,最多 30 条,进程结束就清空,不写入存储
+    private val clips = ArrayList<String>()
+    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClipboardNow() }
 
     private var textMode = Mode.PINYIN      // 最近使用的文字模式(拼音/笔画/英文)
     private var chineseMode = Mode.PINYIN   // 最近使用的中文方式(拼音/笔画)
@@ -44,6 +51,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     override fun onCreate() {
         super.onCreate()
+        try {
+            (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).addPrimaryClipChangedListener(clipListener)
+        } catch (e: Exception) {
+            // 注册失败只是没有剪贴板历史,不影响输入
+        }
         worker.execute {
             pinyinEngine = DictLoader.loadPinyin(applicationContext)
             strokeEngine = DictLoader.loadStroke(applicationContext)
@@ -51,6 +63,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     override fun onDestroy() {
+        try {
+            (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).removePrimaryClipChangedListener(clipListener)
+        } catch (e: Exception) {
+        }
         worker.shutdownNow()
         super.onDestroy()
     }
@@ -60,8 +76,47 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     override fun onCreateInputView(): View {
         val bar = CandidateBarView(this, { index -> onCandidatePicked(index) }, { tool -> onTool(tool) })
         val kb = KeyboardView(this, this)
+        val emoji = EmojiPanelView(this, object : EmojiPanelView.Listener {
+            override fun onEmoji(emoji: String) {
+                currentInputConnection?.commitText(emoji, 1)
+            }
+
+            override fun onBack() {
+                leavePage()
+            }
+
+            override fun onBackspace() {
+                sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
+            }
+        })
+        val clip = ClipboardPanelView(this, object : ClipboardPanelView.Listener {
+            override fun onPaste(text: String) {
+                currentInputConnection?.commitText(text, 1)
+                leavePage()
+            }
+
+            override fun onDelete(index: Int) {
+                if (index in clips.indices) {
+                    clips.removeAt(index)
+                    clipPanel?.setItems(clips.toList())
+                }
+            }
+
+            override fun onClear() {
+                clips.clear()
+                clipPanel?.setItems(emptyList())
+            }
+
+            override fun onBack() {
+                leavePage()
+            }
+        })
+        emoji.visibility = View.GONE
+        clip.visibility = View.GONE
         candidateBar = bar
         keyboardView = kb
+        emojiPanel = emoji
+        clipPanel = clip
         refreshLayout(animate = false)
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -72,13 +127,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                 ),
             )
-            addView(
-                kb,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
+            for (v in listOf<View>(kb, emoji, clip)) {
+                addView(
+                    v,
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ),
+                )
+            }
         }
     }
 
@@ -306,6 +363,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun gotoPage(target: Mode) {
         flushRawNow()
         selecting = false
+        if (target == Mode.CLIPBOARD) captureClipboardNow()
         mode = target
         refreshLayout(animate = true)
     }
@@ -326,8 +384,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             CandidateBarView.TOOL_SWITCH_IME -> {
                 (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
             }
+            CandidateBarView.TOOL_EMOJI -> {
+                if (mode == Mode.EMOJI) leavePage() else gotoPage(Mode.EMOJI)
+            }
             CandidateBarView.TOOL_EDIT -> {
                 if (mode == Mode.EDIT) leavePage() else gotoPage(Mode.EDIT)
+            }
+            CandidateBarView.TOOL_CLIPBOARD -> {
+                if (mode == Mode.CLIPBOARD) leavePage() else gotoPage(Mode.CLIPBOARD)
             }
             CandidateBarView.TOOL_HIDE -> requestHideSelf(0)
         }
@@ -491,8 +555,58 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun kbState() = KbState(enterLabel, shift, composing.isNotEmpty(), selecting)
 
     private fun refreshLayout(animate: Boolean) {
-        keyboardView?.setLayout(Layouts.build(mode, kbState(), isWide()), animate)
-        candidateBar?.setEditActive(mode == Mode.EDIT)
+        val kb = keyboardView ?: return
+        candidateBar?.setActiveTool(
+            when (mode) {
+                Mode.EMOJI -> CandidateBarView.TOOL_EMOJI
+                Mode.EDIT -> CandidateBarView.TOOL_EDIT
+                Mode.CLIPBOARD -> CandidateBarView.TOOL_CLIPBOARD
+                else -> -1
+            },
+        )
+        when (mode) {
+            Mode.EMOJI -> showPanel(emojiPanel, clipPanel, animate)
+            Mode.CLIPBOARD -> {
+                clipPanel?.setItems(clips.toList())
+                showPanel(clipPanel, emojiPanel, animate)
+            }
+            else -> {
+                emojiPanel?.visibility = View.GONE
+                clipPanel?.visibility = View.GONE
+                kb.visibility = View.VISIBLE
+                kb.setLayout(Layouts.build(mode, kbState(), isWide()), animate)
+            }
+        }
+    }
+
+    /** 面板和键盘同一时间只显示一个,高度相同,所以切换时不会跳动。 */
+    private fun showPanel(panel: PanelView?, other: PanelView?, animate: Boolean) {
+        if (panel == null) return
+        keyboardView?.visibility = View.GONE
+        other?.visibility = View.GONE
+        val wasVisible = panel.visibility == View.VISIBLE
+        panel.visibility = View.VISIBLE
+        if (!wasVisible) panel.onShow(animate)
+    }
+
+    /** 读取当前剪贴板并加入历史(跳过被标记为敏感的内容,如密码管理器复制的密码)。 */
+    private fun captureClipboardNow() {
+        try {
+            val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = cm.primaryClip ?: return
+            if (clip.itemCount == 0) return
+            val desc = clip.description
+            if (!desc.hasMimeType("text/*")) return
+            if (desc.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true) return
+            val text = clip.getItemAt(0).coerceToText(this)?.toString() ?: return
+            if (text.isBlank() || text.length > 5000) return
+            clips.remove(text)
+            clips.add(0, text)
+            while (clips.size > 30) clips.removeAt(clips.size - 1)
+            if (mode == Mode.CLIPBOARD) clipPanel?.setItems(clips.toList())
+        } catch (e: Exception) {
+            // 没有读取权限(例如当前不是默认输入法)时直接忽略
+        }
     }
 
     private fun afterCommit() {
