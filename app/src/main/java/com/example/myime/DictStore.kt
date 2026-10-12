@@ -65,6 +65,22 @@ object DictConfig {
         p(ctx).edit().putString("mirror", v.trim()).apply()
     }
 
+    /**
+     * 某个词库包的自定义下载地址(一行一个,空 = 用内置默认来源)。
+     * 拼音:每行一个 Rime *.dict.yaml(或「词<Tab>拼音<Tab>词频」文本),按顺序合并。
+     * 笔画:第 1 行笔画字表(Rime stroke.dict.yaml 格式),第 2 行(可选)字频表(Rime 格式)。
+     * 英文:第 1 行单词词频(词<Tab>次数),第 2 行(可选)双词词频(词1 词2<Tab>次数)。
+     */
+    fun customUrls(ctx: Context, pack: String): List<String> =
+        (p(ctx).getString("custom_$pack", "") ?: "").lines().map { it.trim() }
+            .filter { it.startsWith("http://") || it.startsWith("https://") }
+
+    fun customText(ctx: Context, pack: String): String = p(ctx).getString("custom_$pack", "") ?: ""
+
+    fun setCustomText(ctx: Context, pack: String, v: String) {
+        p(ctx).edit().putString("custom_$pack", v.trim()).apply()
+    }
+
     /** 拼音词库最多保留多少条(单字不受限制)。 */
     fun pinyinCap(ctx: Context): Int = p(ctx).getInt("pinyin_cap", 200_000)
 
