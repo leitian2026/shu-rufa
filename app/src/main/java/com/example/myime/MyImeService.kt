@@ -1880,6 +1880,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         transStatus = TranslateBarView.STATUS_LOADING
         transUi()
         val primary = DictConfig.translateEngine(applicationContext)
+        Translator.load(applicationContext)
         try {
             netPool.execute {
                 if (gen != transGen) return@execute   // 排队期间原文已经变了
