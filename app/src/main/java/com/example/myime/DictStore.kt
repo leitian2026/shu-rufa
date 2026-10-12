@@ -122,4 +122,28 @@ object DictConfig {
     fun clearMeta(ctx: Context, pack: String) {
         p(ctx).edit().remove("meta_${pack}_count").remove("meta_${pack}_time").apply()
     }
+
+    // ------------------------------------------------------------ 输入翻译
+
+    /** 输入翻译开关(设置页里点「译」切换)。 */
+    fun translateOn(ctx: Context): Boolean = p(ctx).getBoolean("trans_on", false)
+
+    fun setTranslateOn(ctx: Context, v: Boolean) {
+        p(ctx).edit().putBoolean("trans_on", v).apply()
+    }
+
+    /** 主用翻译引擎:ms(微软)/ google(谷歌)。主用失败会自动换另一个。 */
+    fun translateEngine(ctx: Context): String = p(ctx).getString("trans_engine", Translator.MS) ?: Translator.MS
+
+    fun setTranslateEngine(ctx: Context, v: String) {
+        p(ctx).edit().putString("trans_engine", v).apply()
+    }
+
+    /** 翻译方向在 Translator.pairs 里的序号。 */
+    fun translatePair(ctx: Context): Int =
+        p(ctx).getInt("trans_pair", 0).coerceIn(0, Translator.pairs.size - 1)
+
+    fun setTranslatePair(ctx: Context, v: Int) {
+        p(ctx).edit().putInt("trans_pair", v).apply()
+    }
 }
