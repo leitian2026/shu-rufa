@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 故意不申请任何权限,包括网络。 -->
+    <!-- 只申请联网一项,只给"词库管理"页下载词库用;键盘本身(MyImeService)的代码里没有任何联网。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="false"
@@ -30,5 +31,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".DictManagerActivity"
+            android:exported="false" />
     </application>
 </manifest>
