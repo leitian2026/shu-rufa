@@ -56,6 +56,7 @@ class Layout(
     val gapX: Float,
     val gapY: Float,
     val keys: List<KeySpec>,
+    val padX: Float? = null,   // 左右边距(dp);null 用键盘默认值
 )
 
 class KbState(
@@ -199,7 +200,8 @@ object Layouts {
             keys.add(spaceKey().at(x1 + 1f, 3f, 1f, 1f))
         }
         keys.add(langKey(false).at(x1 + 2f, 3f, 1f, 1f))
-        return Layout(xr + rw, 4f, if (wide) 10.5f else 5f, if (wide) 6.5f else 5f, keys)
+        // 宽屏下笔画页把左右留白收到和窄屏一样,让出的宽度分给各个键
+        return Layout(xr + rw, 4f, if (wide) 10.5f else 5f, if (wide) 6.5f else 5f, keys, padX = 4f)
     }
 
     // ---------------------------------------------------------------- 符号页(符)
