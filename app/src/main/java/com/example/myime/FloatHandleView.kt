@@ -56,19 +56,21 @@ class FloatHandleView(
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat()
         val h = height.toFloat()
-        bg.color = palette.topBar
+        // 输入翻译打开时整条换成绿色实底、白色图案,在悬浮键盘上一眼就能看出翻译开着
+        val tr = Palette.translating
+        bg.color = if (tr) palette.accent else palette.topBar
         canvas.drawRect(0f, 0f, w, h, bg)
 
         // 中间的小药丸
-        pill.color = palette.textFaint
-        pill.alpha = 150
+        pill.color = if (tr) palette.onAccent else palette.textFaint
+        pill.alpha = if (tr) 220 else 150
         val pw = context.dpf(40f)
         val ph = context.dpf(4f)
         rect.set(w / 2f - pw / 2f, h / 2f - ph / 2f, w / 2f + pw / 2f, h / 2f + ph / 2f)
         canvas.drawRoundRect(rect, ph / 2f, ph / 2f, pill)
 
         // 两端的缩放角标(靠上的那个角:一条横线 + 一条竖线,再加一条斜线)
-        grip.color = palette.icon
+        grip.color = if (tr) palette.onAccent else palette.icon
         val m = context.dpf(10f)
         val s = context.dpf(9f)
         // 左上
