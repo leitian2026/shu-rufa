@@ -18,7 +18,7 @@ fun Context.isWide(): Boolean = resources.configuration.screenWidthDp >= 600
 /** 影响键盘尺寸/配色的所有系统条件的指纹:没变就不用重算尺寸和调色板。 */
 fun Context.uiSignature(): String {
     val c = resources.configuration
-    return "${c.uiMode}:${c.screenWidthDp}:${c.screenHeightDp}:${c.densityDpi}:${c.fontScale}:${keyboardHeightPx()}"
+    return "${c.uiMode}:${c.screenWidthDp}:${c.screenHeightDp}:${c.densityDpi}:${c.fontScale}:${keyboardHeightPx()}:${Palette.translating}"
 }
 
 /** 键盘区(含各个面板)的统一高度,切换页面时高度不变。可在「键盘调节」里改。 */
