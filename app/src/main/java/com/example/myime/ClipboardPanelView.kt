@@ -255,14 +255,19 @@ class ClipboardPanelView(
         return -1
     }
 
-    override fun onContentTap(x: Float, y: Float) {
+    override fun onBlankTap() {
+        if (!selecting) listener.onBack()   // 多选中:没有返回键,空白处也不返回,免得误触丢掉已选的
+    }
+
+    override fun onContentTap(x: Float, y: Float): Boolean {
         val i = hit(y)
-        if (i < 0) return
+        if (i < 0) return false
         if (selecting) {
             toggle(items[i])
         } else {
             listener.onPaste(items[i])
         }
+        return true
     }
 
     /** 长按:进入多选并选中这一条;已在多选时,长按等于点一下。 */
