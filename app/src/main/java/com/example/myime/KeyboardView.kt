@@ -369,6 +369,27 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 path.lineTo(cx + sw, cy - h * 0.35f)
                 canvas.drawPath(path, iconPaint)
             }
+            Icon.SHIFT, Icon.SHIFT_ON, Icon.SHIFT_LOCK -> {
+                val lock = kind == Icon.SHIFT_LOCK
+                val oy = if (lock) -h * 0.2f else 0f
+                val aw = w * 0.85f
+                val ah = h * 0.95f
+                val sw = aw * 0.42f
+                path.moveTo(cx, cy + oy - ah)
+                path.lineTo(cx + aw, cy + oy)
+                path.lineTo(cx + sw, cy + oy)
+                path.lineTo(cx + sw, cy + oy + ah * 0.85f)
+                path.lineTo(cx - sw, cy + oy + ah * 0.85f)
+                path.lineTo(cx - sw, cy + oy)
+                path.lineTo(cx - aw, cy + oy)
+                path.close()
+                if (kind != Icon.SHIFT) iconPaint.style = Paint.Style.FILL_AND_STROKE
+                canvas.drawPath(path, iconPaint)
+                iconPaint.style = Paint.Style.STROKE
+                if (lock) {
+                    canvas.drawLine(cx - sw, cy + oy + ah * 1.3f, cx + sw, cy + oy + ah * 1.3f, iconPaint)
+                }
+            }
             Icon.UP -> {
                 path.moveTo(cx - w * 0.55f, cy + h * 0.3f)
                 path.lineTo(cx, cy - h * 0.35f)
