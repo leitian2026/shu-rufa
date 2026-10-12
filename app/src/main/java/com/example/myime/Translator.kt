@@ -99,6 +99,31 @@ object Translator {
         }
     }
 
+    @Volatile private var warmedAt = -WARM_EVERY_MS
+
+    /** 提前建立到主用引擎服务器的连接(见 MyImeService.warmTranslate)。自己开一个短命线程,不堵翻译用的线程。 */
+    fun warm(primary: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - warmedAt < WARM_EVERY_MS) return
+        warmedAt = now
+        val base = if (primary == GOOGLE) gUrl.ifBlank { DEF_G_FREE } else msUrl.ifBlank { DEF_MS_FREE }
+        Thread {
+            try {
+                val u = URL(base)
+                val c = URL("${u.protocol}://${u.host}/").openConnection() as HttpURLConnection
+                c.requestMethod = "HEAD"
+                c.connectTimeout = 4000
+                c.readTimeout = 4000
+                c.setRequestProperty("User-Agent", UA)
+                if (c.responseCode < 400) c.inputStream.close() else c.errorStream?.close()
+            } catch (t: Throwable) {
+                warmedAt = -WARM_EVERY_MS   // 没成功:下次还可以再试
+            }
+        }.start()
+    }
+
+    private const val WARM_EVERY_MS = 4 * 60_000L
+
     private fun withQuery(base: String, query: String) = base + (if (base.contains('?')) "&" else "?") + query
 
     private val cache = LruCache<String, String>(80)
