@@ -139,18 +139,20 @@ class SettingsPanelView(
             if (y + cellH < visTop) continue
             if (y > visBottom) break
 
+            val sel = items[i].id == selectedId
+            // 「输入翻译」这一格打开时:整格变绿底白字(只有这一格变,键盘配色不变)
+            val filled = sel && items[i].id == ID_TRANS
             tmp.set(x, y + shadowH, x + cellW, y + cellH + shadowH)
-            fill.color = palette.keyShadow
+            fill.color = if (filled) palette.transShadow else palette.keyShadow
             canvas.drawRoundRect(tmp, radius, radius, fill)
             tmp.set(x, y, x + cellW, y + cellH)
-            fill.color = palette.key
+            fill.color = if (filled) palette.transAccent else palette.key
             canvas.drawRoundRect(tmp, radius, radius, fill)
 
             val cx = x + cellW / 2f
-            val sel = items[i].id == selectedId
-            glyphPaint.color = if (sel) palette.accent else palette.text
+            glyphPaint.color = if (filled) palette.onAccent else if (sel) palette.accent else palette.text
             canvas.drawText(items[i].glyph, cx, y + cellH * 0.38f + glyphBase, glyphPaint)
-            labelPaint.color = if (sel) palette.accent else palette.textFaint
+            labelPaint.color = if (filled) palette.onAccent else if (sel) palette.accent else palette.textFaint
             canvas.drawText(items[i].label, cx, y + cellH * 0.78f + labelBase, labelPaint)
         }
     }
