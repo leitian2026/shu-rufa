@@ -27,7 +27,8 @@ class MainActivity : Activity() {
             textSize = 24f
         })
         root.addView(TextView(this).apply {
-            text = "拼音 / 笔画 / 英文 / 表情 / 剪贴板。本应用不申请任何权限,不联网。\n剪贴板历史只保存在内存里,不写入存储。\n\n" +
+            text = "拼音 / 笔画 / 英文 / 表情 / 剪贴板。只有「词库管理」页在你点下载时才联网,键盘本身不联网。\n" +
+                "剪贴板历史只保存在内存里,不写入存储;输入习惯(词频)只存在本机应用私有目录,可在词库管理里清除。\n\n" +
                 "先点第一个按钮,在系统设置里打开本输入法;再点第二个按钮切换过来,然后在下面的输入框里试试。"
             textSize = 15f
             setPadding(0, pad / 2, 0, pad)
@@ -42,6 +43,10 @@ class MainActivity : Activity() {
                 (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                     .showInputMethodPicker()
             }
+        })
+        root.addView(Button(this).apply {
+            text = "3. 词库管理(下载笔画 / 拼音 / 英文词库)"
+            setOnClickListener { startActivity(Intent(this@MainActivity, DictManagerActivity::class.java)) }
         })
         root.addView(EditText(this).apply {
             hint = "在这里测试输入"
