@@ -311,15 +311,22 @@ class StrokeEngine(
         val prefix = if (star < 0) code else code.substring(0, star)
         val u = user?.takeIf { it.hasLearned() }
 
-        // 只挑最靠前的 SLOTS 个:笔画数刚好等于输入的排前面,然后是我选过的、字频高的、笔画短的
+        // 只挑最靠前的 SLOTS 个。排序从高到低:
+        //   有字频的常用字 > 没字频的生僻字;我选过的;字频(按 2 倍一档分档);同一档里笔画数刚好等于输入的;精确字频;笔画短的
         val bestId = IntArray(SLOTS)
         val bestKey = LongArray(SLOTS)
         var size = 0
         fun offer(id: Int) {
             val len = codeOf[id].length
             val learned = if (u != null) u.score(texts[id], code) else 0
-            val key = (if (len == code.length) 1L shl 60 else 0L) or
-                (learned.toLong() shl 40) or (freqs[id].toLong() shl 8) or
+            val f = freqs[id]
+            val tier = if (f > 1) 1L shl 62 else 0L
+            val octave = (32 - Integer.numberOfLeadingZeros(maxOf(f, 0))).toLong()   // 0..31
+            val key = tier or
+                (minOf(learned, 127).toLong() shl 55) or
+                (octave shl 50) or
+                (if (len == code.length) 1L shl 49 else 0L) or
+                (f.toLong() shl 18) or
                 (255 - minOf(len, 255)).toLong()
             if (size == SLOTS && key <= bestKey[SLOTS - 1]) return
             var pos = if (size < SLOTS) size else SLOTS - 1
@@ -352,7 +359,10 @@ class StrokeEngine(
         for (k in 0 until size) {
             if (out.size >= MAX) break
             val id = bestId[k]
-            if (seen.add(texts[id])) out.add(Candidate(texts[id], code.length))
+            // 兼容区的同形字(看起来一模一样、编码不同)按规范化后的字去重
+            if (seen.add(java.text.Normalizer.normalize(texts[id], java.text.Normalizer.Form.NFKC))) {
+                out.add(Candidate(texts[id], code.length))
+            }
         }
         return out
     }
