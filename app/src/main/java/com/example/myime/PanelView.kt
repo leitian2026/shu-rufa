@@ -185,7 +185,7 @@ abstract class PanelView(context: Context) : View(context) {
         fixedHeight = context.keyboardHeightPx()
         iconW = context.dpf(if (wide) 13f else 11f)
         iconH = context.dpf(if (wide) 9f else 8f)
-        barText.textSize = context.spf(if (wide) 17f else 14f)
+        barText.textSize = context.spf(if (wide) 15f else 13f)
         tabText.textSize = context.spf(if (wide) 22f else 18f)
         iconPaint.strokeWidth = context.dpf(1.8f)
         barBase = baseline(barText)
@@ -240,15 +240,17 @@ abstract class PanelView(context: Context) : View(context) {
         if (titledHeader) {
             // 每个键的宽度跟着文字走,整组靠右排;左边留给标题
             val wide = context.isWide()
-            val minW = context.dpf(if (wide) 64f else 54f)
-            val padW = context.dpf(28f)
+            val minW = context.dpf(if (wide) 44f else 40f)
+            val padW = context.dpf(24f)
+            val btnH = context.dpf(if (wide) 34f else 30f)
+            val btnTop = top + (barH - btnH) / 2f
             val widths = FloatArray(keys.size)
             var total = 0f
             for (i in keys.indices) {
                 val k = keys[i]
                 widths[i] = when {
                     k.kind == BarKind.SPACER -> 0f
-                    k.icon == Icon.BACK -> context.dpf(if (wide) 44f else 40f)   // 返回只是个小图标
+                    k.icon == Icon.BACK -> context.dpf(if (wide) 40f else 36f)   // 返回:小图标按钮
                     else -> maxOf(minW, barText.measureText(k.label) + padW)
                 }
                 total += widths[i]
@@ -256,7 +258,7 @@ abstract class PanelView(context: Context) : View(context) {
             }
             var x = maxOf(padX, width - padX - total)
             for (i in keys.indices) {
-                barRects.add(RectF(x, top, x + widths[i], top + barH))
+                barRects.add(RectF(x, btnTop, x + widths[i], btnTop + btnH))
                 x += widths[i] + gx
             }
         } else {
@@ -321,8 +323,7 @@ abstract class PanelView(context: Context) : View(context) {
                 onFace = palette.text
             }
 
-            val plainBack = k.icon == Icon.BACK
-            if (!plainBack && (k.kind != BarKind.TAB || selected)) {
+            if (k.kind != BarKind.TAB || selected) {
                 shadowRect.set(r.left, r.top + shadowH, r.right, r.bottom + shadowH)
                 fill.color = shadow
                 canvas.drawRoundRect(shadowRect, radius, radius, fill)
@@ -340,8 +341,8 @@ abstract class PanelView(context: Context) : View(context) {
 
             if (k.icon == Icon.BACKSPACE) {
                 drawBackspace(canvas, r.centerX(), r.centerY(), onFace)
-            } else if (plainBack) {
-                drawBackArrow(canvas, r.centerX(), r.centerY(), palette.accent)
+            } else if (k.icon == Icon.BACK) {
+                drawBackArrow(canvas, r.centerX(), r.centerY(), onFace)
             } else if (k.label.isNotEmpty()) {
                 if (k.kind == BarKind.TAB) {
                     tabText.color = onFace
@@ -428,7 +429,7 @@ abstract class PanelView(context: Context) : View(context) {
     private fun barHit(x: Float, y: Float): Int {
         val keys = barKeys
         if (barRects.size != keys.size) return -1
-        val slop = context.dpf(3f)
+        val slop = context.dpf(if (titledHeader) 6f else 3f)
         for (i in keys.indices) {
             if (keys[i].kind == BarKind.SPACER) continue
             val r = barRects[i]
