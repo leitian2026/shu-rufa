@@ -1049,7 +1049,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun showChineseAssoc() {
         main.removeCallbacks(assocClear)
         val key = assocKey
-        if (key == null || !englishAssist || composing.isNotEmpty() ||
+        // 中文联想只在密码框关闭;网址/搜索框、声明"不要建议"的输入框(GPT、浏览器地址栏等)照样要联想。
+        // 是否记录我的用词仍由 allowLearn 单独控制。
+        if (key == null || secureField || composing.isNotEmpty() ||
             (mode != Mode.PINYIN && mode != Mode.STROKE)
         ) {
             return
