@@ -246,7 +246,11 @@ abstract class PanelView(context: Context) : View(context) {
             var total = 0f
             for (i in keys.indices) {
                 val k = keys[i]
-                widths[i] = if (k.kind == BarKind.SPACER) 0f else maxOf(minW, barText.measureText(k.label) + padW)
+                widths[i] = when {
+                    k.kind == BarKind.SPACER -> 0f
+                    k.icon == Icon.BACK -> context.dpf(if (wide) 44f else 40f)   // 返回只是个小图标
+                    else -> maxOf(minW, barText.measureText(k.label) + padW)
+                }
                 total += widths[i]
                 if (i > 0) total += gx
             }
@@ -317,7 +321,8 @@ abstract class PanelView(context: Context) : View(context) {
                 onFace = palette.text
             }
 
-            if (k.kind != BarKind.TAB || selected) {
+            val plainBack = k.icon == Icon.BACK
+            if (!plainBack && (k.kind != BarKind.TAB || selected)) {
                 shadowRect.set(r.left, r.top + shadowH, r.right, r.bottom + shadowH)
                 fill.color = shadow
                 canvas.drawRoundRect(shadowRect, radius, radius, fill)
@@ -335,6 +340,8 @@ abstract class PanelView(context: Context) : View(context) {
 
             if (k.icon == Icon.BACKSPACE) {
                 drawBackspace(canvas, r.centerX(), r.centerY(), onFace)
+            } else if (plainBack) {
+                drawBackArrow(canvas, r.centerX(), r.centerY(), palette.accent)
             } else if (k.label.isNotEmpty()) {
                 if (k.kind == BarKind.TAB) {
                     tabText.color = onFace
@@ -346,6 +353,20 @@ abstract class PanelView(context: Context) : View(context) {
             }
         }
         if (fading) postInvalidateOnAnimation()
+    }
+
+    /** 返回:一个小的向左箭头,没有按钮底色。 */
+    private fun drawBackArrow(canvas: Canvas, cx: Float, cy: Float, color: Int) {
+        iconPaint.color = color
+        val w = iconW * 0.8f
+        val h = iconH * 0.85f
+        path.reset()
+        path.moveTo(cx + w, cy)
+        path.lineTo(cx - w, cy)
+        path.moveTo(cx - w + h, cy - h)
+        path.lineTo(cx - w, cy)
+        path.lineTo(cx - w + h, cy + h)
+        canvas.drawPath(path, iconPaint)
     }
 
     private fun drawBackspace(canvas: Canvas, cx: Float, cy: Float, color: Int) {
