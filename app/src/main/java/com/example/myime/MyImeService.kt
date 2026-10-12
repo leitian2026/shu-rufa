@@ -46,8 +46,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private var boxView: FrameLayout? = null
     private var adjusting = false           // 正在「键盘调节」
 
-    // 剪贴板历史:只保存在内存里,最多 500 条,进程结束就清空,不写入存储
+    // 剪贴板历史:最多 500 条,落盘保存(ClipStore),更新版本 / 切换输入法 / 进程被回收都不会丢。
+    // 写盘有 2 秒的合并延迟:连续复制只写一次,不为每次复制都唤醒磁盘(省电)。
     private val clips = ArrayList<String>()
+    private var clipsLoaded = false         // 磁盘上的历史读回来之前,不写盘,免得用不完整的列表覆盖旧文件
+    private var clipsVersion = 0            // 每改一次加一
+    @Volatile private var clipsSavedVersion = 0
+    private val saveClipsLater = Runnable { saveClipsNow() }
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClipboardNow() }
 
     private var textMode = Mode.PINYIN      // 最近使用的文字模式(拼音/笔画/英文)
@@ -88,6 +93,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         const val KIND_PINYIN = 0
         const val KIND_STROKE = 1
         const val KIND_ENGLISH = 2
+        const val MAX_CLIP_CHARS = 5000   // 单条剪贴板最多保存的字数,更长的不收
     }
 
     private val composing = StringBuilder()
@@ -106,6 +112,55 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             // 注册失败只是没有剪贴板历史,不影响输入
         }
         loadedStamp = DictStore.stamp(applicationContext)
+        loadClips()
+    }
+
+    // ------------------------------------------------------------ 剪贴板历史落盘
+
+    /** 后台读回上次保存的历史,和这期间新复制的合并(新的在前、去重、最多 500 条)。 */
+    private fun loadClips() {
+        val ctx = applicationContext
+        worker.execute {
+            val saved = ClipStore.load(ctx)
+            main.post {
+                if (clipsLoaded) return@post
+                clipsLoaded = true
+                if (saved.isNotEmpty()) {
+                    val seen = HashSet<String>(clips)
+                    for (t in saved) {
+                        if (clips.size >= 500) break
+                        if (seen.add(t)) clips.add(t)
+                    }
+                    if (mode == Mode.CLIPBOARD) clipPanel?.setItems(clips.toList())
+                }
+                if (clips != saved) clipsChanged()   // 加载期间有新复制的,补写一次
+            }
+        }
+    }
+
+    /** 历史改了:2 秒后合并写一次盘。 */
+    private fun clipsChanged() {
+        clipsVersion++
+        if (!clipsLoaded) return
+        main.removeCallbacks(saveClipsLater)
+        main.postDelayed(saveClipsLater, 2000)
+    }
+
+    /** 立刻在后台线程写盘(键盘隐藏时调用)。 */
+    private fun saveClipsNow() {
+        main.removeCallbacks(saveClipsLater)
+        if (!clipsLoaded || clipsSavedVersion == clipsVersion) return
+        val v = clipsVersion
+        val snapshot = ArrayList(clips)
+        val ctx = applicationContext
+        try {
+            worker.execute {
+                ClipStore.save(ctx, snapshot)
+                clipsSavedVersion = v
+            }
+        } catch (e: Exception) {
+            // 线程池已关闭:onDestroy 里会同步补写
+        }
     }
 
     // ------------------------------------------------------------ 词库:按需加载、闲置释放
@@ -171,6 +226,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         super.onWindowHidden()
         main.removeCallbacks(assocClear)
         worker.execute { UserData.saveAll() }          // 学习数据只在键盘隐藏时落盘,打字过程中不写文件
+        saveClipsNow()
         main.removeCallbacks(releaseLater)
         main.postDelayed(releaseLater, 90_000)         // 隐藏 90 秒还没回来,就把词库内存还给系统
     }
@@ -191,7 +247,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         } catch (e: Exception) {
         }
         main.removeCallbacks(assocClear)
+        main.removeCallbacks(saveClipsLater)
         UserData.saveAll()
+        // 还有没写盘的剪贴板记录:这里同步写完(线程池马上要关,排在里面的写盘任务会被丢掉)
+        if (clipsLoaded && clipsSavedVersion != clipsVersion) {
+            ClipStore.save(applicationContext, ArrayList(clips))
+            clipsSavedVersion = clipsVersion
+        }
         worker.shutdownNow()
         loader.shutdownNow()
         super.onDestroy()
@@ -228,11 +290,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
             override fun onDeleteMany(texts: List<String>) {
                 clips.removeAll(texts.toSet())
+                clipsChanged()
                 clipPanel?.setItems(clips.toList())
             }
 
             override fun onClear() {
                 clips.clear()
+                clipsChanged()
                 clipPanel?.setItems(emptyList())
             }
 
@@ -453,7 +517,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     private fun toggleFloating() {
-        if (KbSize.floating) KbSize.exitFloating() else KbSize.enterFloating(this)
+        if (KbSize.floating) KbSize.exitFloating(this) else KbSize.enterFloating(this)
         KbSize.save(this)
         leavePage()
         applySizeLive()
@@ -507,7 +571,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         mode = m
         shift = false
         shiftLock = false
-        if (m == Mode.ENGLISH) shift = capsWanted(currentInputEditorInfo)
         refreshLayout(animate = true)
     }
 
@@ -573,7 +636,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             SettingsPanelView.ID_ADJUST -> {
                 // 键盘调节是给贴底模式用的,悬浮模式用顶上的拖动条
                 if (KbSize.floating) {
-                    KbSize.exitFloating()
+                    KbSize.exitFloating(this)
                     KbSize.save(this)
                     applySizeLive()
                 }
@@ -603,6 +666,24 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         assocKey = null
         main.removeCallbacks(assocClear)
         main.removeCallbacks(releaseLater)
+
+        // 悬浮键盘按应用记忆:这个应用 / 游戏上次开了悬浮,这次还是悬浮、还在上次的位置
+        var sizeChanged = false
+        val appPkg = info.packageName
+        if (!restarting || appPkg != KbSize.pkg) {
+            val f0 = KbSize.floating
+            val l0 = KbSize.leftFrac
+            val b0 = KbSize.bottomDp
+            val s0 = KbSize.scale
+            val h0 = KbSize.heightDp
+            val w0 = KbSize.widthFrac
+            KbSize.pkg = appPkg
+            KbSize.load(this)
+            sizeChanged = f0 != KbSize.floating || l0 != KbSize.leftFrac || b0 != KbSize.bottomDp ||
+                s0 != KbSize.scale || h0 != KbSize.heightDp || w0 != KbSize.widthFrac
+        }
+        if (!restarting) captureClipboardNow()   // 切到别的输入法期间复制的内容,回来时补进历史
+
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastStampCheck > 5000) {   // 连续切换输入框时不必每次都去查文件
             lastStampCheck = now
@@ -616,6 +697,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val cls = info.inputType and InputType.TYPE_MASK_CLASS
         val variation = info.inputType and InputType.TYPE_MASK_VARIATION
         secureField = false
+        var uriField = false
         var forced: Mode? = null
         when (cls) {
             InputType.TYPE_CLASS_NUMBER -> {
@@ -630,11 +712,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 ) {
                     secureField = true
                     forced = Mode.ENGLISH
-                } else if (variation == InputType.TYPE_TEXT_VARIATION_URI ||
-                    variation == InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS ||
+                } else if (variation == InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS ||
                     variation == InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS
                 ) {
                     forced = Mode.ENGLISH
+                } else if (variation == InputType.TYPE_TEXT_VARIATION_URI) {
+                    // 浏览器首页的搜索框和地址栏常是合在一起的,既要搜中文也要输网址:
+                    // 不强制英文,按我设置的默认(或上次用的)输入方式
+                    uriField = true
                 }
             }
         }
@@ -643,7 +728,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val noSuggest = cls == InputType.TYPE_CLASS_TEXT &&
             (info.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0
         val noLearn = (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0
-        englishAssist = cls == InputType.TYPE_CLASS_TEXT && !secureField && !noSuggest && forced != Mode.ENGLISH
+        englishAssist = cls == InputType.TYPE_CLASS_TEXT && !secureField && !noSuggest && forced != Mode.ENGLISH && !uriField
         allowLearn = !secureField && !noSuggest && !noLearn && DictConfig.learn(applicationContext)
 
         enterLabel = enterLabelFor(info)
@@ -655,11 +740,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
         }
         mode = forced ?: textMode
-        shift = false
+        shift = false       // 进入英文不默认大写
         shiftLock = false
-        if (mode == Mode.ENGLISH) shift = capsWanted(info)
 
         applyBoxSize()
+        if (sizeChanged) {
+            floatHandle?.refresh()
+            inputRoot?.requestLayout()   // 让系统按新的悬浮状态 / 位置重算「哪里接收触摸」
+        }
         keyboardView?.refresh()
         candidateBar?.refresh()
         candidateBar?.setComposing("")
@@ -839,8 +927,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 if (composing.isNotEmpty()) showComposing()
             }
             ic.endBatchEdit()
-            requery()
-            if (composing.isEmpty()) showChineseAssoc()
+            afterChineseCommit()
             return
         }
         commitTo(ic, " ")
@@ -912,7 +999,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         mode = textMode
         shift = false
         shiftLock = false
-        if (mode == Mode.ENGLISH) shift = capsWanted(currentInputEditorInfo)
         refreshLayout(animate = true)
     }
 
@@ -941,7 +1027,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         mode = if (secureField) Mode.ENGLISH else textMode
         shift = false
         shiftLock = false
-        if (mode == Mode.ENGLISH) shift = capsWanted(currentInputEditorInfo)
         refreshLayout(animate = true)
     }
 
@@ -1064,7 +1149,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
      * 拼音/笔画:上屏一个词之后,在候选栏给出联想:我自己接过的词在前,词库里以它开头的词的后半截在后。
      * 词库没加载就先加载(加载完会再来一次)。查询放在词库线程,不堵住候选查询。
      */
-    private fun showChineseAssoc() {
+    private fun showChineseAssoc(): Boolean {
         main.removeCallbacks(assocClear)
         val key = assocKey
         // 中文联想只在密码框关闭;网址/搜索框、声明"不要建议"的输入框(GPT、浏览器地址栏等)照样要联想。
@@ -1072,7 +1157,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (key == null || secureField || composing.isNotEmpty() ||
             (mode != Mode.PINYIN && mode != Mode.STROKE)
         ) {
-            return
+            return false
         }
         if (dictState[KIND_PINYIN] == 0) loadKind(KIND_PINYIN)
         val prev = prevChinese
@@ -1105,6 +1190,23 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 }
             }
         }
+        return true
+    }
+
+    /**
+     * 上屏一个词之后的收尾。还有没上屏的拼音/笔画就接着查候选;组合区空了就查联想。
+     * 联想结果回来之前不先把候选栏清空,回来后直接替换,这样不会出现 候选 → 工具栏 → 联想 的一闪。
+     */
+    private fun afterChineseCommit() {
+        if (composing.isNotEmpty()) {
+            requery()
+            return
+        }
+        queryGen++
+        onComposingChanged()
+        val started = showChineseAssoc()
+        // 没有联想可查,或词库还没加载好(要等一会儿):照旧先清空,免得旧候选摆在那里点不动
+        if (!started || pinyinEngine == null) applyCandidates("", emptyList())
     }
 
     private fun showComposing() {
@@ -1193,8 +1295,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         composing.delete(0, c.consumed.coerceIn(1, composing.length))
         if (composing.isNotEmpty()) showComposing()
         ic.endBatchEdit()
-        requery()
-        if (composing.isEmpty()) showChineseAssoc()
+        afterChineseCommit()
         afterCommit()
     }
 
@@ -1431,10 +1532,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             if (!desc.hasMimeType("text/*")) return
             if (desc.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true) return
             val text = clip.getItemAt(0).coerceToText(this)?.toString() ?: return
-            if (text.isBlank() || text.length > 5000) return
+            if (text.isBlank() || text.length > MAX_CLIP_CHARS) return
+            if (clips.firstOrNull() == text) return   // 已经在最前面,什么都不用动(也不用写盘)
             clips.remove(text)
             clips.add(0, text)
             while (clips.size > 500) clips.removeAt(clips.size - 1)
+            clipsChanged()
             if (mode == Mode.CLIPBOARD) clipPanel?.setItems(clips.toList())
         } catch (e: Exception) {
             // 没有读取权限(例如当前不是默认输入法)时直接忽略
@@ -1454,6 +1557,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun capsWanted(info: EditorInfo?): Boolean {
         if (info == null || secureField) return false
         val ic = currentInputConnection ?: return false
+        // 输入框是空的(或光标在最前面)不自动大写;只在打完一句话之后下一个字母才自动大写
+        if (ic.getTextBeforeCursor(1, 0).isNullOrEmpty()) return false
         return ic.getCursorCapsMode(info.inputType) != 0
     }
 
