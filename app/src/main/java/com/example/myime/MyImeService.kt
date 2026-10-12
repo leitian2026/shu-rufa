@@ -394,7 +394,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             box.scaleY = 1f
             box.translationX = 0f
             box.translationY = 0f
-            if (root != null && root.minimumHeight != 0) root.minimumHeight = 0
+            // 调节键盘大小的过程中,窗口固定成整屏高,键盘在里面变大变小;
+            // 否则每一帧都要让系统重新给窗口定尺寸,画面就会一跳一跳的
+            val wantMin = if (adjusting) dm.heightPixels else 0
+            if (root != null && root.minimumHeight != wantMin) root.minimumHeight = wantMin
             val w = (sw * KbSize.widthFrac).toInt().coerceAtLeast(1)
             val l = (sw * KbSize.leftFrac).toInt()
             val b = dpi(KbSize.bottomDp)
@@ -417,15 +420,17 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         super.onComputeInsets(outInsets)
         val box = boxView ?: return
         val root = inputRoot ?: return
-        if (!KbSize.floating || box.width == 0 || box.height == 0 || root.height == 0) return
+        if (box.width == 0 || box.height == 0 || root.height == 0) return
+        if (!KbSize.floating && !adjusting) return
         val decorH = window?.window?.decorView?.height ?: return
         val loc = IntArray(2)
         root.getLocationInWindow(loc)
-        val s = box.scaleX
+        val s = if (KbSize.floating) box.scaleX else 1f
         val w = (box.width * s).toInt()
         val h = (box.height * s).toInt()
-        val left = loc[0] + box.translationX.toInt()
-        val bottom = loc[1] + root.height + box.translationY.toInt()
+        val lp = box.layoutParams as FrameLayout.LayoutParams
+        val left = loc[0] + lp.leftMargin + box.translationX.toInt()
+        val bottom = loc[1] + root.height - lp.bottomMargin + box.translationY.toInt()
         outInsets.contentTopInsets = decorH
         outInsets.visibleTopInsets = decorH
         outInsets.touchableInsets = InputMethodService.Insets.TOUCHABLE_INSETS_REGION
@@ -454,6 +459,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         leavePage()                // 回到打字键盘,在它上面调
         adjusting = true
         adjustOverlay?.visibility = View.VISIBLE
+        applyBoxSize()
+        inputRoot?.requestLayout()
     }
 
     /** save=false:放弃这次拖动,恢复到上次保存的尺寸。 */
@@ -465,8 +472,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             KbSize.save(this)
         } else {
             KbSize.load(this)
-            applySizeLive()
         }
+        applySizeLive()   // 窗口恢复成按键盘实际高度,应用界面这时才跟着调整一次
+        inputRoot?.requestLayout()
     }
 
     // ------------------------------------------------------------ 功能页
