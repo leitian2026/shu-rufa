@@ -192,6 +192,8 @@ class CandidateBarView(
             return
         }
 
+        // 内容没变就不重排、不重画、不回滚到开头(也少做一次无谓的绘制)
+        if (targetVisible && list == items) return
         items = list
         relayout()
         scroller.forceFinished(true)
