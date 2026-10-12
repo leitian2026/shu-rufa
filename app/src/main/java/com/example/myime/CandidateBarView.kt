@@ -17,7 +17,7 @@ import android.widget.OverScroller
 /**
  * 键盘上方的两条白色区域(高度固定,不会跳动):
  *  - 上条:拼音 / 笔画的预览文字
- *  - 下条:没有候选时是工具栏图标;有候选时是候选词(第一个蓝色),两者用同一个动画淡入淡出
+ *  - 下条:没有候选时是工具栏图标;有候选时是候选词(第一个蓝色),右边多一个「关闭候选区」的小按钮(没有候选就不显示)
  *
  * 候选内容每次按键都会更新,但"有候选 ↔ 无候选"之间才做动画,避免每个字母触发一次。
  */
@@ -25,6 +25,7 @@ class CandidateBarView(
     context: Context,
     private val onPick: (Int) -> Unit,
     private val onTool: (Int) -> Unit,
+    private val onClose: () -> Unit,
 ) : View(context) {
 
     private var palette = Palette(context)
@@ -48,6 +49,7 @@ class CandidateBarView(
     private var itemPad = 0f
     private var fixedHeight = 0
     private var iconU = 0f
+    private var closeW = 0f      // 候选条右边留给关闭按钮的宽度
 
     private val candPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private val composePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
@@ -99,6 +101,10 @@ class CandidateBarView(
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
             if (!targetVisible || e.y < stripH) return false
+            if (e.x >= width - closeW) {   // 右边的关闭按钮
+                onClose()
+                return true
+            }
             val x = e.x - inset + offset
             for (i in items.indices) {
                 if (x >= xs[i] && x < xs[i + 1]) {
@@ -126,6 +132,7 @@ class CandidateBarView(
         inset = context.dpf(if (wide) 31f else 8f)
         itemPad = context.dpf(if (wide) 20f else 14f)
         iconU = context.dpf(if (wide) 11f else 10f)
+        closeW = context.dpf(if (wide) 56f else 42f)
         fixedHeight = (stripH + rowH).toInt()
 
         candPaint.textSize = context.spf(if (wide) 24f else 20f)
@@ -136,7 +143,7 @@ class CandidateBarView(
         composeBase = baseline(composePaint)
     }
 
-    private fun maxOffset(): Float = (contentWidth + inset * 2 - width).coerceAtLeast(0f)
+    private fun maxOffset(): Float = (contentWidth + inset + closeW - width).coerceAtLeast(0f)
 
     /** 每次开始输入时调用:跟随深色模式、屏幕宽度变化。 */
     fun refresh() {
@@ -233,7 +240,26 @@ class CandidateBarView(
 
         // 下条:工具栏 ⇄ 候选
         if (contentAlpha < 1f) drawToolbar(canvas, 1f - contentAlpha)
-        if (items.isNotEmpty() && contentAlpha > 0f) drawCandidates(canvas)
+        if (items.isNotEmpty() && contentAlpha > 0f) {
+            canvas.save()
+            canvas.clipRect(0f, stripH, width - closeW, height.toFloat())   // 候选词不压到关闭按钮
+            drawCandidates(canvas)
+            canvas.restore()
+            drawClose(canvas)
+        }
+    }
+
+    /** 圆圈里一个 ×。 */
+    private fun drawClose(canvas: Canvas) {
+        val cx = width - closeW / 2f
+        val cy = stripH + rowH / 2f
+        val r = iconU * 0.85f
+        val d = r * 0.38f
+        iconPaint.color = palette.icon
+        iconPaint.alpha = (contentAlpha * 255f).toInt()
+        canvas.drawCircle(cx, cy, r, iconPaint)
+        canvas.drawLine(cx - d, cy - d, cx + d, cy + d, iconPaint)
+        canvas.drawLine(cx + d, cy - d, cx - d, cy + d, iconPaint)
     }
 
     private fun drawCandidates(canvas: Canvas) {
