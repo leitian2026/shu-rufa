@@ -2209,6 +2209,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 settingsPanel?.visibility = View.GONE
                 choicePanel?.visibility = View.GONE
                 kb.visibility = View.VISIBLE
+                // 光标编辑页和表情/符号/功能页一样盖住候选栏,和整个键盘一样大;其他键盘页候选栏照常显示
+                val coverBar = mode == Mode.EDIT
+                kb.extraTopPx = if (coverBar) candidateBarHeightPx() else 0
+                candidateBar?.visibility = if (coverBar) View.GONE else View.VISIBLE
                 kb.setLayout(Layouts.build(mode, kbState(), isWide()), false)
             }
         }
@@ -2218,6 +2222,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun showPanel(panel: PanelView?, animate: Boolean) {
         if (panel == null) return
         keyboardView?.visibility = View.GONE
+        keyboardView?.extraTopPx = 0
+        // 盖住候选栏的面板(表情/符号/功能/键盘选择)把候选栏收起来;剪贴板只盖键盘区,候选栏(含工具图标)照旧
+        candidateBar?.visibility = if (panel.coversCandidateBar) View.GONE else View.VISIBLE
         for (p in listOf<PanelView?>(emojiPanel, symbolPanel, clipPanel, settingsPanel, choicePanel)) {
             if (p !== panel) p?.visibility = View.GONE
         }
