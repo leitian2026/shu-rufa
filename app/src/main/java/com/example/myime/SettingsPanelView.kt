@@ -6,7 +6,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 
 /** 格子面板里的一格:glyph 是上面的大符号,label 是下面的小字。 */
-class GridItem(val id: Int, val glyph: String, val label: String)
+class GridItem(val id: Int, val glyph: String, var label: String)
 
 /**
  * 一格一个功能的面板,用在两处:
@@ -47,6 +47,14 @@ class SettingsPanelView(
             field = v
             invalidate()
         }
+
+    /** 改某一格下面的小字(例如「翻译:微软」换成「翻译:谷歌」)。 */
+    fun setItemLabel(id: Int, label: String) {
+        val item = items.firstOrNull { x -> x.id == id } ?: return
+        if (item.label == label) return
+        item.label = label
+        invalidate()
+    }
 
     private var cols = 4
     private var gap = 0f
@@ -169,6 +177,8 @@ class SettingsPanelView(
     companion object {
         /** 功能页只放别处没有的功能:中英/拼笔/数字/符号在键盘上有键,表情/编辑/剪贴板/收起在工具栏,切换输入法在「键盘选择」里。 */
         fun settingsItems() = listOf(
+            GridItem(ID_TRANS, "译", "输入翻译"),
+            GridItem(ID_TRANS_ENGINE, "擎", "翻译:微软"),
             GridItem(ID_FLOAT, "浮", "悬浮键盘"),
             GridItem(ID_ADJUST, "↔↕", "键盘调节"),
             GridItem(ID_DICT, "库", "词库管理"),
@@ -195,6 +205,8 @@ class SettingsPanelView(
         const val ID_HIDE = 11
         const val ID_DICT = 12
         const val ID_FLOAT = 13
+        const val ID_TRANS = 14          // 输入翻译开关(打开时这一格显示主题色)
+        const val ID_TRANS_ENGINE = 15   // 主用翻译引擎:微软 ⇄ 谷歌
         const val ID_PINYIN = 21
         const val ID_STROKE = 22
         const val ID_ENGLISH = 23
