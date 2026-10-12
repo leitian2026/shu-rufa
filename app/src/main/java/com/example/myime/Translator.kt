@@ -49,7 +49,7 @@ object Translator {
     fun other(e: String): String = if (e == GOOGLE) MS else GOOGLE
 
     private const val MAX_CHARS = 3000
-    private const val FAIL_BACKOFF_MS = 60_000L
+    private const val FAIL_BACKOFF_MS = 10 * 60_000L   // 一个引擎失败后,10 分钟内先用另一个(失败的只当备用),免得每次都先白等它超时
     private const val UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/124.0.0.0 Mobile Safari/537.36 EdgA/124.0.0.0"
 
@@ -99,6 +99,18 @@ object Translator {
         }
     }
 
+    /** 先试哪个:主用引擎;但它最近 10 分钟内失败过、另一个没有,就先试另一个。 */
+    fun orderFor(primary: String): List<String> {
+        val first = if (primary == GOOGLE) GOOGLE else MS
+        val order = listOf(first, other(first))
+        val now = SystemClock.elapsedRealtime()
+        val f0 = failedAt[order[0]]
+        val f1 = failedAt[order[1]]
+        val firstBad = f0 != null && now - f0 < FAIL_BACKOFF_MS
+        val secondBad = f1 != null && now - f1 < FAIL_BACKOFF_MS
+        return if (firstBad && !secondBad) order.reversed() else order
+    }
+
     @Volatile private var warmedAt = -WARM_EVERY_MS
 
     /** 提前建立到主用引擎服务器的连接(见 MyImeService.warmTranslate)。自己开一个短命线程,不堵翻译用的线程。 */
@@ -106,7 +118,8 @@ object Translator {
         val now = SystemClock.elapsedRealtime()
         if (now - warmedAt < WARM_EVERY_MS) return
         warmedAt = now
-        val base = if (primary == GOOGLE) gUrl.ifBlank { DEF_G_FREE } else msUrl.ifBlank { DEF_MS_FREE }
+        val base = if (orderFor(primary)[0] == GOOGLE) gUrl.ifBlank { DEF_G_FREE } else msUrl.ifBlank { DEF_MS_FREE }
+        val eng = orderFor(primary)[0]
         Thread {
             try {
                 val u = URL(base)
@@ -118,6 +131,10 @@ object Translator {
                 if (c.responseCode < 400) c.inputStream.close() else c.errorStream?.close()
             } catch (t: Throwable) {
                 warmedAt = -WARM_EVERY_MS   // 没成功:下次还可以再试
+                // 连都连不上(超时 / 域名失败):记一笔,真正翻译时就先用另一个引擎,不再白等
+                if (t is java.net.SocketTimeoutException || t is java.net.UnknownHostException || t is java.net.ConnectException) {
+                    failedAt[eng] = SystemClock.elapsedRealtime()
+                }
             }
         }.start()
     }
@@ -138,14 +155,7 @@ object Translator {
     fun translate(textIn: String, p: LangPair, primary: String, cancelled: () -> Boolean = { false }): TransResult? {
         val text = if (textIn.length > MAX_CHARS) textIn.substring(0, MAX_CHARS) else textIn
         cache.get(key(text, p))?.let { return TransResult(it, "cache") }
-        val first = if (primary == GOOGLE) GOOGLE else MS
-        var order = listOf(first, other(first))
-        val now = SystemClock.elapsedRealtime()
-        val f0 = failedAt[order[0]]
-        val f1 = failedAt[order[1]]
-        val firstBad = f0 != null && now - f0 < FAIL_BACKOFF_MS
-        val secondBad = f1 != null && now - f1 < FAIL_BACKOFF_MS
-        if (firstBad && !secondBad) order = order.reversed()
+        val order = orderFor(primary)
         reasons.clear()
         for (e in order) {
             if (cancelled()) return null   // 原文已经又变了:不再发请求(也不再换备用引擎)
