@@ -7,12 +7,14 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.text.InputType
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import java.util.concurrent.Executors
 
@@ -28,8 +30,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private var candidateBar: CandidateBarView? = null
     private var emojiPanel: EmojiPanelView? = null
     private var clipPanel: ClipboardPanelView? = null
+    private var settingsPanel: SettingsPanelView? = null
+    private var choicePanel: SettingsPanelView? = null     // 键盘选择(拼音/笔画/英文)
+    private var adjustOverlay: AdjustOverlayView? = null
+    private var boxView: FrameLayout? = null
+    private var adjusting = false           // 正在「键盘调节」
 
-    // 剪贴板历史:只保存在内存里,最多 30 条,进程结束就清空,不写入存储
+    // 剪贴板历史:只保存在内存里,最多 500 条,进程结束就清空,不写入存储
     private val clips = ArrayList<String>()
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClipboardNow() }
 
@@ -37,7 +44,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private var chineseMode = Mode.PINYIN   // 最近使用的中文方式(拼音/笔画)
     private var mode = Mode.PINYIN          // 当前显示的页面(也可能是符号/数字/编辑)
     private var secureField = false         // 密码框:只允许英文/符号,不使用组合区
-    private var shift = false
+    private var shift = false              // 字母显示/输入大写
+    private var shiftLock = false           // true = 锁定大写;false 且 shift=true = 只大写下一个字母
     private var selecting = false           // 光标编辑页的「选择」状态
     private var enterLabel: String? = null  // null = 用回车图标
     private var layoutComposing = false
@@ -51,6 +59,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     override fun onCreate() {
         super.onCreate()
+        KbSize.load(this)
         try {
             (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).addPrimaryClipChangedListener(clipListener)
         } catch (e: Exception) {
@@ -111,14 +120,52 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 leavePage()
             }
         })
+        val settings = SettingsPanelView(this, SettingsPanelView.settingsItems(), null, object : SettingsPanelView.Listener {
+            override fun onAction(id: Int) {
+                onSettingsAction(id)
+            }
+
+            override fun onBack() {
+                leavePage()
+            }
+        })
+        val choice = SettingsPanelView(this, SettingsPanelView.keyboardItems(), "键盘选择", object : SettingsPanelView.Listener {
+            override fun onAction(id: Int) {
+                onChoiceAction(id)
+            }
+
+            override fun onBack() {
+                leavePage()
+            }
+        })
+        val overlay = AdjustOverlayView(this, object : AdjustOverlayView.Listener {
+            override fun onAdjust() {
+                applySizeLive()
+            }
+
+            override fun onReset() {
+                KbSize.reset()
+                applySizeLive()
+            }
+
+            override fun onConfirm() {
+                exitAdjust(save = true)
+            }
+        })
         emoji.visibility = View.GONE
         clip.visibility = View.GONE
+        settings.visibility = View.GONE
+        choice.visibility = View.GONE
+        overlay.visibility = View.GONE
         candidateBar = bar
         keyboardView = kb
         emojiPanel = emoji
         clipPanel = clip
-        refreshLayout(animate = false)
-        return LinearLayout(this).apply {
+        settingsPanel = settings
+        choicePanel = choice
+        adjustOverlay = overlay
+
+        val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(
                 bar,
@@ -127,7 +174,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                 ),
             )
-            for (v in listOf<View>(kb, emoji, clip)) {
+            for (v in listOf<View>(kb, emoji, clip, settings, choice)) {
                 addView(
                     v,
                     LinearLayout.LayoutParams(
@@ -136,6 +183,145 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                     ),
                 )
             }
+        }
+        // box 是整个键盘(候选栏 + 键盘/面板 + 调节遮罩),宽度、左边距、离底距离由「键盘调节」决定
+        val box = FrameLayout(this).apply {
+            addView(
+                col,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+            addView(
+                overlay,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        }
+        boxView = box
+        val root = FrameLayout(this).apply {
+            addView(
+                box,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.START or Gravity.BOTTOM,
+                ),
+            )
+        }
+        applyBoxSize()
+        refreshLayout(animate = false)
+        return root
+    }
+
+    // ------------------------------------------------------------ 键盘调节
+
+    /** 把 KbSize 里的宽度、左边距、离底距离应用到 box 上。 */
+    private fun applyBoxSize() {
+        val box = boxView ?: return
+        val sw = resources.displayMetrics.widthPixels
+        val lp = box.layoutParams as FrameLayout.LayoutParams
+        lp.width = (sw * KbSize.widthFrac).toInt().coerceAtLeast(1)
+        lp.leftMargin = (sw * KbSize.leftFrac).toInt()
+        lp.bottomMargin = dpi(KbSize.bottomDp)
+        lp.gravity = Gravity.START or Gravity.BOTTOM
+        box.layoutParams = lp
+    }
+
+    /** 拖动过程中实时生效:位置/宽度走布局参数,高度要让键盘和各面板重新取一次。 */
+    private fun applySizeLive() {
+        applyBoxSize()
+        keyboardView?.refresh()
+        for (p in listOf<PanelView?>(emojiPanel, clipPanel, settingsPanel, choicePanel)) {
+            if (p != null && p.visibility == View.VISIBLE) p.refresh()
+        }
+    }
+
+    private fun enterAdjust() {
+        leavePage()                // 回到打字键盘,在它上面调
+        adjusting = true
+        adjustOverlay?.visibility = View.VISIBLE
+    }
+
+    /** save=false:放弃这次拖动,恢复到上次保存的尺寸。 */
+    private fun exitAdjust(save: Boolean) {
+        if (!adjusting) return
+        adjusting = false
+        adjustOverlay?.visibility = View.GONE
+        if (save) {
+            KbSize.save(this)
+        } else {
+            KbSize.load(this)
+            applySizeLive()
+        }
+    }
+
+    // ------------------------------------------------------------ 功能页
+
+    /** 切到指定的文字模式(拼音 / 笔画 / 英文),并回到键盘页。密码框只允许英文。 */
+    private fun setTextMode(m: Mode) {
+        if (secureField && m != Mode.ENGLISH) {
+            leavePage()
+            return
+        }
+        flushRawNow()
+        selecting = false
+        textMode = m
+        if (m != Mode.ENGLISH) chineseMode = m
+        mode = m
+        shift = false
+        shiftLock = false
+        if (m == Mode.ENGLISH) shift = capsWanted(currentInputEditorInfo)
+        refreshLayout(animate = true)
+    }
+
+    private fun onChoiceAction(id: Int) {
+        when (id) {
+            SettingsPanelView.ID_PINYIN -> setTextMode(Mode.PINYIN)
+            SettingsPanelView.ID_STROKE -> setTextMode(Mode.STROKE)
+            SettingsPanelView.ID_ENGLISH -> setTextMode(Mode.ENGLISH)
+            SettingsPanelView.ID_PICKER -> {
+                leavePage()
+                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
+            }
+        }
+    }
+
+    private fun onSettingsAction(id: Int) {
+        when (id) {
+            SettingsPanelView.ID_LANG -> {
+                leavePage()
+                toggleLang()
+            }
+            SettingsPanelView.ID_METHOD -> {
+                leavePage()
+                if (!secureField) {
+                    if (mode == Mode.ENGLISH) {
+                        // 英文下点「拼音笔画」:回到中文,并换成另一种中文方式
+                        chineseMode = if (chineseMode == Mode.STROKE) Mode.PINYIN else Mode.STROKE
+                        toggleLang()
+                    } else {
+                        switchMethod()
+                    }
+                }
+            }
+            SettingsPanelView.ID_NUMBER -> gotoPage(Mode.NUMBER)
+            SettingsPanelView.ID_SYMBOL -> gotoPage(Mode.SYMBOL)
+            SettingsPanelView.ID_EMOJI -> gotoPage(Mode.EMOJI)
+            SettingsPanelView.ID_CLIP -> gotoPage(Mode.CLIPBOARD)
+            SettingsPanelView.ID_EDIT -> gotoPage(Mode.EDIT)
+            SettingsPanelView.ID_IME -> {
+                leavePage()
+                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
+            }
+            SettingsPanelView.ID_ADJUST -> enterAdjust()
+            SettingsPanelView.ID_APP -> {
+                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+            SettingsPanelView.ID_HIDE -> requestHideSelf(0)
         }
     }
 
@@ -177,8 +363,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         enterLabel = enterLabelFor(info)
         mode = forced ?: textMode
         shift = false
+        shiftLock = false
         if (mode == Mode.ENGLISH) shift = capsWanted(info)
 
+        applyBoxSize()
         keyboardView?.refresh()
         candidateBar?.refresh()
         candidateBar?.setComposing("")
@@ -188,6 +376,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     override fun onFinishInput() {
         super.onFinishInput()
+        exitAdjust(save = false)
         composing.clear()
         queryGen++
         applyCandidates("", emptyList())
@@ -229,7 +418,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 else -> leavePage()
             }
             ActionType.SHIFT -> {
-                shift = !shift
+                // 小写 → 锁定大写 → 下一个字母大写(打一个就自动变回小写) → 小写
+                if (!shift) {
+                    shift = true
+                    shiftLock = true
+                } else if (shiftLock) {
+                    shiftLock = false
+                } else {
+                    shift = false
+                }
                 refreshLayout(animate = false)
             }
             ActionType.EDIT -> onEdit(spec.value)
@@ -344,6 +541,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         mode = textMode
         shift = false
+        shiftLock = false
         if (mode == Mode.ENGLISH) shift = capsWanted(currentInputEditorInfo)
         refreshLayout(animate = true)
     }
@@ -372,6 +570,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         selecting = false
         mode = if (secureField) Mode.ENGLISH else textMode
         shift = false
+        shiftLock = false
         if (mode == Mode.ENGLISH) shift = capsWanted(currentInputEditorInfo)
         refreshLayout(animate = true)
     }
@@ -379,10 +578,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun onTool(tool: Int) {
         when (tool) {
             CandidateBarView.TOOL_SETTINGS -> {
-                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                if (mode == Mode.SETTINGS) leavePage() else gotoPage(Mode.SETTINGS)
             }
             CandidateBarView.TOOL_SWITCH_IME -> {
-                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
+                if (mode == Mode.KEYBOARD) leavePage() else gotoPage(Mode.KEYBOARD)
             }
             CandidateBarView.TOOL_EMOJI -> {
                 if (mode == Mode.EMOJI) leavePage() else gotoPage(Mode.EMOJI)
@@ -451,7 +650,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         'p' -> '丿'
         'n' -> '丶'
         '*' -> '*'
-        else -> '乙'
+        else -> 'ㄥ'
     }
 
     private fun showComposing() {
@@ -552,7 +751,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     // ------------------------------------------------------------ 其他
 
-    private fun kbState() = KbState(enterLabel, shift, composing.isNotEmpty(), selecting)
+    private fun kbState() = KbState(enterLabel, shift, composing.isNotEmpty(), selecting, shiftLock)
 
     private fun refreshLayout(animate: Boolean) {
         val kb = keyboardView ?: return
@@ -561,18 +760,31 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 Mode.EMOJI -> CandidateBarView.TOOL_EMOJI
                 Mode.EDIT -> CandidateBarView.TOOL_EDIT
                 Mode.CLIPBOARD -> CandidateBarView.TOOL_CLIPBOARD
+                Mode.SETTINGS -> CandidateBarView.TOOL_SETTINGS
+                Mode.KEYBOARD -> CandidateBarView.TOOL_SWITCH_IME
                 else -> -1
             },
         )
         when (mode) {
-            Mode.EMOJI -> showPanel(emojiPanel, clipPanel, animate)
+            Mode.EMOJI -> showPanel(emojiPanel, animate)
             Mode.CLIPBOARD -> {
                 clipPanel?.setItems(clips.toList())
-                showPanel(clipPanel, emojiPanel, animate)
+                showPanel(clipPanel, animate)
+            }
+            Mode.SETTINGS -> showPanel(settingsPanel, animate)
+            Mode.KEYBOARD -> {
+                choicePanel?.selectedId = when (textMode) {
+                    Mode.STROKE -> SettingsPanelView.ID_STROKE
+                    Mode.ENGLISH -> SettingsPanelView.ID_ENGLISH
+                    else -> SettingsPanelView.ID_PINYIN
+                }
+                showPanel(choicePanel, animate)
             }
             else -> {
                 emojiPanel?.visibility = View.GONE
                 clipPanel?.visibility = View.GONE
+                settingsPanel?.visibility = View.GONE
+                choicePanel?.visibility = View.GONE
                 kb.visibility = View.VISIBLE
                 kb.setLayout(Layouts.build(mode, kbState(), isWide()), animate)
             }
@@ -580,10 +792,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     /** 面板和键盘同一时间只显示一个,高度相同,所以切换时不会跳动。 */
-    private fun showPanel(panel: PanelView?, other: PanelView?, animate: Boolean) {
+    private fun showPanel(panel: PanelView?, animate: Boolean) {
         if (panel == null) return
         keyboardView?.visibility = View.GONE
-        other?.visibility = View.GONE
+        for (p in listOf<PanelView?>(emojiPanel, clipPanel, settingsPanel, choicePanel)) {
+            if (p !== panel) p?.visibility = View.GONE
+        }
         val wasVisible = panel.visibility == View.VISIBLE
         panel.visibility = View.VISIBLE
         if (!wasVisible) panel.onShow(animate)
@@ -602,7 +816,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             if (text.isBlank() || text.length > 5000) return
             clips.remove(text)
             clips.add(0, text)
-            while (clips.size > 30) clips.removeAt(clips.size - 1)
+            while (clips.size > 500) clips.removeAt(clips.size - 1)
             if (mode == Mode.CLIPBOARD) clipPanel?.setItems(clips.toList())
         } catch (e: Exception) {
             // 没有读取权限(例如当前不是默认输入法)时直接忽略
@@ -611,6 +825,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     private fun afterCommit() {
         if (mode != Mode.ENGLISH) return
+        if (shiftLock) return   // 锁定大写:一直大写,不自动变回
         val want = capsWanted(currentInputEditorInfo)
         if (want != shift) {
             shift = want
