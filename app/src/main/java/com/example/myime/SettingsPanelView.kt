@@ -53,7 +53,7 @@ class SettingsPanelView(
     private var cellH = 0f
 
     override val barKeys: List<BarKey> by lazy {
-        listOf(BarKey(ID_BACK_KEY, "返回", 1.6f, BarKind.PRIMARY))
+        listOf(BarKey(ID_BACK_KEY, "", 0.7f, BarKind.PRIMARY, icon = Icon.BACK))
     }
 
     override val titledHeader: Boolean get() = true
