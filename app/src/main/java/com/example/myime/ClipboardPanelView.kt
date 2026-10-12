@@ -60,7 +60,7 @@ class ClipboardPanelView(
     override val titledHeader: Boolean get() = true
 
     private fun normalBar() = listOf(
-        BarKey(ID_BACK, "返回", 1.6f, BarKind.PRIMARY),
+        BarKey(ID_BACK, "", 0.7f, BarKind.PRIMARY, icon = Icon.BACK),
         BarKey(ID_CLEAR, "清空", 1.6f, BarKind.FUNCTION),
     )
 
