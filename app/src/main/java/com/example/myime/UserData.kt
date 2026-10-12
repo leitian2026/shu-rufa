@@ -16,6 +16,7 @@ class UserFreq(private val file: File) {
     private val byText = ConcurrentHashMap<String, Int>()
     private val byPair = ConcurrentHashMap<String, Int>() // "输入的编码\t词" -> 次数
     private var dirty = false
+    private var events = 0
     @Volatile private var loaded = false
 
     @Synchronized
@@ -64,7 +65,17 @@ class UserFreq(private val file: File) {
         val k = "$code\t$text"
         byPair[k] = (byPair[k] ?: 0) + 1
         dirty = true
+        if (++events >= DECAY_EVERY) age()
         if (byText.size > MAX_ENTRIES) prune()
+    }
+
+    /** 每学 DECAY_EVERY 次,所有次数乘 3/4:近期的选择比很久以前的更重要,只选过一次的偏好会慢慢淡掉。 */
+    private fun age() {
+        events = 0
+        byText.replaceAll { _, v -> v * 3 / 4 }
+        byPair.replaceAll { _, v -> v * 3 / 4 }
+        byText.values.removeIf { it <= 0 }
+        byPair.values.removeIf { it <= 0 }
     }
 
     private fun prune() {
@@ -108,16 +119,18 @@ class UserFreq(private val file: File) {
 
     private companion object {
         const val MAX_ENTRIES = 20_000
+        const val DECAY_EVERY = 300
     }
 }
 
 /** 英文用:记打过的词、选过的词、词和词的先后关系(用于联想)。词库里没有的新词出现 2 次才收。 */
 class UserEnglish(private val file: File) {
-    private val words = HashMap<String, Int>()         // 小写词 -> 次数
+    private val words = java.util.TreeMap<String, Int>()  // 小写词 -> 次数(有序,按前缀查找不用扫全表)
     private val display = HashMap<String, String>()    // 小写词 -> 写法(只记词库里没有的词)
     private val pending = HashMap<String, Int>()       // 词库里没有的词,还没到 2 次
     private val bigrams = HashMap<String, HashMap<String, Int>>() // 前词 -> (后词 -> 次数)
     private var dirty = false
+    private var events = 0
     private var loaded = false
 
     private fun ensureLoaded() {
@@ -172,7 +185,7 @@ class UserEnglish(private val file: File) {
     fun prefixWords(prefix: String): List<Pair<String, Int>> {
         ensureLoaded()
         val out = ArrayList<Pair<String, Int>>()
-        for ((w, c) in words) if (w.startsWith(prefix)) out.add(Pair(w, c))
+        for ((w, c) in words.subMap(prefix, prefix + '\uffff')) out.add(Pair(w, c))
         return out
     }
 
@@ -181,7 +194,7 @@ class UserEnglish(private val file: File) {
     fun nextWords(prev: String): List<Pair<String, Int>> {
         ensureLoaded()
         val m = bigrams[prev] ?: return emptyList()
-        return m.entries.sortedByDescending { it.value }.take(6).map { Pair(it.key, it.value) }
+        return m.entries.sortedByDescending { it.value }.take(8).map { Pair(it.key, it.value) }
     }
 
     /** known:这个词在词库里。word 是用户实际打出来的写法。 */
@@ -208,7 +221,32 @@ class UserEnglish(private val file: File) {
             m[lower] = (m[lower] ?: 0) + 1
         }
         dirty = true
+        if (++events >= DECAY_EVERY) age()
         if (words.size > MAX_WORDS) prune()
+    }
+
+    /** 每学 DECAY_EVERY 次,所有次数乘 3/4,近期习惯权重更高。 */
+    private fun age() {
+        events = 0
+        val wi = words.entries.iterator()
+        while (wi.hasNext()) {
+            val e = wi.next()
+            val v = e.value * 3 / 4
+            if (v <= 0) wi.remove() else e.setValue(v)
+        }
+        display.keys.retainAll(words.keys)
+        val rows = bigrams.entries.iterator()
+        while (rows.hasNext()) {
+            val row = rows.next()
+            if (!words.containsKey(row.key)) { rows.remove(); continue }
+            val cols = row.value.entries.iterator()
+            while (cols.hasNext()) {
+                val e = cols.next()
+                val v = e.value * 3 / 4
+                if (v <= 0 || !words.containsKey(e.key)) cols.remove() else e.setValue(v)
+            }
+            if (row.value.isEmpty()) rows.remove()
+        }
     }
 
     private fun prune() {
@@ -257,6 +295,7 @@ class UserEnglish(private val file: File) {
 
     private companion object {
         const val MAX_WORDS = 20_000
+        const val DECAY_EVERY = 300
     }
 }
 
@@ -267,6 +306,7 @@ class UserEnglish(private val file: File) {
 class UserChain(private val file: File) {
     private val map = ConcurrentHashMap<String, ConcurrentHashMap<String, Int>>()
     private var dirty = false
+    private var events = 0
     private var sincePrune = 0
     @Volatile private var loaded = false
 
@@ -291,11 +331,26 @@ class UserChain(private val file: File) {
         }
     }
 
-    /** prev 之后我最常接的词,最多 6 个。 */
-    fun next(prev: String): List<String> {
+    /**
+     * 上下文行:上上个词+上一个词(两词上下文,权重 3 倍)和上一个词(一词上下文)后面我接过的词,合并成 词 -> 分。
+     * 没有记录返回 null。两词上下文数据少但更准,一词上下文覆盖广,两个一起用。
+     */
+    fun ctxRow(prev2: String?, prev: String?): Map<String, Int>? {
+        if (prev == null) return null
         if (!loaded) ensureLoaded()
-        val m = map[prev] ?: return emptyList()
-        return m.entries.sortedByDescending { it.value }.take(6).map { it.key }
+        val one = map[prev]
+        val two = if (prev2 != null) map[prev2 + SEP + prev] else null
+        if (one == null && two == null) return null
+        val out = HashMap<String, Int>()
+        if (one != null) for ((w, c) in one) out[w] = c
+        if (two != null) for ((w, c) in two) out[w] = (out[w] ?: 0) + c * 3
+        return out
+    }
+
+    /** 联想:接在这个(或这两个)词后面,我最常打的词,最多 8 个。 */
+    fun next(prev2: String?, prev: String): List<String> {
+        val row = ctxRow(prev2, prev) ?: return emptyList()
+        return row.entries.sortedByDescending { it.value }.take(8).map { it.key }
     }
 
     @Synchronized
@@ -307,9 +362,22 @@ class UserChain(private val file: File) {
         val m = map.getOrPut(prev) { ConcurrentHashMap() }
         m[next] = (m[next] ?: 0) + 1
         dirty = true
+        if (++events >= DECAY_EVERY) age()
         if (++sincePrune >= 500) {
             sincePrune = 0
             if (count() > MAX_PAIRS) prune()
+        }
+    }
+
+    /** 每学 DECAY_EVERY 次,所有次数乘 3/4,近期习惯权重更高。 */
+    private fun age() {
+        events = 0
+        val rows = map.entries.iterator()
+        while (rows.hasNext()) {
+            val row = rows.next()
+            row.value.replaceAll { _, v -> v * 3 / 4 }
+            row.value.values.removeIf { it <= 0 }
+            if (row.value.isEmpty()) rows.remove()
         }
     }
 
@@ -356,8 +424,10 @@ class UserChain(private val file: File) {
         file.delete()
     }
 
-    private companion object {
-        const val MAX_PAIRS = 20_000
+    companion object {
+        const val SEP = '\u0001'   // 两词上下文的分隔符(不会出现在词里,也不是制表/换行)
+        private const val MAX_PAIRS = 20_000
+        private const val DECAY_EVERY = 300
     }
 }
 
