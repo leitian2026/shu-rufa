@@ -3,6 +3,9 @@ package com.example.myime
 import android.content.ClipboardManager
 import android.content.ComponentCallbacks2
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
@@ -14,6 +17,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputConnectionWrapper
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -46,6 +50,29 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private var inputRoot: FrameLayout? = null
     private var boxView: FrameLayout? = null
     private var adjusting = false           // 正在「键盘调节」
+
+    // 输入翻译:翻译开着时,键盘打的字都先进翻译框(transBuf);停一下就拿去翻译,译文实时写进目标输入框(当作组合区);
+    // 点「完成」/ 回车 = 译文留在目标输入框里,翻译框清空。所有对输入框的操作都经过 getCurrentInputConnection(),
+    // 翻译开着时它返回一个 TransIc,把「上屏 / 退格 / 回车」改成对翻译框的操作,其余代码不用改。
+    private var transBar: TranslateBarView? = null
+    private var transOn = false             // 设置里的开关
+    private var transAllowed = false        // 当前输入框能不能用(密码 / 数字 / 邮箱框不能)
+    private var transActive = false         // transOn && transAllowed:键盘变绿、翻译框显示、打字进翻译框
+    private val transBuf = StringBuilder()  // 翻译框里的原文
+    private var transSrc = ""               // 目标输入框里现在这份译文对应的原文
+    private var transShown = ""             // 目标输入框里现在的译文(组合区)
+    private var transInflight: String? = null   // 正在翻译的原文,同一句不重复请求
+    @Volatile private var transGen = 0     // 原文每变一次加一,过期的翻译结果直接丢掉(后台线程也读它,排队里的过期请求不会发出去)
+    private var transStatus = TranslateBarView.STATUS_NONE
+    private var transFinishing = false      // 点了完成但译文还没回来:回来后再收尾
+    private var transFilled = false         // 翻译框有没有字(回车键上的「完成」跟着变)
+    private var transBypass = false         // true:暂时直接操作目标输入框(翻译框空时的回车 / 光标编辑页)
+    private var transPair = 0               // Translator.pairs 的序号
+    private var transIc: TransIc? = null
+    private var transIcReal: InputConnection? = null
+    private val netPool = Executors.newSingleThreadExecutor()   // 联网翻译单独一个线程(不堵候选查询);一次只发一个请求,排队里过期的直接跳过
+    private var transNetCb: ConnectivityManager.NetworkCallback? = null   // 没网时临时挂上,网络回来重试一次就摘掉
+    private val transRun = Runnable { startTranslate() }
 
     // 剪贴板历史:最多 500 条,落盘保存(ClipStore),更新版本 / 切换输入法 / 进程被回收都不会丢。
     // 写盘有 2 秒的合并延迟:连续复制只写一次,不为每次复制都唤醒磁盘(省电)。
@@ -95,6 +122,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         const val KIND_STROKE = 1
         const val KIND_ENGLISH = 2
         const val MAX_CLIP_CHARS = 5000   // 单条剪贴板最多保存的字数,更长的不收
+        const val TRANS_DEBOUNCE_MS = 600L   // 翻译框停多久才去翻:越长请求越少越省电,越短译文越跟手
     }
 
     private val composing = StringBuilder()
@@ -225,6 +253,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     override fun onWindowHidden() {
         super.onWindowHidden()
+        // 键盘收起了:没发出的翻译、没回来的请求、挂着的网络回调都放掉,不在后台耗电耗流量
+        main.removeCallbacks(transRun)
+        transGen++
+        transInflight = null
+        transFinishing = false
+        unwatchNetwork()
         main.removeCallbacks(assocClear)
         worker.execute { UserData.saveAll() }          // 学习数据只在键盘隐藏时落盘,打字过程中不写文件
         saveClipsNow()
@@ -235,6 +269,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     override fun onWindowShown() {
         super.onWindowShown()
         main.removeCallbacks(releaseLater)
+        // 收起前翻译框里还有没翻完的字:现在补翻一次
+        if (transActive && transBuf.isNotBlank() && transBuf.toString() != transSrc) {
+            transStatus = TranslateBarView.STATUS_NONE
+            startTranslate()
+        }
     }
 
     override fun onTrimMemory(level: Int) {
@@ -249,6 +288,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         main.removeCallbacks(assocClear)
         main.removeCallbacks(saveClipsLater)
+        main.removeCallbacks(transRun)
+        unwatchNetwork()
+        netPool.shutdownNow()
         UserData.saveAll()
         // 还有没写盘的剪贴板记录:这里同步写完(线程池马上要关,排在里面的写盘任务会被丢掉)
         if (clipsLoaded && clipsSavedVersion != clipsVersion) {
@@ -261,6 +303,24 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     override fun onEvaluateFullscreenMode(): Boolean = false
+
+    /**
+     * 输入翻译开着时,返回一个「假」的输入连接:上屏 / 退格 / 回车都落到翻译框里,而不是目标输入框。
+     * 本类里所有的 currentInputConnection、sendDownUpKeyEvents 都会走到这里,所以拼音 / 笔画 / 英文 / 表情 / 符号 / 剪贴板
+     * 不用各自处理。要直接操作目标输入框时用 realIc(),或临时把 transBypass 置 true。
+     */
+    override fun getCurrentInputConnection(): InputConnection? {
+        val real = super.getCurrentInputConnection() ?: return null
+        if (!transActive || transBypass) return real
+        val w = transIc
+        if (w != null && transIcReal === real) return w
+        val n = TransIc(real)
+        transIc = n
+        transIcReal = real
+        return n
+    }
+
+    private fun realIc(): InputConnection? = super.getCurrentInputConnection()
 
     override fun onCreateInputView(): View {
         val bar = CandidateBarView(
@@ -343,6 +403,32 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 leavePage()
             }
         })
+        val tbar = TranslateBarView(this, object : TranslateBarView.Listener {
+            override fun onLang() {
+                transNextLang()
+            }
+
+            override fun onClear() {
+                transClear()
+            }
+
+            override fun onDone() {
+                val ic = currentInputConnection
+                if (composing.isNotEmpty() && ic != null) {
+                    // 还有没选字的拼音/英文:先按最佳候选放进翻译框
+                    ic.beginBatchEdit()
+                    flushComposition(ic)
+                    ic.endBatchEdit()
+                }
+                transFinish()
+            }
+
+            override fun onClose() {
+                setTransOn(false)
+            }
+        })
+        tbar.visibility = View.GONE
+        transBar = tbar
         val overlay = AdjustOverlayView(this, object : AdjustOverlayView.Listener {
             override fun onAdjust() {
                 applySizeLive()
@@ -394,6 +480,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             orientation = LinearLayout.VERTICAL
             addView(
                 handle,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+            addView(
+                tbar,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -652,6 +745,21 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
             }
             SettingsPanelView.ID_FLOAT -> toggleFloating()
+            SettingsPanelView.ID_TRANS -> setTransOn(!transOn)
+            SettingsPanelView.ID_TRANS_ENGINE -> {
+                // 微软 ⇄ 谷歌:选中的是主用,主用失败时会自动换另一个
+                val next = Translator.other(DictConfig.translateEngine(applicationContext))
+                DictConfig.setTranslateEngine(applicationContext, next)
+                settingsPanel?.setItemLabel(SettingsPanelView.ID_TRANS_ENGINE, transEngineLabel())
+                if (transActive && transBuf.isNotBlank()) {
+                    // 换了引擎,当前这句用新引擎重翻一次
+                    main.removeCallbacks(transRun)
+                    transGen++
+                    transInflight = null
+                    transSrc = ""
+                    startTranslate()
+                }
+            }
             SettingsPanelView.ID_ADJUST -> {
                 // 键盘调节是给贴底模式用的,悬浮模式用顶上的拖动条
                 if (KbSize.floating) {
@@ -762,6 +870,16 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         shift = false       // 进入英文不默认大写
         shiftLock = false
 
+        // 输入翻译:只在普通文本框里用;换了输入框就结束上一次翻译(译文留在原来的框里)
+        transAllowed = cls == InputType.TYPE_CLASS_TEXT && !secureField && forced == null
+        if (!restarting) {
+            transReset(finishTarget = false)
+            transPair = DictConfig.translatePair(applicationContext)
+        }
+        transOn = DictConfig.translateOn(applicationContext)
+        transActive = transOn && transAllowed
+        applyTransState()
+
         applyBoxSize()
         if (sizeChanged) {
             floatHandle?.refresh()
@@ -777,6 +895,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     override fun onFinishInput() {
         super.onFinishInput()
         exitAdjust(save = false)
+        transReset(finishTarget = true)
+        transUi()
         composing.clear()
         queryGen++
         applyCandidates("", emptyList())
@@ -795,6 +915,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         super.onUpdateSelection(
             oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd,
         )
+        if (transActive && transShown.isNotEmpty() && SystemClock.uptimeMillis() - lastOwnEditAt > 500 &&
+            (candidatesStart < 0 || newSelEnd < candidatesStart || newSelEnd > candidatesEnd)
+        ) {
+            // 用户在应用里点了别处 / 译文被应用改掉:译文留在输入框里,翻译框里的原文放弃,不再往那里写
+            transReset(finishTarget = false)
+            transUi()
+            refreshLayout(animate = false)   // 回车键上的「完成」标签收回去
+        }
         if (composing.isNotEmpty() && candidatesStart >= 0 &&
             (newSelEnd < candidatesStart || newSelEnd > candidatesEnd)
         ) {
@@ -961,6 +1089,24 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     private fun enter() {
+        if (transActive && composing.isEmpty()) {
+            if (transBuf.isEmpty()) {
+                // 翻译框里没有字:回车 / 搜索 / 发送 照常作用在目标输入框上
+                transBypass = true
+                try {
+                    enterNormal()
+                } finally {
+                    transBypass = false
+                }
+            } else {
+                transFinish()   // 回车键此时显示「完成」
+            }
+            return
+        }
+        enterNormal()
+    }
+
+    private fun enterNormal() {
         val ic = currentInputConnection ?: return
         if (composing.isNotEmpty() && mode != Mode.ENGLISH) {
             ic.beginBatchEdit()
@@ -1079,7 +1225,17 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         ic.sendKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_UP, code, 0, meta))
     }
 
+    /** 光标编辑页:翻译开着时也是直接编辑目标输入框(里面的译文),不进翻译框。 */
     private fun onEdit(v: String) {
+        transBypass = transActive
+        try {
+            onEditInner(v)
+        } finally {
+            transBypass = false
+        }
+    }
+
+    private fun onEditInner(v: String) {
         val ic = currentInputConnection ?: return
         val meta = if (selecting) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0
         when (v) {
@@ -1486,9 +1642,380 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
+    // ------------------------------------------------------------ 输入翻译
+
+    /** 翻译开着时的假输入连接:只实现本输入法会用到的几个操作,其余(读文字等)交给真的输入连接。 */
+    private inner class TransIc(target: InputConnection) : InputConnectionWrapper(target, false) {
+        override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+            transBuf.append(text)
+            transChanged()
+            return true
+        }
+
+        // 拼音字母 / 正在打的英文词只显示在候选栏上方的预览条里,不进翻译框,也不进目标输入框
+        override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean = true
+
+        override fun setComposingRegion(start: Int, end: Int): Boolean = true
+
+        override fun finishComposingText(): Boolean = true
+
+        override fun beginBatchEdit(): Boolean = true
+
+        override fun endBatchEdit(): Boolean = true
+
+        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+            transDeleteBack(beforeLength)
+            return true
+        }
+
+        override fun sendKeyEvent(event: KeyEvent): Boolean {
+            if (event.action != KeyEvent.ACTION_DOWN) return true
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DEL -> transDeleteBack(1)
+                KeyEvent.KEYCODE_ENTER -> transFinish()
+            }
+            return true   // 方向键等在翻译框里没有意义
+        }
+
+        override fun performEditorAction(editorAction: Int): Boolean {
+            transFinish()
+            return true
+        }
+
+        override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence? =
+            transBuf.takeLast(n.coerceAtLeast(0)).toString()
+
+        override fun getTextAfterCursor(n: Int, flags: Int): CharSequence? = ""
+
+        /** 英文自动大写:翻译框里一句话结束(. ! ? 后面跟着空格)了,下一个字母才大写。 */
+        override fun getCursorCapsMode(reqModes: Int): Int {
+            var i = transBuf.length - 1
+            if (i < 0) return 0
+            var spaces = 0
+            while (i >= 0 && (transBuf[i] == ' ' || transBuf[i] == '\n')) {
+                i--
+                spaces++
+            }
+            if (i < 0 || spaces == 0) return 0
+            val c = transBuf[i]
+            val end = c == '.' || c == '!' || c == '?' || c == '。' || c == '！' || c == '？'
+            return if (end) android.text.TextUtils.CAP_MODE_SENTENCES and reqModes else 0
+        }
+    }
+
+    private fun isOnline(): Boolean {
+        return try {
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+            val caps = cm.getNetworkCapabilities(cm.activeNetwork ?: return false)
+            caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (e: Exception) {
+            true   // 查不了就当有网,真发请求试试
+        }
+    }
+
+    /** 没网时才挂:系统在网络可用的那一刻回调一次(不轮询),回来后重试当前这句,然后立刻摘掉。 */
+    private fun watchNetwork() {
+        if (transNetCb != null) return
+        try {
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                private fun retry() {
+                    main.post {
+                        if (transNetCb == null || !isOnline()) return@post   // 还没真正联网:接着等,不重复挂
+                        unwatchNetwork()
+                        if (transActive && transBuf.isNotBlank() && transStatus == TranslateBarView.STATUS_FAILED) {
+                            startTranslate()
+                        }
+                    }
+                }
+
+                override fun onAvailable(network: Network) = retry()
+
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) = retry()
+            }
+            transNetCb = cb
+            cm.registerDefaultNetworkCallback(cb)
+        } catch (e: Exception) {
+            transNetCb = null
+        }
+    }
+
+    private fun unwatchNetwork() {
+        val cb = transNetCb ?: return
+        transNetCb = null
+        try {
+            (getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager).unregisterNetworkCallback(cb)
+        } catch (e: Exception) {
+            // 已经摘掉了
+        }
+    }
+
+    private fun transEngineLabel(): String = "翻译:" + Translator.engineLabel(DictConfig.translateEngine(applicationContext))
+
+    private fun transUi() {
+        transBar?.setContent(transBuf.toString(), Translator.pairs[transPair].label, transStatus)
+    }
+
+    /** 翻译开关 / 当前输入框是否可用 变了:换色、显示或隐藏翻译框。键盘 / 候选栏 / 悬浮条 / 当前面板都跟着换。 */
+    private fun applyTransState() {
+        settingsPanel?.selectedId = if (transOn) SettingsPanelView.ID_TRANS else -1
+        settingsPanel?.setItemLabel(SettingsPanelView.ID_TRANS_ENGINE, transEngineLabel())
+        transUi()
+        val changed = Palette.translating != transActive
+        val barVisible = transBar?.visibility == View.VISIBLE
+        if (!changed && barVisible == transActive) return   // 没变化(每次打开键盘都会走到这里):不重算、不重画
+        Palette.translating = transActive
+        transBar?.visibility = if (transActive) View.VISIBLE else View.GONE
+        transBar?.refresh()
+        keyboardView?.refresh()
+        candidateBar?.refresh()
+        floatHandle?.refresh()
+        for (p in listOf<PanelView?>(emojiPanel, symbolPanel, clipPanel, settingsPanel, choicePanel)) {
+            if (p != null && p.visibility == View.VISIBLE) p.refresh()
+        }
+        // 多出 / 少了一行,键盘整体高度变了:悬浮模式要重新摆一次位置
+        boxView?.post {
+            applyBoxSize()
+            inputRoot?.requestLayout()
+        }
+    }
+
+    private fun setTransOn(on: Boolean) {
+        if (on == transOn) return
+        DictConfig.setTranslateOn(applicationContext, on)
+        transOn = on
+        val was = transActive
+        transActive = on && transAllowed
+        if (was && !transActive) {
+            // 关掉时:已经翻出来的译文留在输入框里,翻译框里没翻的原文放弃
+            transReset(finishTarget = true)
+        }
+        applyTransState()
+        if (was != transActive) refreshLayout(animate = false)   // 回车键标签跟着变
+    }
+
+    /** 翻译框里的原文变了(上屏 / 退格):停 0.6 秒再翻,连续打字不会每个字都联网。同一句翻过的直接用缓存。 */
+    private fun transChanged() {
+        transGen++
+        transInflight = null
+        main.removeCallbacks(transRun)
+        val filled = transBuf.isNotEmpty()
+        if (filled != transFilled) {
+            transFilled = filled
+            refreshLayout(animate = false)
+        }
+        if (transBuf.isBlank()) {
+            transStatus = TranslateBarView.STATUS_NONE
+            clearShown()
+            transUi()
+            return
+        }
+        val src = transBuf.toString()
+        val hit = Translator.cached(src, Translator.pairs[transPair])
+        if (hit != null) {
+            transStatus = TranslateBarView.STATUS_NONE
+            transSrc = src
+            writeShown(hit)
+        } else {
+            main.postDelayed(transRun, TRANS_DEBOUNCE_MS)
+        }
+        transUi()
+    }
+
+    private fun transDeleteBack(count: Int) {
+        var n = count
+        var changed = false
+        while (n > 0 && transBuf.isNotEmpty()) {
+            val len = transBuf.length
+            // 别把一个表情 / 生僻字(两个 char)删成半个
+            val cut = if (len >= 2 && Character.isLowSurrogate(transBuf[len - 1]) && Character.isHighSurrogate(transBuf[len - 2])) 2 else 1
+            transBuf.setLength(len - cut)
+            changed = true
+            n--
+        }
+        if (changed) transChanged()
+    }
+
+    /** 把译文写进目标输入框,当作组合区(带下划线),下一次译文来了直接替换它。 */
+    private fun writeShown(t: String) {
+        val real = realIc() ?: return
+        lastOwnEditAt = SystemClock.uptimeMillis()   // 这次改动是我们自己的,别当成用户挪了光标
+        real.setComposingText(t, 1)
+        transShown = t
+    }
+
+    private fun clearShown() {
+        if (transShown.isNotEmpty()) {
+            val real = realIc()
+            if (real != null) {
+                lastOwnEditAt = SystemClock.uptimeMillis()
+                real.setComposingText("", 1)
+            }
+        }
+        transShown = ""
+        transSrc = ""
+    }
+
+    private fun startTranslate() {
+        if (!transActive) return
+        val src = transBuf.toString()
+        if (src.isBlank() || transInflight == src) return
+        val pair = Translator.pairs[transPair]
+        val hit = Translator.cached(src, pair)
+        if (hit != null) {
+            onTranslated(src, TransResult(hit, "cache"))
+            return
+        }
+        if (!isOnline()) {
+            // 没网:不发请求(省得空等超时),标「翻译失败」,等网络回来自动重试一次
+            transStatus = TranslateBarView.STATUS_FAILED
+            transFinishing = false
+            transUi()
+            watchNetwork()
+            return
+        }
+        val gen = ++transGen
+        transInflight = src
+        transStatus = TranslateBarView.STATUS_LOADING
+        transUi()
+        val primary = DictConfig.translateEngine(applicationContext)
+        try {
+            netPool.execute {
+                if (gen != transGen) return@execute   // 排队期间原文已经变了
+                val r = try {
+                    Translator.translate(src, pair, primary) { gen != transGen }
+                } catch (t: Throwable) {
+                    null
+                }
+                main.post { if (gen == transGen && transActive) onTranslated(src, r) }
+            }
+        } catch (e: Exception) {
+            // 线程池已关闭(服务正在销毁)
+            transInflight = null
+            transFinishing = false
+            transStatus = TranslateBarView.STATUS_NONE
+        }
+    }
+
+    private fun onTranslated(src: String, r: TransResult?) {
+        transInflight = null
+        if (r == null) {
+            // 微软和谷歌都没通:保留原来的译文和翻译框里的原文,点「完成」会再试一次
+            transStatus = TranslateBarView.STATUS_FAILED
+            transFinishing = false
+            transUi()
+            return
+        }
+        transStatus = TranslateBarView.STATUS_NONE
+        transSrc = src
+        writeShown(r.text)
+        transUi()
+        if (transFinishing) {
+            transFinishing = false
+            transFinishNow()
+        }
+    }
+
+    /** 点了「完成」/ 回车:译文已经是最新的就直接收尾;还没翻出来(刚打完字就点)就等它回来再收尾。 */
+    private fun transFinish() {
+        if (!transActive) return
+        main.removeCallbacks(transRun)
+        val src = transBuf.toString()
+        if (src.isBlank() || (src == transSrc && transShown.isNotEmpty())) {
+            transFinishNow()
+            return
+        }
+        transFinishing = true
+        startTranslate()   // 命中缓存会在里面直接收尾;否则等 onTranslated 回来再收尾
+    }
+
+    /** 译文留在目标输入框里(取消组合区的下划线),翻译框清空,输入结束。 */
+    private fun transFinishNow() {
+        unwatchNetwork()
+        main.removeCallbacks(transRun)
+        transGen++
+        transInflight = null
+        transFinishing = false
+        if (transShown.isNotEmpty()) {
+            val real = realIc()
+            if (real != null) {
+                lastOwnEditAt = SystemClock.uptimeMillis()
+                real.finishComposingText()
+            }
+        }
+        transBuf.clear()
+        transShown = ""
+        transSrc = ""
+        transStatus = TranslateBarView.STATUS_NONE
+        if (transFilled) {
+            transFilled = false
+            refreshLayout(animate = false)
+        }
+        transUi()
+    }
+
+    /** 翻译框里的 ×:原文和目标输入框里的译文一起清掉。 */
+    private fun transClear() {
+        unwatchNetwork()
+        main.removeCallbacks(transRun)
+        transGen++
+        transInflight = null
+        transFinishing = false
+        if (composing.isNotEmpty()) {
+            composing.clear()
+            queryGen++
+            applyCandidates("", emptyList())
+        }
+        transBuf.clear()
+        clearShown()
+        transStatus = TranslateBarView.STATUS_NONE
+        if (transFilled) {
+            transFilled = false
+            refreshLayout(animate = false)
+        }
+        transUi()
+    }
+
+    /** 不碰界面地结束这一次翻译:换了输入框 / 键盘关了 / 开关关了 / 用户点了别处。finishTarget:顺便取消目标框里译文的组合状态。 */
+    private fun transReset(finishTarget: Boolean) {
+        unwatchNetwork()
+        main.removeCallbacks(transRun)
+        transGen++
+        transInflight = null
+        transFinishing = false
+        if (finishTarget && transShown.isNotEmpty()) {
+            try {
+                realIc()?.finishComposingText()
+            } catch (e: Exception) {
+                // 输入连接已经失效
+            }
+        }
+        transBuf.clear()
+        transShown = ""
+        transSrc = ""
+        transStatus = TranslateBarView.STATUS_NONE
+        transFilled = false
+    }
+
+    /** 翻译框左边的方向按钮:换下一个方向(中›英 → 英›中 → 中›日 …),框里有字就马上按新方向重翻。 */
+    private fun transNextLang() {
+        transPair = (transPair + 1) % Translator.pairs.size
+        DictConfig.setTranslatePair(applicationContext, transPair)
+        main.removeCallbacks(transRun)
+        transGen++
+        transInflight = null
+        transSrc = ""
+        transStatus = TranslateBarView.STATUS_NONE
+        transUi()
+        if (transBuf.isNotBlank()) startTranslate()
+    }
+
     // ------------------------------------------------------------ 其他
 
-    private fun kbState() = KbState(enterLabel, shift, composing.isNotEmpty(), selecting, shiftLock)
+    private fun kbState() = KbState(
+        if (transActive && transBuf.isNotEmpty()) "完成" else enterLabel,   // 翻译框有字时,回车键 = 完成
+        shift, composing.isNotEmpty(), selecting, shiftLock,
+    )
 
     private fun refreshLayout(animate: Boolean) {
         warmUp()
