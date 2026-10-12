@@ -120,6 +120,8 @@ class DictManagerActivity : Activity() {
         root.addView(
             CheckBox(this).apply {
                 text = "记录并使用我的用词"
+                textSize = 15f
+                minHeight = dpi(48f)
                 isChecked = DictConfig.learn(this@DictManagerActivity)
                 setOnCheckedChangeListener { _, v -> DictConfig.setLearn(this@DictManagerActivity, v) }
             },
@@ -127,6 +129,8 @@ class DictManagerActivity : Activity() {
         root.addView(
             CheckBox(this).apply {
                 text = "英文:按空格时自动改正拼错的词(默认只在候选里给出)"
+                textSize = 15f
+                minHeight = dpi(48f)
                 isChecked = DictConfig.autoCorrect(this@DictManagerActivity)
                 setOnCheckedChangeListener { _, v -> DictConfig.setAutoCorrect(this@DictManagerActivity, v) }
             },
