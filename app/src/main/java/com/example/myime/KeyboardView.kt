@@ -154,7 +154,6 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         pointerKey.clear()
         layoutKeys()
         invalidate()
-        if (animate) playSwitchAnimation()
     }
 
     private fun sameShape(l: Layout): Boolean {
@@ -167,19 +166,6 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             if (a.x != b.x || a.y != b.y || a.w != b.w || a.h != b.h) return false
         }
         return true
-    }
-
-    private fun playSwitchAnimation() {
-        animate().cancel()
-        alpha = 0.35f
-        translationY = slideY
-        animate()
-            .alpha(1f)
-            .translationY(0f)
-            .setDuration(Motion.DURATION_MS)
-            .setInterpolator(Motion.interpolator)
-            .withLayer()
-            .start()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -260,17 +246,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         if (fading) postInvalidateOnAnimation()
     }
 
-    private fun pressAmount(i: Int, now: Long): Float {
-        if (isDown[i]) return 1f
-        val t0 = releasedAt[i]
-        if (t0 < 0L) return 0f
-        val t = (now - t0).coerceAtLeast(0L).toFloat() / Motion.DURATION_MS
-        if (t >= 1f) {
-            releasedAt[i] = -1L
-            return 0f
-        }
-        return 1f - Motion.interpolator.getInterpolation(t)
-    }
+    /** 按下时高亮,松手立刻恢复,没有渐隐动画。 */
+    private fun pressAmount(i: Int, now: Long): Float = if (isDown[i]) 1f else 0f
 
     private fun drawLabel(canvas: Canvas, k: KeySpec, r: RectF, color: Int) {
         val cx = r.centerX()
