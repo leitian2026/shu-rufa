@@ -33,21 +33,18 @@ class MainActivity : Activity() {
             textSize = 15f
             setPadding(0, pad / 2, 0, pad)
         })
-        root.addView(Button(this).apply {
-            text = "1. 去系统设置启用"
+        root.addView(smallButton("1. 去系统设置启用").apply {
             setOnClickListener { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) }
-        })
-        root.addView(Button(this).apply {
-            text = "2. 切换到本输入法"
+        }, smallButtonParams())
+        root.addView(smallButton("2. 切换到本输入法").apply {
             setOnClickListener {
                 (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                     .showInputMethodPicker()
             }
-        })
-        root.addView(Button(this).apply {
-            text = "3. 词库管理(下载笔画 / 拼音 / 英文词库)"
+        }, smallButtonParams())
+        root.addView(smallButton("3. 词库管理(下载笔画 / 拼音 / 英文词库)").apply {
             setOnClickListener { startActivity(Intent(this@MainActivity, DictManagerActivity::class.java)) }
-        })
+        }, smallButtonParams())
         root.addView(EditText(this).apply {
             hint = "在这里测试输入"
             minLines = 3
