@@ -12,7 +12,7 @@ class GridItem(val id: Int, val glyph: String, val label: String)
  * 一格一个功能的面板,用在两处:
  *  - 功能页(工具栏第一个按钮)
  *  - 键盘选择(工具栏第二个按钮,带标题,当前使用的那一格显示蓝色)
- * 和剪贴板、表情一样是面板:上面可滑动的内容区,下面一条「返回」。
+ * 和剪贴板、表情一样是面板:最上面一行是标题,右边是「返回」,下面是可滑动的内容区。
  */
 class SettingsPanelView(
     context: Context,
@@ -53,10 +53,15 @@ class SettingsPanelView(
     private var cellH = 0f
 
     override val barKeys: List<BarKey> by lazy {
-        listOf(
-            BarKey(ID_BACK_KEY, "返回", 1.6f, BarKind.PRIMARY),
-            BarKey(ID_SPACER_KEY, "", 6f, BarKind.SPACER),
-        )
+        listOf(BarKey(ID_BACK_KEY, "返回", 1.6f, BarKind.PRIMARY))
+    }
+
+    override val titledHeader: Boolean get() = true
+
+    override fun drawHeaderTitle(canvas: Canvas, left: Float, centerY: Float) {
+        if (title == null) return
+        titlePaint.color = palette.text
+        canvas.drawText(title, left, centerY + titleBase, titlePaint)
     }
 
     init {
@@ -88,7 +93,7 @@ class SettingsPanelView(
         gap = context.dpf(if (wide) 10f else 8f)
         cellW = (width - 2 * padX - gap * (cols - 1)) / cols
         cellH = minOf(cellW * 0.8f, context.dpf(if (wide) 84f else 70f))
-        top0 = if (title != null) context.dpf(if (wide) 40f else 34f) else 0f
+        top0 = 0f   // 标题已经在最上面的按键行里,内容区直接从格子开始
     }
 
     override fun contentHeight(): Float {
@@ -101,10 +106,6 @@ class SettingsPanelView(
     override fun drawContent(canvas: Canvas, visTop: Float, visBottom: Float) {
         if (width == 0) return
         calc()
-        if (title != null) {
-            titlePaint.color = palette.text
-            canvas.drawText(title, padX + context.dpf(4f), top0 / 2f + titleBase, titlePaint)
-        }
         for (i in items.indices) {
             val r = i / cols
             val c = i % cols
@@ -181,6 +182,5 @@ class SettingsPanelView(
         const val ID_PICKER = 24
 
         private const val ID_BACK_KEY = 0
-        private const val ID_SPACER_KEY = 1
     }
 }
