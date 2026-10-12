@@ -41,6 +41,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private var choicePanel: SettingsPanelView? = null     // 键盘选择(拼音/笔画/英文)
     private var adjustOverlay: AdjustOverlayView? = null
     private var floatHandle: FloatHandleView? = null
+    private var inputRoot: FrameLayout? = null
     private var boxView: FrameLayout? = null
     private var adjusting = false           // 正在「键盘调节」
 
@@ -280,11 +281,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
 
             override fun onResize() {
-                applySizeLive()
+                applyBoxSize()   // 只是缩放,不用重新排版
             }
 
             override fun onDone() {
                 KbSize.save(this@MyImeService)
+                inputRoot?.requestLayout()   // 让系统按新位置重算「哪里接收触摸」
             }
 
             override fun boxHeightPx(): Int = boxView?.height ?: 0
@@ -344,6 +346,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 ),
             )
         }
+        inputRoot = root
+        box.addOnLayoutChangeListener { v, _, top, _, bottom, _, _, _, _ -> v.pivotY = (bottom - top).toFloat() }
         applyBoxSize()
         refreshLayout(animate = false)
         return root
@@ -351,24 +355,58 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     // ------------------------------------------------------------ 键盘调节
 
-    /** 把 KbSize 里的宽度、左边距、离底距离应用到 box 上。 */
+    /**
+     * 把 KbSize 应用到 box 上。
+     *  - 贴底模式:宽度、左边距、离底距离走布局参数。
+     *  - 悬浮模式:键盘按固定宽度排好版,再用缩放 + 平移摆到指定位置(不重新排版,所以拖动、缩放都能跟手)。
+     */
     private fun applyBoxSize() {
         val box = boxView ?: return
-        val sw = resources.displayMetrics.widthPixels
+        val root = inputRoot
+        val dm = resources.displayMetrics
+        val sw = dm.widthPixels
         val lp = box.layoutParams as FrameLayout.LayoutParams
-        lp.width = (sw * KbSize.widthFrac).toInt().coerceAtLeast(1)
-        lp.leftMargin = (sw * KbSize.leftFrac).toInt()
-        var bottom = dpi(KbSize.bottomDp)
-        if (KbSize.floating && box.height > 0) {
-            // 别让键盘顶出屏幕上沿
-            val maxB = (resources.displayMetrics.heightPixels - box.height - dpi(24f)).coerceAtLeast(0)
-            if (bottom > maxB) bottom = maxB
+        if (KbSize.floating) {
+            val refW = KbSize.floatRefWidthPx(this)
+            val s = KbSize.scale.coerceIn(KbSize.MIN_SCALE, KbSize.maxScale(this))
+            val visW = refW * s
+            val visH = box.height * s
+            val left = (sw * KbSize.leftFrac).coerceIn(0f, (sw - visW).coerceAtLeast(0f))
+            var bottom = dpf(KbSize.bottomDp)
+            if (box.height > 0) bottom = bottom.coerceIn(0f, (dm.heightPixels - visH - dpf(24f)).coerceAtLeast(0f))
+            if (lp.width != refW || lp.leftMargin != 0 || lp.bottomMargin != 0) {
+                lp.width = refW
+                lp.leftMargin = 0
+                lp.bottomMargin = 0
+                lp.gravity = Gravity.START or Gravity.BOTTOM
+                box.layoutParams = lp
+            }
+            // 窗口撑到整屏高,键盘在里面平移;窗口其余部分在 onComputeInsets 里设成不接收触摸
+            if (root != null && root.minimumHeight != dm.heightPixels) root.minimumHeight = dm.heightPixels
+            box.pivotX = 0f
+            box.pivotY = box.height.toFloat()
+            box.scaleX = s
+            box.scaleY = s
+            box.translationX = left
+            box.translationY = -bottom
+        } else {
+            box.scaleX = 1f
+            box.scaleY = 1f
+            box.translationX = 0f
+            box.translationY = 0f
+            if (root != null && root.minimumHeight != 0) root.minimumHeight = 0
+            val w = (sw * KbSize.widthFrac).toInt().coerceAtLeast(1)
+            val l = (sw * KbSize.leftFrac).toInt()
+            val b = dpi(KbSize.bottomDp)
+            if (lp.width != w || lp.leftMargin != l || lp.bottomMargin != b) {
+                lp.width = w
+                lp.leftMargin = l
+                lp.bottomMargin = b
+                lp.gravity = Gravity.START or Gravity.BOTTOM
+                box.layoutParams = lp
+            }
         }
-        lp.bottomMargin = bottom
-        lp.gravity = Gravity.START or Gravity.BOTTOM
-        box.layoutParams = lp
         floatHandle?.visibility = if (KbSize.floating) View.VISIBLE else View.GONE
-        floatHandle?.refresh()
     }
 
     /**
@@ -378,14 +416,20 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     override fun onComputeInsets(outInsets: InputMethodService.Insets) {
         super.onComputeInsets(outInsets)
         val box = boxView ?: return
-        if (!KbSize.floating || box.width == 0 || box.height == 0 || box.visibility != View.VISIBLE) return
+        val root = inputRoot ?: return
+        if (!KbSize.floating || box.width == 0 || box.height == 0 || root.height == 0) return
         val decorH = window?.window?.decorView?.height ?: return
         val loc = IntArray(2)
-        box.getLocationInWindow(loc)
+        root.getLocationInWindow(loc)
+        val s = box.scaleX
+        val w = (box.width * s).toInt()
+        val h = (box.height * s).toInt()
+        val left = loc[0] + box.translationX.toInt()
+        val bottom = loc[1] + root.height + box.translationY.toInt()
         outInsets.contentTopInsets = decorH
         outInsets.visibleTopInsets = decorH
         outInsets.touchableInsets = InputMethodService.Insets.TOUCHABLE_INSETS_REGION
-        outInsets.touchableRegion.set(loc[0], loc[1], loc[0] + box.width, loc[1] + box.height)
+        outInsets.touchableRegion.set(left, bottom - h, left + w, bottom)
     }
 
     private fun toggleFloating() {
@@ -393,6 +437,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         KbSize.save(this)
         leavePage()
         applySizeLive()
+        floatHandle?.refresh()
+        inputRoot?.requestLayout()
     }
 
     /** 拖动过程中实时生效:位置/宽度走布局参数,高度要让键盘和各面板重新取一次。 */
@@ -501,7 +547,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
             }
             SettingsPanelView.ID_FLOAT -> toggleFloating()
-            SettingsPanelView.ID_ADJUST -> enterAdjust()
+            SettingsPanelView.ID_ADJUST -> {
+                // 键盘调节是给贴底模式用的,悬浮模式用顶上的拖动条
+                if (KbSize.floating) {
+                    KbSize.exitFloating()
+                    KbSize.save(this)
+                    applySizeLive()
+                }
+                enterAdjust()
+            }
             SettingsPanelView.ID_APP -> {
                 startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
