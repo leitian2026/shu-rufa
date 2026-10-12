@@ -5,7 +5,7 @@ import android.content.res.Configuration
 
 /**
  * 颜色表,浅色取自参考截图的配色,深色为配套的深色版本。
- * 「输入翻译」打开时只有「译」按钮、翻译框、悬浮条用绿色(transAccent),键盘整体配色不变。
+ * 「输入翻译」打开时只有正在用的「翻译微软 / 翻译谷歌」按钮、翻译框、悬浮条用绿色(transAccent),键盘整体配色不变。
  */
 class Palette(context: Context) {
     companion object {
@@ -17,7 +17,7 @@ class Palette(context: Context) {
     val dark: Boolean =
         (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
-    // 键盘区底色(浅蓝灰)。输入翻译打开时键盘配色不变,只有「译」那一格和翻译框用绿色。
+    // 键盘区底色(浅蓝灰)。输入翻译打开时键盘配色不变,只有正在用的翻译那一格和翻译框用绿色。
     val background = if (dark) 0xFF17191C.toInt() else 0xFFE2E6ED.toInt()
 
     // 上方预览条 + 工具栏/候选栏(白底)
@@ -35,7 +35,7 @@ class Palette(context: Context) {
     val accent = if (dark) 0xFF4C8DFF.toInt() else 0xFF2468F2.toInt()
     val accentShadow = if (dark) 0xFF1D4DB0.toInt() else 0xFF1A4DB8.toInt()
 
-    // 输入翻译专用的绿色:「译」按钮打开时的底色 / 阴影、翻译框、悬浮条。只用在这几处,不影响键盘整体配色
+    // 输入翻译专用的绿色:「翻译微软 / 翻译谷歌」按钮打开时的底色 / 阴影、翻译框、悬浮条。只用在这几处,不影响键盘整体配色
     val transAccent = if (dark) 0xFF2BA86A.toInt() else 0xFF1F9D63.toInt()
     val transShadow = if (dark) 0xFF17653F.toInt() else 0xFF157349.toInt()
     val onAccent = 0xFFFFFFFF.toInt()
