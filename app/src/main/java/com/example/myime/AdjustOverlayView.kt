@@ -27,7 +27,7 @@ class AdjustOverlayView(
         fun onConfirm()
     }
 
-    private enum class Drag { NONE, LEFT, RIGHT, TOP, MOVE }
+    private enum class Drag { NONE, LEFT, RIGHT, TOP, TOP_LEFT, TOP_RIGHT, MOVE }
 
     private val dim = Paint().apply { color = 0xB3000000.toInt() }
     private val white = 0xFFFFFFFF.toInt()
@@ -73,6 +73,20 @@ class AdjustOverlayView(
         brace.strokeWidth = context.dpf(3.5f)
         label.textSize = context.spf(13f)
         hint.textSize = context.spf(12f)
+    }
+
+    /**
+     * 第一次测量(父布局 wrap_content)时不占高度,否则默认的 onMeasure 会取到整屏高度,
+     * 把整个输入法撑成全屏。父布局按键盘实际高度定下来后,会再用精确高度测一次。
+     */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val w = MeasureSpec.getSize(widthMeasureSpec)
+        val h = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY) {
+            MeasureSpec.getSize(heightMeasureSpec)
+        } else {
+            0
+        }
+        setMeasuredDimension(w, h)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -131,7 +145,7 @@ class AdjustOverlayView(
             }
             canvas.drawText(names[i], bx, r.top + context.dpf(62f), label)
         }
-        canvas.drawText("拖边上的把手改大小,拖其他地方移动", cx, btn[0].bottom + context.dpf(14f), hint)
+        canvas.drawText("拖边上的把手或上方两个角改大小,拖其他地方移动", cx, btn[0].bottom + context.dpf(14f), hint)
     }
 
     private fun arrowHead(canvas: Canvas, ex: Float, ey: Float, dx: Float, dy: Float, size: Float) {
@@ -184,7 +198,10 @@ class AdjustOverlayView(
                     }
                 }
                 val edge = context.dpf(40f)
+                val corner = context.dpf(64f)
                 drag = when {
+                    e.x < corner && e.y < corner -> Drag.TOP_LEFT
+                    e.x > width - corner && e.y < corner -> Drag.TOP_RIGHT
                     e.x < edge -> Drag.LEFT
                     e.x > width - edge -> Drag.RIGHT
                     e.y < edge -> Drag.TOP
@@ -226,17 +243,17 @@ class AdjustOverlayView(
         val d = resources.displayMetrics.density
         val df = dx / screenW
         when (drag) {
-            Drag.LEFT -> {
-                val right = startL + startW
-                val l = (startL + df).coerceIn(0f, right - KbSize.MIN_W)
-                KbSize.leftFrac = l
-                KbSize.widthFrac = right - l
+            Drag.LEFT -> dragLeft(df)
+            Drag.RIGHT -> dragRight(df)
+            Drag.TOP -> dragTop(dy / d)
+            // 上面两个角:同时改宽度和高度
+            Drag.TOP_LEFT -> {
+                dragLeft(df)
+                dragTop(dy / d)
             }
-            Drag.RIGHT -> {
-                KbSize.widthFrac = (startW + df).coerceIn(KbSize.MIN_W, 1f - startL)
-            }
-            Drag.TOP -> {
-                KbSize.heightDp = (startH - dy / d).coerceIn(KbSize.MIN_H, KbSize.maxHeightDp(context))
+            Drag.TOP_RIGHT -> {
+                dragRight(df)
+                dragTop(dy / d)
             }
             Drag.MOVE -> {
                 KbSize.leftFrac = (startL + df).coerceIn(0f, 1f - startW)
@@ -245,5 +262,21 @@ class AdjustOverlayView(
             Drag.NONE -> return
         }
         listener.onAdjust()
+    }
+
+    private fun dragLeft(df: Float) {
+        val right = startL + startW
+        val l = (startL + df).coerceIn(0f, right - KbSize.MIN_W)
+        KbSize.leftFrac = l
+        KbSize.widthFrac = right - l
+    }
+
+    private fun dragRight(df: Float) {
+        KbSize.widthFrac = (startW + df).coerceIn(KbSize.MIN_W, 1f - startL)
+    }
+
+    /** dyDp:手指向下为正;键盘底部固定,所以向上拖 = 变高。 */
+    private fun dragTop(dyDp: Float) {
+        KbSize.heightDp = (startH - dyDp).coerceIn(KbSize.MIN_H, KbSize.maxHeightDp(context))
     }
 }
