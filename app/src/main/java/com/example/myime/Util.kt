@@ -24,6 +24,12 @@ fun Context.uiSignature(): String {
 /** 键盘区(含各个面板)的统一高度,切换页面时高度不变。可在「键盘调节」里改。 */
 fun Context.keyboardHeightPx(): Int = dpi(KbSize.heightDp(this))
 
+/** 候选栏(笔画/拼音预览 + 候选词那两行)的高度。整页面板盖住候选栏时,面板高度 = 键盘高度 + 这个值,总高度不变,所以切换不跳动。 */
+fun Context.candidateBarHeightPx(): Int {
+    val wide = isWide()
+    return (dpf(if (wide) 37f else 26f) + dpf(if (wide) 50f else 44f)).toInt()
+}
+
 /**
  * 用户调节过的键盘尺寸/位置,存在 SharedPreferences 里(只有几个数字)。
  *  - heightDp:键盘区高度(dp),<0 表示用默认值
