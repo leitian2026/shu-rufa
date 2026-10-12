@@ -152,6 +152,7 @@ class SettingsPanelView(
         /** 功能页只放别处没有的功能:中英/拼笔/数字/符号在键盘上有键,表情/编辑/剪贴板/收起在工具栏,切换输入法在「键盘选择」里。 */
         fun settingsItems() = listOf(
             GridItem(ID_ADJUST, "↔↕", "键盘调节"),
+            GridItem(ID_DICT, "库", "词库管理"),
             GridItem(ID_APP, "设", "输入法设置"),
         )
 
@@ -173,6 +174,7 @@ class SettingsPanelView(
         const val ID_ADJUST = 9
         const val ID_APP = 10
         const val ID_HIDE = 11
+        const val ID_DICT = 12
         const val ID_PINYIN = 21
         const val ID_STROKE = 22
         const val ID_ENGLISH = 23
