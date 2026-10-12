@@ -1,7 +1,6 @@
 package com.example.myime
 
 import android.os.SystemClock
-import android.util.Base64
 import android.util.LruCache
 import org.json.JSONArray
 import org.json.JSONObject
@@ -20,11 +19,10 @@ class TransResult(val text: String, val engine: String)
  * 省电相关:同一句翻过有缓存;请求前先看原文变没变(变了就不发);连接读完不 disconnect,复用连接池里的连接,
  * 省掉每次的握手;超时 4 / 6 秒,不会长时间占着网络。
  *
- * 翻译:微软(Edge 浏览器内置翻译用的那个接口)和谷歌(translate.googleapis.com 的 gtx 接口),
+ * 翻译:微软(Edge 浏览器内置翻译用的接口)和谷歌(translate.googleapis.com 的 gtx 接口),
  * 都不需要自己的密钥。设置里选哪个是主用,主用失败会自动换另一个试(备用)。
  *
- * 微软:先向 edge.microsoft.com/translate/auth 要一个临时令牌(约 10 分钟有效,缓存起来,快过期才重要),
- *       再带着令牌 POST 到 api-edge.cognitive.microsofttranslator.com/translate。
+ * 微软:POST edge.microsoft.com/translate/translatetext(新接口,不要令牌;旧的 auth 令牌接口已被微软下线)。
  * 谷歌:GET(文字太长时 POST)translate.googleapis.com/translate_a/single?client=gtx。
  *
  * 所有方法都会联网、会阻塞,只能在后台线程调用。只有打开「输入翻译」且你在翻译框里打了字才会调用,
@@ -60,13 +58,6 @@ object Translator {
         private set
     private val reasons = ConcurrentHashMap<String, String>()
 
-    /** 微软翻译的两个域名:Edge 用的 api-edge 在前,不通再试官方域名;哪个通过就记住,下次先用它。 */
-    private val msHosts = listOf(
-        "api-edge.cognitive.microsofttranslator.com",
-        "api.cognitive.microsofttranslator.com",
-    )
-    @Volatile private var msHostIdx = 0
-
     private class HttpFail(val code: Int) : IOException("HTTP $code")
 
     private fun reasonOf(t: Throwable): String = when (t) {
@@ -78,11 +69,40 @@ object Translator {
         else -> t.javaClass.simpleName.take(10)
     }
 
+    // 主页「翻译接口」里填的设置;空 = 用默认。由 load() 在每次翻译前从设置里读(SharedPreferences 有内存缓存,几乎没有开销)
+    const val DEF_MS_FREE = "https://edge.microsoft.com/translate/translatetext"
+    const val DEF_MS_AZURE = "https://api.cognitive.microsofttranslator.com/translate"
+    const val DEF_G_FREE = "https://translate.googleapis.com/translate_a/single"
+    const val DEF_G_CLOUD = "https://translation.googleapis.com/language/translate/v2"
+    @Volatile private var msUrl = ""
+    @Volatile private var msKey = ""
+    @Volatile private var msRegion = ""
+    @Volatile private var gUrl = ""
+    @Volatile private var gKey = ""
+
+    fun load(ctx: android.content.Context) {
+        msUrl = DictConfig.transSetting(ctx, "ms_url")
+        msKey = DictConfig.transSetting(ctx, "ms_key")
+        msRegion = DictConfig.transSetting(ctx, "ms_region")
+        gUrl = DictConfig.transSetting(ctx, "g_url")
+        gKey = DictConfig.transSetting(ctx, "g_key")
+    }
+
+    /** 主页的「测试」按钮用:只试指定的一个引擎(不换备用、不查缓存),返回译文或失败原因。后台线程调用。 */
+    fun test(e: String): String {
+        val p = pairs[0]
+        return try {
+            val out = if (e == GOOGLE) google("你好", p) else microsoft("你好", p)
+            if (out.isNullOrEmpty()) "失败:无结果" else "成功:$out"
+        } catch (t: Throwable) {
+            "失败:" + reasonOf(t)
+        }
+    }
+
+    private fun withQuery(base: String, query: String) = base + (if (base.contains('?')) "&" else "?") + query
+
     private val cache = LruCache<String, String>(80)
     private val failedAt = ConcurrentHashMap<String, Long>()
-    private val lock = Any()
-    private var token: String? = null
-    private var tokenExpireAt = 0L
 
     private fun key(text: String, p: LangPair) = "${p.from}>${p.to}|$text"
 
@@ -126,93 +146,44 @@ object Translator {
 
     private fun msCode(c: String) = if (c == "zh") "zh-Hans" else c
 
+    /**
+     * 2026-07 起微软撤掉了旧的「令牌 + api-edge」流程(edge.microsoft.com/translate/auth 返回 404)。
+     * 现在 Edge 用的是不要令牌的新接口:POST edge.microsoft.com/translate/translatetext,
+     * 请求体是纯字符串数组 ["原文"],返回 [{"translations":[{"text":"译文"}]}]。
+     * 这个接口会按 HTML 处理文本,所以 & < > 先转义,译文回来再还原。
+     */
     private fun microsoft(text: String, p: LangPair): String? {
-        // 先用上次成功的域名;它失败了(网络层错误或 HTTP 错误)再换另一个,最多各试一次
-        var lastErr: Throwable? = null
-        val n = msHosts.size
-        for (k in 0 until n) {
-            val idx = (msHostIdx + k) % n
-            try {
-                val out = microsoftOn(msHosts[idx], text, p)
-                if (!out.isNullOrEmpty()) {
-                    msHostIdx = idx
-                    return out
-                }
-            } catch (t: Throwable) {
-                lastErr = t
-                if (t is java.net.UnknownHostException) continue   // 这个域名解析不了:换下一个
-            }
-        }
-        if (lastErr != null) throw lastErr
-        return null
-    }
-
-    private fun microsoftOn(host: String, text: String, p: LangPair): String? {
-        for (attempt in 0..1) {
-            val tk = msToken()
-            val url = "https://$host/translate" +
-                "?from=${msCode(p.from)}&to=${msCode(p.to)}&api-version=3.0&includeSentenceLength=true"
-            val body = JSONArray().put(JSONObject().put("Text", text)).toString()
-            val c = open(url, "POST")
-            c.setRequestProperty("Authorization", "Bearer $tk")
+        val key = msKey
+        val c: HttpURLConnection
+        val azure = key.isNotEmpty()
+        if (azure) {
+            // 填了密钥:按微软官方 Translator 接口(Azure)走
+            val url = withQuery(msUrl.ifBlank { DEF_MS_AZURE }, "api-version=3.0&from=${msCode(p.from)}&to=${msCode(p.to)}")
+            c = open(url, "POST")
+            c.setRequestProperty("Ocp-Apim-Subscription-Key", key)
+            if (msRegion.isNotEmpty()) c.setRequestProperty("Ocp-Apim-Subscription-Region", msRegion)
             c.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
             c.doOutput = true
+            val body = JSONArray().put(JSONObject().put("Text", text)).toString()
             c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            val code = c.responseCode
-            if (code == 401 || code == 403) {
-                // 令牌被拒(过期 / 被换掉):丢掉缓存,重新要一个再试一次
-                c.errorStream?.close()
-                synchronized(lock) { token = null }
-                if (attempt == 1) throw HttpFail(code)
-                continue
-            }
-            if (code != 200) {
-                c.errorStream?.close()
-                throw HttpFail(code)
-            }
-            // 不调 disconnect():读完关掉流,连接会回到系统的连接池,下一次直接复用,省掉 TCP + TLS 握手
-            val arr = JSONArray(readAll(c))
-            return arr.getJSONObject(0).getJSONArray("translations").getJSONObject(0).getString("text")
+        } else {
+            val url = withQuery(msUrl.ifBlank { DEF_MS_FREE }, "from=${msCode(p.from)}&to=${msCode(p.to)}&isEnterpriseClient=false")
+            c = open(url, "POST")
+            c.setRequestProperty("Content-Type", "application/json")
+            c.doOutput = true
+            // 这个接口会按 HTML 处理文本,所以 & < > 先转义,译文回来再还原
+            val esc = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            c.outputStream.use { it.write(JSONArray().put(esc).toString().toByteArray(Charsets.UTF_8)) }
         }
-        return null
-    }
-
-    private fun msToken(): String {
-        return synchronized(lock) {
-            val now = System.currentTimeMillis()
-            val cur = token
-            if (cur != null && now < tokenExpireAt - 60_000L) {
-                cur
-            } else {
-                val c = open("https://edge.microsoft.com/translate/auth", "GET")
-                try {
-                    val rc = c.responseCode
-                    if (rc != 200) {
-                        c.errorStream?.close()
-                        throw HttpFail(rc)   // 令牌接口没给令牌:翻译框会显示「微软xxx」
-                    }
-                    val s = readAll(c).trim()
-                    if (s.isEmpty()) throw IOException("auth empty")
-                    token = s
-                    tokenExpireAt = jwtExpireMs(s) ?: (now + 8 * 60_000L)
-                    s
-                } finally {
-                    // 同上:不 disconnect,让连接回池
-                }
-            }
+        val code = c.responseCode
+        if (code != 200) {
+            c.errorStream?.close()
+            throw HttpFail(code)
         }
-    }
-
-    /** 令牌是 JWT,中间那段里有 exp(秒)。读不出来就当 8 分钟。 */
-    private fun jwtExpireMs(jwt: String): Long? {
-        return try {
-            val part = jwt.split('.')[1]
-            val json = String(Base64.decode(part, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP), Charsets.UTF_8)
-            val exp = JSONObject(json).getLong("exp")
-            exp * 1000L
-        } catch (t: Throwable) {
-            null
-        }
+        // 不调 disconnect():读完关掉流,连接会回到系统的连接池,下一次直接复用
+        val arr = JSONArray(readAll(c))
+        val out = arr.getJSONObject(0).getJSONArray("translations").getJSONObject(0).getString("text")
+        return if (azure) out else out.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
     }
 
     // ------------------------------------------------------------ 谷歌
@@ -221,9 +192,24 @@ object Translator {
 
     private fun google(text: String, p: LangPair): String? {
         val q = URLEncoder.encode(text, "UTF-8")
-        val base = "https://translate.googleapis.com/translate_a/single" +
-            "?client=gtx&sl=${googleCode(p.from)}&tl=${googleCode(p.to)}&dt=t"
+        val key = gKey
         val c: HttpURLConnection
+        if (key.isNotEmpty()) {
+            // 填了密钥:按谷歌官方 Cloud Translation v2 走(POST 表单)
+            val url = withQuery(gUrl.ifBlank { DEF_G_CLOUD }, "key=${URLEncoder.encode(key, "UTF-8")}")
+            c = open(url, "POST")
+            c.doOutput = true
+            c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+            val form = "q=$q&source=${googleCode(p.from)}&target=${googleCode(p.to)}&format=text"
+            c.outputStream.use { it.write(form.toByteArray(Charsets.UTF_8)) }
+            if (c.responseCode != 200) {
+                c.errorStream?.close()
+                throw HttpFail(c.responseCode)
+            }
+            val tr = JSONObject(readAll(c)).getJSONObject("data").getJSONArray("translations")
+            return tr.getJSONObject(0).getString("translatedText")
+        }
+        val base = withQuery(gUrl.ifBlank { DEF_G_FREE }, "client=gtx&sl=${googleCode(p.from)}&tl=${googleCode(p.to)}&dt=t")
         if (q.length < 3500) {
             c = open("$base&q=$q", "GET")
         } else {
@@ -232,22 +218,18 @@ object Translator {
             c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             c.outputStream.use { it.write("q=$q".toByteArray(Charsets.UTF_8)) }
         }
-        try {
-            if (c.responseCode != 200) {
-                c.errorStream?.close()
-                return null
-            }
-            val segs = JSONArray(readAll(c)).getJSONArray(0)
-            val sb = StringBuilder()
-            for (i in 0 until segs.length()) {
-                val seg = segs.optJSONArray(i) ?: continue
-                if (seg.isNull(0)) continue
-                sb.append(seg.getString(0))
-            }
-            return sb.toString()
-        } finally {
-            // 同上:不 disconnect
+        if (c.responseCode != 200) {
+            c.errorStream?.close()
+            throw HttpFail(c.responseCode)
         }
+        val segs = JSONArray(readAll(c)).getJSONArray(0)
+        val sb = StringBuilder()
+        for (i in 0 until segs.length()) {
+            val seg = segs.optJSONArray(i) ?: continue
+            if (seg.isNull(0)) continue
+            sb.append(seg.getString(0))
+        }
+        return sb.toString()
     }
 
     // ------------------------------------------------------------ 公共
