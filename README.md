@@ -181,3 +181,7 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 - **学习数据只在键盘隐藏时落盘**(以及输入框切换时),打字过程中不写文件。
 - 开启 R8(代码和资源压缩)。若发布版出现闪退,把 `app/build.gradle.kts` 里 `isMinifyEnabled` / `isShrinkResources` 改回 `false`。
 - 仍然没有:定时器、轮询、常驻线程(剪贴板用系统监听,不轮询)。
+
+
+## 翻译接口设置
+主页「翻译接口设置」可改微软 / 谷歌的接口地址、密钥、区域,点保存生效;全空 = 默认免费接口。填了密钥就改用官方接口(微软 Azure Translator / 谷歌 Cloud Translation v2)。「测试微软 / 测试谷歌」会先保存再单独试一次,结果显示在按钮下面。
