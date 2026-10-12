@@ -161,20 +161,26 @@ class EmojiPanelView(
         }
     }
 
-    override fun onContentTap(x: Float, y: Float) {
-        if (cell <= 0f || tops.size != sections.size) return
+    override val coversCandidateBar: Boolean get() = true
+
+    override fun onBlankTap() {
+        listener.onBack()
+    }
+
+    override fun onContentTap(x: Float, y: Float): Boolean {
+        if (cell <= 0f || tops.size != sections.size) return false
         var s = 0
         for (i in tops.indices) {
             if (tops[i] <= y) s = i
         }
         val sec = sections[s]
         val sy = y - tops[s] - headerH
-        if (sy < 0f) return
+        if (sy < 0f) return false
         val row = (sy / cell).toInt()
         val col = ((x - padX) / cell).toInt()
-        if (col < 0 || col >= cols) return
+        if (col < 0 || col >= cols) return false
         val idx = row * cols + col
-        if (idx < 0 || idx >= sec.items.size) return
+        if (idx < 0 || idx >= sec.items.size) return false
 
         val emoji = sec.items[idx]
         // 最近使用:移到最前,最多 24 个;下次打开面板时才刷新,避免滑动时内容突然移位
@@ -182,6 +188,7 @@ class EmojiPanelView(
         recents.add(0, emoji)
         while (recents.size > 24) recents.removeAt(recents.size - 1)
         listener.onEmoji(emoji)
+        return true
     }
 
     override fun onBarKey(id: Int) {
