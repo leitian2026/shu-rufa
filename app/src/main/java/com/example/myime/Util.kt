@@ -24,11 +24,20 @@ fun Context.keyboardHeightPx(): Int = dpi(KbSize.heightDp(this))
  *  - widthFrac:键盘宽度占屏幕宽度的比例
  *  - leftFrac:左边距占屏幕宽度的比例
  *  - bottomDp:离屏幕底部的距离(dp),>0 就是悬浮在输入框上方
+ *  - floating:悬浮键盘模式(键盘变小,顶上多一条拖动条,可以拖到屏幕任何位置、随意拉大缩小,不顶起应用界面)
  */
 object KbSize {
     const val MIN_W = 0.4f
     const val MIN_H = 150f
+    private const val FLOAT_MIN_H = 110f
     private const val FILE = "kbsize"
+
+    var floating = false
+
+    fun minWidthFrac(c: Context): Float =
+        if (floating) (200f / c.resources.configuration.screenWidthDp).coerceIn(0.2f, 0.9f) else MIN_W
+
+    fun minHeightDp(): Float = if (floating) FLOAT_MIN_H else MIN_H
 
     var heightDp = -1f
     var widthFrac = 1f
@@ -38,18 +47,40 @@ object KbSize {
     fun defaultHeightDp(c: Context): Float = if (c.isWide()) 279f else 224f
 
     fun heightDp(c: Context): Float =
-        (if (heightDp < 0f) defaultHeightDp(c) else heightDp).coerceIn(MIN_H, maxHeightDp(c))
+        (if (heightDp < 0f) defaultHeightDp(c) else heightDp).coerceIn(minHeightDp(), maxHeightDp(c))
 
     fun maxHeightDp(c: Context): Float =
-        minOf(460f, c.resources.configuration.screenHeightDp * 0.6f).coerceAtLeast(MIN_H)
+        minOf(460f, c.resources.configuration.screenHeightDp * 0.6f).coerceAtLeast(minHeightDp())
 
     fun maxBottomDp(c: Context): Float =
-        (c.resources.configuration.screenHeightDp * 0.35f).coerceAtLeast(0f)
+        if (floating) (c.resources.configuration.screenHeightDp - minHeightDp() - 90f).coerceAtLeast(0f)
+        else (c.resources.configuration.screenHeightDp * 0.35f).coerceAtLeast(0f)
+
+    /** 打开悬浮键盘:如果还是贴底全宽,先缩成一个居中、抬离底边的小键盘。 */
+    fun enterFloating(c: Context) {
+        floating = true
+        if (widthFrac >= 0.99f && bottomDp <= 0f) {
+            widthFrac = if (c.isWide()) 0.5f else 0.85f
+            leftFrac = (1f - widthFrac) / 2f
+            bottomDp = 96f
+            heightDp = defaultHeightDp(c) * 0.8f
+        }
+    }
+
+    /** 关掉悬浮:回到贴底全宽的默认键盘。 */
+    fun exitFloating() {
+        floating = false
+        widthFrac = 1f
+        leftFrac = 0f
+        bottomDp = 0f
+        heightDp = -1f
+    }
 
     fun load(c: Context) {
         val p = c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
         heightDp = p.getFloat("h", -1f)
-        widthFrac = p.getFloat("w", 1f).coerceIn(MIN_W, 1f)
+        floating = p.getBoolean("f", false)
+        widthFrac = p.getFloat("w", 1f).coerceIn(if (floating) 0.2f else MIN_W, 1f)
         leftFrac = p.getFloat("l", 0f).coerceIn(0f, 1f - widthFrac)
         bottomDp = p.getFloat("b", 0f).coerceAtLeast(0f)
     }
@@ -57,10 +88,11 @@ object KbSize {
     fun save(c: Context) {
         c.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit()
             .putFloat("h", heightDp).putFloat("w", widthFrac)
-            .putFloat("l", leftFrac).putFloat("b", bottomDp).apply()
+            .putFloat("l", leftFrac).putFloat("b", bottomDp).putBoolean("f", floating).apply()
     }
 
     fun reset() {
+        floating = false
         heightDp = -1f
         widthFrac = 1f
         leftFrac = 0f
