@@ -31,12 +31,19 @@ fun Context.keyboardHeightPx(): Int = dpi(KbSize.heightDp(this))
  *  - leftFrac:左边距占屏幕宽度的比例
  *  - bottomDp:离屏幕底部的距离(dp),>0 就是悬浮在输入框上方
  *  - floating:悬浮键盘模式(键盘变小,顶上多一条拖动条,可以拖到屏幕任何位置、随意拉大缩小,不顶起应用界面)
+ *
+ * 悬浮是"按应用记住"的:在某个应用 / 游戏里开了悬浮、拖到某个位置,下次打开这个应用就还是悬浮、还在那个位置;
+ * 没开过悬浮的应用用贴底的普通键盘(普通键盘的尺寸在 kbsize 里,和悬浮互不影响)。
  */
 object KbSize {
     const val MIN_W = 0.4f
     const val MIN_H = 150f
     private const val FLOAT_MIN_H = 110f
     private const val FILE = "kbsize"
+    private const val APP_FILE = "kbfloat"    // 包名 -> "缩放,左边距比例,离底距离dp",只记开了悬浮的应用
+
+    /** 当前输入框所属的应用包名,onStartInputView 里更新。 */
+    var pkg: String? = null
 
     var floating = false
 
@@ -86,29 +93,66 @@ object KbSize {
         bottomDp = 96f
     }
 
-    /** 关掉悬浮:回到贴底全宽的默认键盘。 */
-    fun exitFloating() {
+    /** 关掉悬浮:回到上次保存的普通键盘(贴底或自己调过的尺寸)。 */
+    fun exitFloating(c: Context) {
         floating = false
-        widthFrac = 1f
-        leftFrac = 0f
-        bottomDp = 0f
-        heightDp = -1f
+        loadNormal(c)
     }
 
-    fun load(c: Context) {
+    /** 读普通键盘的尺寸/位置。 */
+    private fun loadNormal(c: Context) {
         val p = c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+        if (p.getBoolean("f", false)) {
+            // 旧版本把"悬浮"存成全局开关,位置数字也是悬浮的:这里改成默认的贴底键盘,以后按应用单独记
+            p.edit().putBoolean("f", false).putFloat("h", -1f).putFloat("w", 1f)
+                .putFloat("l", 0f).putFloat("b", 0f).apply()
+        }
         heightDp = p.getFloat("h", -1f)
-        floating = p.getBoolean("f", false)
-        scale = p.getFloat("s", 0.85f).coerceIn(MIN_SCALE, maxScale(c))
         widthFrac = p.getFloat("w", 1f).coerceIn(MIN_W, 1f)
-        leftFrac = p.getFloat("l", 0f).coerceIn(0f, if (floating) 1f else 1f - widthFrac)
+        leftFrac = p.getFloat("l", 0f).coerceIn(0f, 1f - widthFrac)
         bottomDp = p.getFloat("b", 0f).coerceAtLeast(0f)
     }
 
+    /** 当前应用以前开过悬浮就恢复成悬浮 + 上次的位置和大小;没有就保持普通键盘。 */
+    private fun loadAppState(c: Context) {
+        val k = pkg ?: return
+        val v = c.getSharedPreferences(APP_FILE, Context.MODE_PRIVATE).getString(k, null) ?: return
+        val a = v.split(',')
+        if (a.size != 3) return
+        val s = a[0].toFloatOrNull() ?: return
+        val l = a[1].toFloatOrNull() ?: return
+        val b = a[2].toFloatOrNull() ?: return
+        floating = true
+        heightDp = -1f
+        widthFrac = 1f
+        scale = s.coerceIn(MIN_SCALE, maxScale(c))
+        leftFrac = l.coerceIn(0f, 1f)
+        bottomDp = b.coerceAtLeast(0f)
+    }
+
+    /** 载入当前应用该用的键盘状态:普通键盘的尺寸,再叠上这个应用记住的悬浮状态。 */
+    fun load(c: Context) {
+        floating = false
+        loadNormal(c)
+        loadAppState(c)
+    }
+
+    /** 保存当前状态:悬浮 → 记到当前应用名下;普通 → 存普通键盘尺寸,并清掉当前应用的悬浮记录。 */
     fun save(c: Context) {
-        c.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit()
-            .putFloat("h", heightDp).putFloat("w", widthFrac)
-            .putFloat("l", leftFrac).putFloat("b", bottomDp).putBoolean("f", floating).putFloat("s", scale).apply()
+        val k = pkg
+        if (floating) {
+            if (k != null) {
+                c.getSharedPreferences(APP_FILE, Context.MODE_PRIVATE).edit()
+                    .putString(k, "$scale,$leftFrac,$bottomDp").apply()
+            }
+        } else {
+            c.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit()
+                .putFloat("h", heightDp).putFloat("w", widthFrac)
+                .putFloat("l", leftFrac).putFloat("b", bottomDp).putBoolean("f", false).apply()
+            if (k != null) {
+                c.getSharedPreferences(APP_FILE, Context.MODE_PRIVATE).edit().remove(k).apply()
+            }
+        }
     }
 
     fun reset() {
@@ -124,12 +168,12 @@ object KbSize {
 fun Context.smallButton(label: String? = null): Button = Button(this).apply {
     if (label != null) text = label
     isAllCaps = false
-    textSize = 13f
+    textSize = 15f
     minWidth = 0
-    minimumWidth = 0
+    minimumWidth = dpi(64f)
     minHeight = 0
-    minimumHeight = 0
-    setPadding(dpi(14f), dpi(6f), dpi(14f), dpi(6f))
+    minimumHeight = dpi(44f)   // 够手指点;横向不放太宽,词库卡片里一行要放下三个按钮
+    setPadding(dpi(12f), dpi(10f), dpi(12f), dpi(10f))
 }
 
 /** 小按钮在竖排布局里靠左、不撑满,上下留一点空隙。 */
