@@ -24,6 +24,7 @@ object Icon {
     const val SHIFT = 8        // 小写(空心箭头)
     const val SHIFT_ON = 9     // 下一个字母大写(实心箭头)
     const val SHIFT_LOCK = 10  // 锁定大写(实心箭头 + 下划线,蓝底)
+    const val BACK = 11        // 返回(向左的小箭头)
 }
 
 /**
@@ -105,8 +106,8 @@ object Layouts {
     private fun langKey(english: Boolean) =
         KeySpec("中/英", ActionType.LANG, function = true, rich = if (english) 2 else 1)
 
-    private fun symKey(label: String, target: String) =
-        KeySpec(label, ActionType.SYMBOL, value = target, function = true)
+    private fun symKey(label: String, target: String, icon: Int = Icon.NONE) =
+        KeySpec(label, ActionType.SYMBOL, value = target, function = true, icon = icon)
 
     private val numpad = listOf("1", "2", "3", "+", "4", "5", "6", "-", "7", "8", "9", "/", ",", "0", ".", ":")
 
@@ -213,7 +214,7 @@ object Layouts {
         for (i in r2.indices) keys.add(ch(r2[i]).at(i.toFloat(), 2f))
         keys.add(backspace().at(8f, 2f, 2f))
 
-        keys.add(symKey("返回", "back").at(0f, 3f, 1.5f))
+        keys.add(symKey("", "back", Icon.BACK).at(0f, 3f, 1.5f))
         keys.add(ch(",").at(1.5f, 3f))
         keys.add(spaceKey().at(2.5f, 3f, 5f))
         keys.add(ch(".").at(7.5f, 3f))
@@ -231,7 +232,7 @@ object Layouts {
         keys.add(backspace().at(4f, 0f))
         keys.add(spaceKey().at(4f, 1f))
         keys.add(enterKey(s.enterLabel).at(4f, 2f))
-        keys.add(symKey("返回", "back").at(4f, 3f))
+        keys.add(symKey("", "back", Icon.BACK).at(4f, 3f))
         return Layout(5f, 4f, if (wide) 10.5f else 5f, if (wide) 7f else 6f, keys)
     }
 
@@ -262,7 +263,7 @@ object Layouts {
             arrayOf(
                 e("末尾", "end", fn = true), e("全选", "all"),
                 e("", "down", icon = Icon.DOWN, rep = true), e("剪切", "cut"),
-                e("返回", "back", primary = true),
+                e("", "back", icon = Icon.BACK, primary = true),
             ),
         )
         for (r in grid.indices) {
