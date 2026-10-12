@@ -54,7 +54,7 @@ abstract class PanelView(context: Context) : View(context) {
     private var iconH = 0f
 
     protected var offsetY = 0f
-    protected val scroller = OverScroller(context, Motion.interpolator)
+    protected val scroller = OverScroller(context)
 
     protected abstract val barKeys: List<BarKey>
     protected abstract fun contentHeight(): Float
@@ -189,34 +189,23 @@ abstract class PanelView(context: Context) : View(context) {
         invalidate()
     }
 
+    /** 每次显示面板时调用。不做任何滑入/淡入动画,直接显示。 */
     fun onShow(animate: Boolean) {
         scroller.forceFinished(true)
         offsetY = 0f
         refresh()
         onShown()
-        if (animate) {
-            animate().cancel()
-            alpha = 0.35f
-            translationY = slideY
-            animate()
-                .alpha(1f)
-                .translationY(0f)
-                .setDuration(Motion.DURATION_MS)
-                .setInterpolator(Motion.interpolator)
-                .withLayer()
-                .start()
-        } else {
-            alpha = 1f
-            translationY = 0f
-        }
+        animate().cancel()
+        alpha = 1f
+        translationY = 0f
     }
 
-    /** 带动画滚动到某个内容位置(时长、曲线和其他动画一致)。 */
+    /** 直接跳到某个内容位置(没有滚动动画)。 */
     protected fun scrollToContent(y: Float) {
         val target = y.coerceIn(0f, maxOffsetY())
         scroller.forceFinished(true)
-        scroller.startScroll(0, offsetY.toInt(), 0, (target - offsetY).toInt(), Motion.DURATION_MS.toInt())
-        postOnAnimation(flingRunnable)
+        offsetY = target
+        invalidate()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -263,17 +252,8 @@ abstract class PanelView(context: Context) : View(context) {
         drawBar(canvas)
     }
 
-    private fun barPress(i: Int, now: Long): Float {
-        if (barIsDown[i]) return 1f
-        val t0 = barReleasedAt[i]
-        if (t0 < 0L) return 0f
-        val t = (now - t0).coerceAtLeast(0L).toFloat() / Motion.DURATION_MS
-        if (t >= 1f) {
-            barReleasedAt[i] = -1L
-            return 0f
-        }
-        return 1f - Motion.interpolator.getInterpolation(t)
-    }
+    /** 按下时高亮,松手立刻恢复,没有渐隐动画。 */
+    private fun barPress(i: Int, now: Long): Float = if (barIsDown[i]) 1f else 0f
 
     private fun drawBar(canvas: Canvas) {
         val keys = barKeys
