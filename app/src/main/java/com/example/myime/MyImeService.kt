@@ -254,6 +254,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     override fun onWindowHidden() {
         super.onWindowHidden()
         // 键盘收起了:没发出的翻译、没回来的请求、挂着的网络回调都放掉,不在后台耗电耗流量
+        transBar?.dismissPopup()
         main.removeCallbacks(transRun)
         transGen++
         transInflight = null
@@ -404,8 +405,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
         })
         val tbar = TranslateBarView(this, object : TranslateBarView.Listener {
-            override fun onLang() {
-                transNextLang()
+            override fun onPickLang(index: Int) {
+                transSetLang(index)
             }
 
             override fun onClear() {
@@ -1666,11 +1667,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         override fun endBatchEdit(): Boolean = true
 
         override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+            // 翻译框已经空了(例如点过「完成」):退格直接删目标输入框里的内容,不用关掉翻译
+            if (transBuf.isEmpty()) return super.deleteSurroundingText(beforeLength, afterLength)
             transDeleteBack(beforeLength)
             return true
         }
 
         override fun sendKeyEvent(event: KeyEvent): Boolean {
+            if (event.keyCode == KeyEvent.KEYCODE_DEL && transBuf.isEmpty()) return super.sendKeyEvent(event)
             if (event.action != KeyEvent.ACTION_DOWN) return true
             when (event.keyCode) {
                 KeyEvent.KEYCODE_DEL -> transDeleteBack(1)
@@ -1763,6 +1767,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     /** 翻译开关 / 当前输入框是否可用 变了:显示或隐藏翻译框,悬浮条换色。「译」按钮的变色由 settingsPanel.selectedId 负责。 */
     private fun applyTransState() {
+        warmTranslate()
         settingsPanel?.selectedId = if (transOn) SettingsPanelView.ID_TRANS else -1
         settingsPanel?.setItemLabel(SettingsPanelView.ID_TRANS_ENGINE, transEngineLabel())
         transUi()
@@ -1779,6 +1784,17 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             applyBoxSize()
             inputRoot?.requestLayout()
         }
+    }
+
+    /**
+     * 翻译打开时,提前在后台把到翻译服务器的连接(域名解析 + TLS 握手)建好并放进连接池,
+     * 这样第一句翻译不用再等握手。只发一个很小的 HEAD 请求,4 分钟内最多一次;没开翻译 / 没网时不发。
+     */
+    private fun warmTranslate() {
+        if (!transActive || !isOnline()) return
+        val primary = DictConfig.translateEngine(applicationContext)
+        Translator.load(applicationContext)
+        Translator.warm(primary)
     }
 
     private fun setTransOn(on: Boolean) {
@@ -1999,9 +2015,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         transFilled = false
     }
 
-    /** 翻译框左边的方向按钮:换下一个方向(中›英 → 英›中 → 中›日 …),框里有字就马上按新方向重翻。 */
-    private fun transNextLang() {
-        transPair = (transPair + 1) % Translator.pairs.size
+    /** 翻译框左边的方向长条里选了一个方向:框里有字就马上按新方向重翻。 */
+    private fun transSetLang(index: Int) {
+        if (index !in Translator.pairs.indices || index == transPair) return
+        transPair = index
         DictConfig.setTranslatePair(applicationContext, transPair)
         main.removeCallbacks(transRun)
         transGen++
