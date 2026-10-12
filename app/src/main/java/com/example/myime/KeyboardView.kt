@@ -114,7 +114,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
         letterPaint.textSize = context.spf(if (wide) 26f else 21f)
         funcPaint.textSize = context.spf(if (wide) 17f else 14f)
-        strokePaint.textSize = context.spf(if (wide) 34f else 28f)
+        strokePaint.textSize = context.spf(if (wide) 26f else 21f)   // 和数字键一样大
         multiPaint.textSize = context.spf(if (wide) 20f else 17f)
         richPaint.textSize = context.spf(if (wide) 21f else 16f)
         iconPaint.strokeWidth = context.dpf(1.8f)
