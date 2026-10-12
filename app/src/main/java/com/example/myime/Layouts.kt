@@ -72,11 +72,10 @@ object Layouts {
     fun build(mode: Mode, s: KbState, wide: Boolean): Layout = when (mode) {
         Mode.PINYIN, Mode.ENGLISH -> qwerty(mode, s, wide)
         Mode.STROKE -> stroke(s, wide)
-        Mode.SYMBOL -> symbol(s, wide)
         Mode.NUMBER -> number(s, wide)
         Mode.EDIT -> edit(s, wide)
-        // 表情、剪贴板、功能页是独立的面板视图,不走按键布局;这里只是占位,不会显示
-        Mode.EMOJI, Mode.CLIPBOARD, Mode.SETTINGS, Mode.KEYBOARD -> qwerty(Mode.PINYIN, s, wide)
+        // 符号、表情、剪贴板、功能页是独立的面板视图,不走按键布局;这里只是占位,不会显示
+        Mode.SYMBOL, Mode.EMOJI, Mode.CLIPBOARD, Mode.SETTINGS, Mode.KEYBOARD -> qwerty(Mode.PINYIN, s, wide)
     }
 
     // ---------------------------------------------------------------- 工具
@@ -202,26 +201,6 @@ object Layouts {
         keys.add(langKey(false).at(x1 + 2f, 3f, 1f, 1f))
         // 宽屏下笔画页把左右留白收到和窄屏一样,让出的宽度分给各个键
         return Layout(xr + rw, 4f, if (wide) 10.5f else 5f, if (wide) 6.5f else 5f, keys, padX = 4f)
-    }
-
-    // ---------------------------------------------------------------- 符号页(符)
-
-    private fun symbol(s: KbState, wide: Boolean): Layout {
-        val keys = ArrayList<KeySpec>()
-        val r0 = "1234567890"
-        for (i in r0.indices) keys.add(ch(r0[i].toString()).at(i.toFloat(), 0f))
-        val r1 = listOf("-", "/", ":", ";", "(", ")", "¥", "&", "@", "\"")
-        for (i in r1.indices) keys.add(ch(r1[i]).at(i.toFloat(), 1f))
-        val r2 = listOf("。", "，", "、", "？", "！", ".", ",", "~")
-        for (i in r2.indices) keys.add(ch(r2[i]).at(i.toFloat(), 2f))
-        keys.add(backspace().at(8f, 2f, 2f))
-
-        keys.add(symKey("", "back", Icon.BACK).at(0f, 3f, 1.5f))
-        keys.add(ch(",").at(1.5f, 3f))
-        keys.add(spaceKey().at(2.5f, 3f, 5f))
-        keys.add(ch(".").at(7.5f, 3f))
-        keys.add(enterKey(s.enterLabel).at(8.5f, 3f, 1.5f))
-        return Layout(10f, 4f, if (wide) 10.5f else 5f, if (wide) 13f else 8f, keys)
     }
 
     // ---------------------------------------------------------------- 数字页(123)
