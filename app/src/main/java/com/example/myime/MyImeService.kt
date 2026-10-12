@@ -37,6 +37,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private var keyboardView: KeyboardView? = null
     private var candidateBar: CandidateBarView? = null
     private var emojiPanel: EmojiPanelView? = null
+    private var symbolPanel: SymbolPanelView? = null
     private var clipPanel: ClipboardPanelView? = null
     private var settingsPanel: SettingsPanelView? = null
     private var choicePanel: SettingsPanelView? = null     // 键盘选择(拼音/笔画/英文)
@@ -282,6 +283,22 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
             }
         })
+        val symbol = SymbolPanelView(this, object : SymbolPanelView.Listener {
+            override fun onSymbol(text: String) {
+                val ic = currentInputConnection ?: return
+                commitTo(ic, text)
+                prevWord = null      // 打了符号:英文联想 / 中文联想都断开
+                breakAssoc()
+            }
+
+            override fun onBack() {
+                leavePage()
+            }
+
+            override fun onBackspace() {
+                sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
+            }
+        })
         val clip = ClipboardPanelView(this, object : ClipboardPanelView.Listener {
             override fun onPaste(text: String) {
                 currentInputConnection?.commitText(text, 1)
@@ -341,6 +358,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
         })
         emoji.visibility = View.GONE
+        symbol.visibility = View.GONE
         clip.visibility = View.GONE
         settings.visibility = View.GONE
         choice.visibility = View.GONE
@@ -348,6 +366,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         candidateBar = bar
         keyboardView = kb
         emojiPanel = emoji
+        symbolPanel = symbol
         clipPanel = clip
         settingsPanel = settings
         choicePanel = choice
@@ -387,7 +406,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                 ),
             )
-            for (v in listOf<View>(kb, emoji, clip, settings, choice)) {
+            for (v in listOf<View>(kb, emoji, symbol, clip, settings, choice)) {
                 addView(
                     v,
                     LinearLayout.LayoutParams(
@@ -529,7 +548,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun applySizeLive() {
         applyBoxSize()
         keyboardView?.refresh()
-        for (p in listOf<PanelView?>(emojiPanel, clipPanel, settingsPanel, choicePanel)) {
+        for (p in listOf<PanelView?>(emojiPanel, symbolPanel, clipPanel, settingsPanel, choicePanel)) {
             if (p != null && p.visibility == View.VISIBLE) p.refresh()
         }
     }
@@ -1486,6 +1505,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         )
         when (mode) {
             Mode.EMOJI -> showPanel(emojiPanel, animate)
+            Mode.SYMBOL -> showPanel(symbolPanel, animate)
             Mode.CLIPBOARD -> {
                 clipPanel?.setItems(clips.toList())
                 showPanel(clipPanel, animate)
@@ -1501,6 +1521,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
             else -> {
                 emojiPanel?.visibility = View.GONE
+                symbolPanel?.visibility = View.GONE
                 clipPanel?.visibility = View.GONE
                 settingsPanel?.visibility = View.GONE
                 choicePanel?.visibility = View.GONE
@@ -1514,7 +1535,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun showPanel(panel: PanelView?, animate: Boolean) {
         if (panel == null) return
         keyboardView?.visibility = View.GONE
-        for (p in listOf<PanelView?>(emojiPanel, clipPanel, settingsPanel, choicePanel)) {
+        for (p in listOf<PanelView?>(emojiPanel, symbolPanel, clipPanel, settingsPanel, choicePanel)) {
             if (p !== panel) p?.visibility = View.GONE
         }
         val wasVisible = panel.visibility == View.VISIBLE
