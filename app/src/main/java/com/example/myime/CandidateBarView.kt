@@ -133,7 +133,7 @@ class CandidateBarView(
         itemPad = context.dpf(if (wide) 20f else 14f)
         iconU = context.dpf(if (wide) 11f else 10f)
         closeW = context.dpf(if (wide) 56f else 42f)
-        fixedHeight = (stripH + rowH).toInt()
+        fixedHeight = context.candidateBarHeightPx()
 
         candPaint.textSize = context.spf(if (wide) 24f else 20f)
         composePaint.textSize = context.spf(if (wide) 22f else 18f)
