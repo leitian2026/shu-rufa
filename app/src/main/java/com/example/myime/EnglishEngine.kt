@@ -122,19 +122,25 @@ class EnglishEngine(
         return out
     }
 
-    /** 上一个词之后最可能的词。 */
+    /**
+     * 上一个词之后最可能的词:词库的双词表(越靠前越常见)和我自己的习惯合在一起打分,
+     * 我连续选得多了就排到前面,但偶然一次不会压过词库里最常见的搭配。
+     */
     fun nextWords(prevLower: String): List<Candidate> {
-        val out = ArrayList<Candidate>()
-        val seen = HashSet<String>()
+        val score = HashMap<String, Int>()
+        val s = succ[prevLower]
+        if (s != null) for (i in s.indices) score[s[i]] = 700 - 60 * i
         val u = user
         if (u != null) {
-            for ((w, _) in u.nextWords(prevLower)) if (seen.add(w)) out.add(Candidate(displayOf(w), 0, 2))
+            for ((w, c) in u.nextWords(prevLower)) score[w] = (score[w] ?: 0) + minOf(c, 12) * 250
         }
-        val s = succ[prevLower]
-        if (s != null) {
-            for (w in s) if (seen.add(w)) out.add(Candidate(displayOf(w), 0, 2))
+        if (score.isEmpty()) return emptyList()
+        val out = ArrayList<Candidate>()
+        for (e in score.entries.sortedByDescending { it.value }) {
+            out.add(Candidate(displayOf(e.key), 0, 2))
+            if (out.size >= 8) break
         }
-        return if (out.size > 8) ArrayList(out.subList(0, 8)) else out
+        return out
     }
 
     /** 全小写输入的 i / i'm / i'll 等,按词表里的写法(大写 I)。 */
