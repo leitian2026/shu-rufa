@@ -320,6 +320,12 @@ object DictConvert {
         "he'll" to 1850, "she'll" to 1850, "it'll" to 1850, "y'all" to 1700, "ain't" to 1700,
     )
 
+    /** 词和次数的分隔位置:优先制表符;自定义来源常见的「词 空格 次数」也认(取最后一个空格)。 */
+    private fun sepOf(line: String): Int {
+        val t = line.indexOf('\t')
+        return if (t > 0) t else line.lastIndexOf(' ')
+    }
+
     private fun isEnglishWord(w: String): Boolean {
         if (w.isEmpty() || w.length > 24) return false
         for (ch in w) if (ch !in 'a'..'z') return false
@@ -350,7 +356,7 @@ object DictConvert {
                 for (line in lines) {
                     if (vocab.size >= cap) break
                     if ((++n and 0x3FFF) == 0 && cancel.get()) throw CancelledException()
-                    val tab = line.indexOf('\t')
+                    val tab = sepOf(line)
                     if (tab <= 0) continue
                     val word = line.substring(0, tab)
                     if (!isEnglishWord(word)) continue
@@ -384,7 +390,7 @@ object DictConvert {
                 var n = 0
                 for (line in lines) {
                     if ((++n and 0x3FFF) == 0 && cancel.get()) throw CancelledException()
-                    val tab = line.indexOf('\t')
+                    val tab = sepOf(line)
                     if (tab <= 0) continue
                     val sp = line.indexOf(' ')
                     if (sp <= 0 || sp >= tab - 1) continue
