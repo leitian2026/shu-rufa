@@ -18,6 +18,25 @@ interface Engine {
 
 private const val TAG = "MyIme"
 
+/**
+ * 词频的对数(每 2 倍 = 4 档,四分之一个八度),整数运算,不用浮点。
+ * 排序时把"词频"和"我的选择"放到同一把尺子上比,而不是让"选过一次"直接压过所有高频词。
+ */
+internal fun logQ(f: Int): Int {
+    if (f <= 0) return 0
+    val o = 31 - Integer.numberOfLeadingZeros(f)
+    val frac = if (o >= 2) (f shr (o - 2)) and 3 else (f shl (2 - o)) and 3
+    return o * 4 + frac
+}
+
+private val BOOST = IntArray(257) { Math.round(6.0 * Math.log(1.0 + it)).toInt() }
+
+/**
+ * 我的选择折算成"相当于词频多少档":选 1 次约抵 1 倍词频,选很多次最多抵 2 的 6~7 次方倍。
+ * 对数增长,所以早期的几次选择影响明显,后面边际递减;偶然选一次不会把生僻词顶到最前。
+ */
+internal fun learnBoost(score: Int): Int = BOOST[score.coerceIn(0, 256)]
+
 /** 第一个 >= target 的位置(keys 必须已排序)。 */
 internal fun lowerBound(keys: Array<String>, target: String): Int {
     var lo = 0
@@ -111,6 +130,11 @@ class PinyinEngine(
     initialOrder: IntArray? = null,
 ) : Engine {
 
+    /** 上一个、上上个上屏的中文词(联想/排序的上下文),和我的"接词"习惯。服务端设置。 */
+    @Volatile var prev: String? = null
+    @Volatile var prev2: String? = null
+    @Volatile var chain: UserChain? = null
+
     private val compactKeys: Array<String>
     internal val compactOf: Array<String> = compact
     internal val compactIds: IntArray
@@ -149,11 +173,14 @@ class PinyinEngine(
         val bestId = IntArray(pool)
         val bestFreq = IntArray(pool)
         var size = 0
+        val u = user?.takeIf { it.hasLearned() }
         for (j in lo until hi) {
             val id = ord[j]
             val rest = texts[id].length - prefix.length
             if (rest < 1 || rest > 4) continue
-            val f = freqs[id]
+            // 词频和"我打过这个词"放在同一把尺子上比
+            val f = if (u == null) freqs[id]
+            else minOf(logQ(freqs[id]) + learnBoost(u.score(texts[id], "")), 255) * 1_000_000 + minOf(freqs[id], 999_999)
             if (size == pool && f <= bestFreq[pool - 1]) continue
             var pos = if (size < pool) size else pool - 1
             while (pos > 0 && bestFreq[pos - 1] < f) {
@@ -195,6 +222,8 @@ class PinyinEngine(
 
         val out = ArrayList<Candidate>()
         val seen = HashSet<String>()
+        // 我常在上一个词后面接的词:给这些候选加分(只在有记录时才查)
+        val ctx = chain?.ctxRow(prev2, prev)
 
         fun add(ids: List<Int>, letters: Int, cap: Int) {
             val consumed = rawConsumed(raw, p.length, letters)
@@ -206,10 +235,10 @@ class PinyinEngine(
 
         val end0 = p + '\u0000'
         val endF = p + '\uffff'
-        add(top(compactKeys, compactIds, p, end0, cuts), p.length, MAX)
-        if (p.length >= 2) add(top(initialKeys, initialIds, p, end0, emptyList()), p.length, MAX)
-        add(top(compactKeys, compactIds, p, endF, cuts), p.length, MAX)
-        if (p.length >= 2) add(top(initialKeys, initialIds, p, endF, emptyList()), p.length, MAX)
+        add(top(compactKeys, compactIds, p, end0, cuts, ctx), p.length, MAX)
+        if (p.length >= 2) add(top(initialKeys, initialIds, p, end0, emptyList(), ctx), p.length, MAX)
+        add(top(compactKeys, compactIds, p, endF, cuts, ctx), p.length, MAX)
+        if (p.length >= 2) add(top(initialKeys, initialIds, p, endF, emptyList(), ctx), p.length, MAX)
 
         // 分段:找最长的、能精确匹配的前缀
         var q = p.length - 1
@@ -218,7 +247,7 @@ class PinyinEngine(
             val sub = p.substring(0, q)
             val subCuts = cuts.filter { it <= q }
             val consumed = rawConsumed(raw, p.length, q)
-            for (id in top(compactKeys, compactIds, sub, sub + '\u0000', subCuts)) {
+            for (id in top(compactKeys, compactIds, sub, sub + '\u0000', subCuts, ctx)) {
                 if (added >= PARTIAL_MAX) break
                 if (seen.add(texts[id])) {
                     out.add(Candidate(texts[id], consumed))
@@ -236,19 +265,28 @@ class PinyinEngine(
      */
     private fun top(
         keys: Array<String>, ids: IntArray, from: String, to: String, cuts: List<Int>,
+        ctx: Map<String, Int>? = null,
     ): List<Int> {
         val lo = lowerBound(keys, from)
         val hi = lowerBound(keys, to)
         if (hi <= lo) return emptyList()
         val u = user?.takeIf { it.hasLearned() }   // 没学过任何词就完全不查表
+        val boosted = u != null || ctx != null
         val bestId = IntArray(MAX)
         val bestKey = LongArray(MAX)
         var size = 0
         for (j in lo until hi) {
             val id = ids[j]
             if (cuts.isNotEmpty() && !boundariesOk(id, cuts)) continue
-            val learned = if (u != null) u.score(texts[id], from) else 0
-            val key = (learned.toLong() shl 32) or freqs[id].toLong()
+            // 词频(取对数)+ 我的选择(取对数)+ 我常接在上一个词后面的加分,放在同一把尺子上比;
+            // 没有任何学习记录时,顺序和纯词频完全一样
+            val key = if (!boosted) {
+                freqs[id].toLong()
+            } else {
+                val learned = if (u != null) u.score(texts[id], from) else 0
+                val c = ctx?.get(texts[id]) ?: 0
+                ((logQ(freqs[id]) + learnBoost(learned + c * 4)).toLong() shl 32) or freqs[id].toLong()
+            }
             if (size == MAX && key <= bestKey[MAX - 1]) continue
             var pos = if (size < MAX) size else MAX - 1
             while (pos > 0 && bestKey[pos - 1] < key) {
@@ -312,7 +350,7 @@ class StrokeEngine(
         val u = user?.takeIf { it.hasLearned() }
 
         // 只挑最靠前的 SLOTS 个。排序从高到低:
-        //   有字频的常用字 > 没字频的生僻字;我选过的;字频(按 2 倍一档分档);同一档里笔画数刚好等于输入的;精确字频;笔画短的
+        //   有字频的常用字 > 没字频的生僻字;(字频按 2 倍一档 + 我的选择折算的加分);同一档里笔画数刚好等于输入的;精确字频;笔画短的
         val bestId = IntArray(SLOTS)
         val bestKey = LongArray(SLOTS)
         var size = 0
@@ -322,10 +360,12 @@ class StrokeEngine(
             val f = freqs[id]
             val tier = if (f > 1) 1L shl 62 else 0L
             val octave = (32 - Integer.numberOfLeadingZeros(maxOf(f, 0))).toLong()   // 0..31
+            // 字频按 2 倍一档(每档 4 点),我的选择折算成同一单位的加分,一起比;
+            // 以前"选过一次"会直接压过所有没选过的常用字
+            val combined = octave * 4 + learnBoost(learned)   // < 256
             val key = tier or
-                (minOf(learned, 127).toLong() shl 55) or
-                (octave shl 50) or
-                (if (len == code.length) 1L shl 49 else 0L) or
+                (combined shl 54) or
+                (if (len == code.length) 1L shl 53 else 0L) or
                 (f.toLong() shl 18) or
                 (255 - minOf(len, 255)).toLong()
             if (size == SLOTS && key <= bestKey[SLOTS - 1]) return
