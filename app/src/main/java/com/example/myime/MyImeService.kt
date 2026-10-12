@@ -57,7 +57,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private var transBar: TranslateBarView? = null
     private var transOn = false             // 设置里的开关
     private var transAllowed = false        // 当前输入框能不能用(密码 / 数字 / 邮箱框不能)
-    private var transActive = false         // transOn && transAllowed:键盘变绿、翻译框显示、打字进翻译框
+    private var transActive = false         // transOn && transAllowed:翻译框显示、打字进翻译框
     private val transBuf = StringBuilder()  // 翻译框里的原文
     private var transSrc = ""               // 目标输入框里现在这份译文对应的原文
     private var transShown = ""             // 目标输入框里现在的译文(组合区)
@@ -851,11 +851,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
         }
 
-        // 英文补全只用在普通文本框;密码、网址、邮箱、数字框不用。应用声明"不要建议/不要个性化学习"时也都不用
+        // 英文补全只用在普通文本框;密码、网址、邮箱、数字框不用。应用声明"不要建议/不要个性化学习"时只是不记录我的用词
         val noSuggest = cls == InputType.TYPE_CLASS_TEXT &&
             (info.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0
         val noLearn = (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0
-        englishAssist = cls == InputType.TYPE_CLASS_TEXT && !secureField && !noSuggest && forced != Mode.ENGLISH && !uriField
+        // 网页输入框(GPT 等)常带"不要建议"标记,但这只是应用的提示:候选栏照样给英文补全 / 联想,
+        // 是否记录我的用词仍由下面的 allowLearn 单独控制(和中文联想的做法一致)
+        englishAssist = cls == InputType.TYPE_CLASS_TEXT && !secureField && forced != Mode.ENGLISH && !uriField
         allowLearn = !secureField && !noSuggest && !noLearn && DictConfig.learn(applicationContext)
 
         enterLabel = enterLabelFor(info)
@@ -1753,10 +1755,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun transEngineLabel(): String = "翻译:" + Translator.engineLabel(DictConfig.translateEngine(applicationContext))
 
     private fun transUi() {
-        transBar?.setContent(transBuf.toString(), Translator.pairs[transPair].label, transStatus)
+        transBar?.setContent(
+            transBuf.toString(), Translator.pairs[transPair].label, transStatus,
+            if (transStatus == TranslateBarView.STATUS_FAILED && isOnline()) Translator.lastFail else "",
+        )
     }
 
-    /** 翻译开关 / 当前输入框是否可用 变了:换色、显示或隐藏翻译框。键盘 / 候选栏 / 悬浮条 / 当前面板都跟着换。 */
+    /** 翻译开关 / 当前输入框是否可用 变了:显示或隐藏翻译框,悬浮条换色。「译」按钮的变色由 settingsPanel.selectedId 负责。 */
     private fun applyTransState() {
         settingsPanel?.selectedId = if (transOn) SettingsPanelView.ID_TRANS else -1
         settingsPanel?.setItemLabel(SettingsPanelView.ID_TRANS_ENGINE, transEngineLabel())
@@ -1766,13 +1771,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (!changed && barVisible == transActive) return   // 没变化(每次打开键盘都会走到这里):不重算、不重画
         Palette.translating = transActive
         transBar?.visibility = if (transActive) View.VISIBLE else View.GONE
+        // 键盘配色不再随翻译状态变,所以不用重算键盘 / 候选栏 / 各面板(省电);只刷新翻译框和悬浮条
         transBar?.refresh()
-        keyboardView?.refresh()
-        candidateBar?.refresh()
         floatHandle?.refresh()
-        for (p in listOf<PanelView?>(emojiPanel, symbolPanel, clipPanel, settingsPanel, choicePanel)) {
-            if (p != null && p.visibility == View.VISIBLE) p.refresh()
-        }
         // 多出 / 少了一行,键盘整体高度变了:悬浮模式要重新摆一次位置
         boxView?.post {
             applyBoxSize()
