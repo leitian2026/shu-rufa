@@ -183,7 +183,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     override fun onEvaluateFullscreenMode(): Boolean = false
 
     override fun onCreateInputView(): View {
-        val bar = CandidateBarView(this, { index -> onCandidatePicked(index) }, { tool -> onTool(tool) })
+        val bar = CandidateBarView(
+            this,
+            { index -> onCandidatePicked(index) },
+            { tool -> onTool(tool) },
+            { closeCandidates() },
+        )
         val kb = KeyboardView(this, this)
         val emoji = EmojiPanelView(this, object : EmojiPanelView.Listener {
             override fun onEmoji(emoji: String) {
@@ -218,7 +223,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 leavePage()
             }
         })
-        val settings = SettingsPanelView(this, SettingsPanelView.settingsItems(), null, object : SettingsPanelView.Listener {
+        val settings = SettingsPanelView(this, SettingsPanelView.settingsItems(), "功能", object : SettingsPanelView.Listener {
             override fun onAction(id: Int) {
                 onSettingsAction(id)
             }
@@ -1009,6 +1014,31 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         ic.endBatchEdit()
         requery()
         if (composing.isEmpty()) showChineseAssoc()
+        afterCommit()
+    }
+
+    /**
+     * 候选栏右边的关闭键:收起候选区。
+     * 正在打的拼音/笔画直接放弃;英文正在打的词按原样留在输入框里;联想词就是收起并断开联想。
+     */
+    private fun closeCandidates() {
+        val ic = currentInputConnection
+        main.removeCallbacks(assocClear)
+        if (composing.isNotEmpty() && ic != null) {
+            ic.beginBatchEdit()
+            if (mode == Mode.ENGLISH) {
+                commitEnglishWord(ic, auto = false, trailing = "")
+            } else {
+                if (mode == Mode.PINYIN) ic.setComposingText("", 1)   // 拼音字母在输入框的组合区里,一起删掉
+                ic.finishComposingText()
+                composing.clear()
+            }
+            ic.endBatchEdit()
+        }
+        prevChinese = null
+        assocKey = null
+        prevWord = null
+        clearCandidates()
         afterCommit()
     }
 
