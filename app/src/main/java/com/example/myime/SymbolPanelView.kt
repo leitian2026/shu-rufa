@@ -240,14 +240,21 @@ class SymbolPanelView(
         textPaint.textSize = baseSize
     }
 
-    override fun onContentTap(x: Float, y: Float) {
-        if (cellW <= 0f) return
+    override val coversCandidateBar: Boolean get() = true
+
+    override fun onBlankTap() {
+        listener.onBack()
+    }
+
+    override fun onContentTap(x: Float, y: Float): Boolean {
+        if (cellW <= 0f) return false
         val col = ((x - padX) / cellW).toInt()
         val row = (y / cellH).toInt()
-        if (col < 0 || col >= cols || y < 0f) return
+        if (col < 0 || col >= cols || y < 0f) return false
         val idx = row * cols + col
-        if (idx < 0 || idx >= items.size) return
+        if (idx < 0 || idx >= items.size) return false
         listener.onSymbol(items[idx])
+        return true
     }
 
     override fun onBarKey(id: Int) {
