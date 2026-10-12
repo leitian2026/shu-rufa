@@ -146,4 +146,17 @@ object DictConfig {
     fun setTranslatePair(ctx: Context, v: Int) {
         p(ctx).edit().putInt("trans_pair", v).apply()
     }
+
+    // ------------------------------------------------------------ 翻译接口(主页里可改)
+
+    /** 取 / 存一项翻译接口设置(地址、密钥、区域)。空字符串 = 用默认。 */
+    fun transSetting(ctx: Context, name: String): String = p(ctx).getString("tr_$name", "") ?: ""
+
+    fun setTransSettings(ctx: Context, values: Map<String, String>) {
+        val e = p(ctx).edit()
+        for ((k, v) in values) {
+            if (v.isBlank()) e.remove("tr_$k") else e.putString("tr_$k", v.trim())
+        }
+        e.apply()
+    }
 }
