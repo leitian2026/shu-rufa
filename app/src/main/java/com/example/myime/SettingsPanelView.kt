@@ -48,7 +48,15 @@ class SettingsPanelView(
             invalidate()
         }
 
-    /** 改某一格下面的小字(例如「翻译:微软」换成「翻译:谷歌」)。 */
+    /** 功能页里「翻译微软 / 翻译谷歌」正在起作用的那一格(整格绿底白字),-1 表示都没开。 */
+    var filledId = -1
+        set(v) {
+            if (field == v) return
+            field = v
+            invalidate()
+        }
+
+    /** 改某一格下面的小字。 */
     fun setItemLabel(id: Int, label: String) {
         val item = items.firstOrNull { x -> x.id == id } ?: return
         if (item.label == label) return
@@ -140,8 +148,8 @@ class SettingsPanelView(
             if (y > visBottom) break
 
             val sel = items[i].id == selectedId
-            // 「输入翻译」这一格打开时:整格变绿底白字(只有这一格变,键盘配色不变)
-            val filled = sel && items[i].id == ID_TRANS
+            // 「翻译微软 / 翻译谷歌」哪个正在用,哪一格整格变绿底白字(只有这一格变,键盘配色不变)
+            val filled = items[i].id == filledId
             tmp.set(x, y + shadowH, x + cellW, y + cellH + shadowH)
             fill.color = if (filled) palette.transShadow else palette.keyShadow
             canvas.drawRoundRect(tmp, radius, radius, fill)
@@ -179,8 +187,8 @@ class SettingsPanelView(
     companion object {
         /** 功能页只放别处没有的功能:中英/拼笔/数字/符号在键盘上有键,表情/编辑/剪贴板/收起在工具栏,切换输入法在「键盘选择」里。 */
         fun settingsItems() = listOf(
-            GridItem(ID_TRANS, "译", "输入翻译"),
-            GridItem(ID_TRANS_ENGINE, "擎", "翻译:微软"),
+            GridItem(ID_TRANS_MS, "微", "翻译微软"),
+            GridItem(ID_TRANS_GOOGLE, "谷", "翻译谷歌"),
             GridItem(ID_FLOAT, "浮", "悬浮键盘"),
             GridItem(ID_ADJUST, "↔↕", "键盘调节"),
             GridItem(ID_DICT, "库", "词库管理"),
@@ -207,8 +215,8 @@ class SettingsPanelView(
         const val ID_HIDE = 11
         const val ID_DICT = 12
         const val ID_FLOAT = 13
-        const val ID_TRANS = 14          // 输入翻译开关(打开时这一格显示主题色)
-        const val ID_TRANS_ENGINE = 15   // 主用翻译引擎:微软 ⇄ 谷歌
+        const val ID_TRANS_MS = 14       // 用微软翻译:点一下打开(绿色),再点关闭
+        const val ID_TRANS_GOOGLE = 15   // 用谷歌翻译:点一下打开(绿色),再点关闭;正开着微软时点它 = 直接换成谷歌
         const val ID_PINYIN = 21
         const val ID_STROKE = 22
         const val ID_ENGLISH = 23
