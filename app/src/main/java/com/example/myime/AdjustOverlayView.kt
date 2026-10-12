@@ -266,17 +266,17 @@ class AdjustOverlayView(
 
     private fun dragLeft(df: Float) {
         val right = startL + startW
-        val l = (startL + df).coerceIn(0f, right - KbSize.MIN_W)
+        val l = (startL + df).coerceIn(0f, right - KbSize.minWidthFrac(context))
         KbSize.leftFrac = l
         KbSize.widthFrac = right - l
     }
 
     private fun dragRight(df: Float) {
-        KbSize.widthFrac = (startW + df).coerceIn(KbSize.MIN_W, 1f - startL)
+        KbSize.widthFrac = (startW + df).coerceIn(KbSize.minWidthFrac(context), 1f - startL)
     }
 
     /** dyDp:手指向下为正;键盘底部固定,所以向上拖 = 变高。 */
     private fun dragTop(dyDp: Float) {
-        KbSize.heightDp = (startH - dyDp).coerceIn(KbSize.MIN_H, KbSize.maxHeightDp(context))
+        KbSize.heightDp = (startH - dyDp).coerceIn(KbSize.minHeightDp(), KbSize.maxHeightDp(context))
     }
 }
