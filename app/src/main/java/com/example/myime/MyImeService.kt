@@ -769,6 +769,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        curSelS = minOf(info.initialSelStart, info.initialSelEnd)
+        curSelE = maxOf(info.initialSelStart, info.initialSelEnd)
+        selAnchor = -1
+        selFocus = -1
 
         composing.clear()
         queryGen++
@@ -905,6 +909,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         super.onUpdateSelection(
             oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd,
         )
+        // 光标 / 选区位置:光标编辑页的「选择」靠它知道从哪里开始(系统本来就会回调,不额外耗电)。
+        // 刚被我们自己挪过的 0.4 秒内的回调可能是旧的,不拿来重新定位
+        curSelS = minOf(newSelStart, newSelEnd)
+        curSelE = maxOf(newSelStart, newSelEnd)
+        if (SystemClock.uptimeMillis() - lastSelSetAt > 400) {
+            selAnchor = newSelStart
+            selFocus = newSelEnd
+        }
         if (transActive && transShown.isNotEmpty() && SystemClock.uptimeMillis() - lastOwnEditAt > 500 &&
             (candidatesStart < 0 || newSelEnd < candidatesStart || newSelEnd > candidatesEnd)
         ) {
@@ -1225,28 +1237,123 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
+    // 选择状态:selAnchor 是起点(不动),selFocus 是跟着方向键走的那一端(都是输入框里的绝对位置)
+    private var selAnchor = -1
+    private var selFocus = -1
+    private var curSelS = -1          // 系统最近一次告诉我们的选区(已排好序)
+    private var curSelE = -1
+    private var lastSelSetAt = 0L
+
     private fun onEditInner(v: String) {
         val ic = currentInputConnection ?: return
         val meta = if (selecting) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0
         when (v) {
-            "tab" -> sendKey(KeyEvent.KEYCODE_TAB)
+            "tab" -> docStart(ic)   // 原来的 Tab 键:现在是「页首」,跳到整段文字的开头(选择状态下 = 一路选到开头)
             "copy" -> ic.performContextMenuAction(android.R.id.copy)
             "paste" -> ic.performContextMenuAction(android.R.id.paste)
             "cut" -> ic.performContextMenuAction(android.R.id.cut)
             "all" -> ic.performContextMenuAction(android.R.id.selectAll)
-            "up" -> sendKey(KeyEvent.KEYCODE_DPAD_UP, meta)
-            "down" -> sendKey(KeyEvent.KEYCODE_DPAD_DOWN, meta)
-            "left" -> sendKey(KeyEvent.KEYCODE_DPAD_LEFT, meta)
-            "right" -> sendKey(KeyEvent.KEYCODE_DPAD_RIGHT, meta)
-            "home" -> sendKey(KeyEvent.KEYCODE_MOVE_HOME, meta)
-            "end" -> sendKey(KeyEvent.KEYCODE_MOVE_END, meta)
+            "up" -> if (!(selecting && extendSelection(ic, "up"))) sendKey(KeyEvent.KEYCODE_DPAD_UP, meta)
+            "down" -> if (!(selecting && extendSelection(ic, "down"))) sendKey(KeyEvent.KEYCODE_DPAD_DOWN, meta)
+            "left" -> if (!(selecting && extendSelection(ic, "left"))) sendKey(KeyEvent.KEYCODE_DPAD_LEFT, meta)
+            "right" -> if (!(selecting && extendSelection(ic, "right"))) sendKey(KeyEvent.KEYCODE_DPAD_RIGHT, meta)
+            "home" -> if (!(selecting && extendSelection(ic, "home"))) sendKey(KeyEvent.KEYCODE_MOVE_HOME, meta)
+            "end" -> if (!(selecting && extendSelection(ic, "end"))) sendKey(KeyEvent.KEYCODE_MOVE_END, meta)
             "del" -> sendKey(KeyEvent.KEYCODE_FORWARD_DEL)
             "select" -> {
                 selecting = !selecting
+                if (selecting) {
+                    // 从当前光标(或已有的选区)开始选
+                    selAnchor = curSelS
+                    selFocus = curSelE
+                }
                 refreshLayout(animate = false)
             }
             "back" -> leavePage()
         }
+    }
+
+    private fun setSel(ic: InputConnection, anchor: Int, focus: Int) {
+        selAnchor = anchor
+        selFocus = focus
+        lastSelSetAt = SystemClock.uptimeMillis()
+        curSelS = minOf(anchor, focus)
+        curSelE = maxOf(anchor, focus)
+        ic.setSelection(anchor, focus)
+    }
+
+    /** 「页首」:光标跳到整段文字最前面;选择状态下保持起点不动,一路选到最前面。 */
+    private fun docStart(ic: InputConnection) {
+        if (selecting && selAnchor >= 0) setSel(ic, selAnchor, 0) else setSel(ic, 0, 0)
+    }
+
+    /**
+     * 选择状态下方向键直接改选区(setSelection),不再靠「按住 Shift 发方向键」(很多应用不认)。
+     *  - 左 / 右:选区的活动端挪一个字;上 / 下:挪一行(落在上 / 下一行的同一列,行短就到行尾)
+     *  - 开头 / 末尾:活动端挪到本行开头 / 末尾
+     * 只在点按时读光标附近各 2000 字,没有定时、没有轮询;读不到文字(应用不支持)时返回 false,走原来的发按键。
+     */
+    private fun extendSelection(ic: InputConnection, dir: String): Boolean {
+        val anchor = selAnchor
+        val focus = selFocus
+        if (anchor < 0 || focus < 0) return false
+        val s = minOf(anchor, focus)
+        val e = maxOf(anchor, focus)
+        if (e - s > 8000) return false
+        val before = ic.getTextBeforeCursor(2000, 0) ?: return false
+        val mid = if (e > s) (ic.getSelectedText(0) ?: return false) else ""
+        if (mid.length != e - s) return false   // 我们记的位置和输入框对不上,别乱挪
+        val after = ic.getTextAfterCursor(2000, 0) ?: return false
+        val base = s - before.length
+        val t = StringBuilder(before.length + mid.length + after.length).append(before).append(mid).append(after).toString()
+        val lf = focus - base
+        if (lf < 0 || lf > t.length) return false
+        val lineStart = t.lastIndexOf('\n', lf - 1) + 1
+        val col = lf - lineStart
+        var nf = lf
+        when (dir) {
+            "left" -> {
+                if (lf > 0) {
+                    nf = lf - 1
+                    if (nf > 0 && Character.isLowSurrogate(t[nf]) && Character.isHighSurrogate(t[nf - 1])) nf--
+                }
+            }
+            "right" -> {
+                if (lf < t.length) {
+                    nf = lf + 1
+                    if (nf < t.length && Character.isLowSurrogate(t[nf]) && Character.isHighSurrogate(t[nf - 1])) nf++
+                }
+            }
+            "home" -> nf = lineStart
+            "end" -> {
+                val le = t.indexOf('\n', lf)
+                nf = if (le < 0) t.length else le
+            }
+            "up" -> {
+                if (lineStart == 0) {
+                    if (base > 0) return false     // 这一行太长,上一行不在读到的范围里
+                    nf = 0
+                } else {
+                    val prevEnd = lineStart - 1
+                    val prevStart = t.lastIndexOf('\n', prevEnd - 1) + 1
+                    if (prevStart == 0 && base > 0) return false
+                    nf = prevStart + minOf(col, prevEnd - prevStart)
+                }
+            }
+            "down" -> {
+                val le = t.indexOf('\n', lf)
+                if (le < 0) {
+                    nf = t.length
+                } else {
+                    val nextStart = le + 1
+                    val ne = t.indexOf('\n', nextStart)
+                    val nextEnd = if (ne < 0) t.length else ne
+                    nf = nextStart + minOf(col, nextEnd - nextStart)
+                }
+            }
+        }
+        if (nf != lf) setSel(ic, anchor, base + nf)
+        return true
     }
 
     // ------------------------------------------------------------ 组合与候选
