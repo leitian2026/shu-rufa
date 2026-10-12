@@ -237,6 +237,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 onChoiceAction(id)
             }
 
+            override fun onExtra(id: Int) {
+                cycleDefaultMode()
+            }
+
             override fun onBack() {
                 leavePage()
             }
@@ -266,6 +270,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         clipPanel = clip
         settingsPanel = settings
         choicePanel = choice
+        choice.extraLabel = defaultModeLabel()
         adjustOverlay = overlay
 
         val col = LinearLayout(this).apply {
@@ -381,6 +386,25 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         refreshLayout(animate = true)
     }
 
+    private fun defaultModeLabel(): String = when (DictConfig.defaultMode(this)) {
+        "pinyin" -> "默认:拼音"
+        "stroke" -> "默认:笔画"
+        "english" -> "默认:英文"
+        else -> "默认:上次"
+    }
+
+    /** 点一下换一种:拼音 → 笔画 → 英文 → 上次用的。下次打开输入法时生效。 */
+    private fun cycleDefaultMode() {
+        val next = when (DictConfig.defaultMode(this)) {
+            "pinyin" -> "stroke"
+            "stroke" -> "english"
+            "english" -> "last"
+            else -> "pinyin"
+        }
+        DictConfig.setDefaultMode(applicationContext, next)
+        choicePanel?.extraLabel = defaultModeLabel()
+    }
+
     private fun onChoiceAction(id: Int) {
         when (id) {
             SettingsPanelView.ID_PINYIN -> setTextMode(Mode.PINYIN)
@@ -484,6 +508,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         allowLearn = !secureField && !noSuggest && !noLearn && DictConfig.learn(applicationContext)
 
         enterLabel = enterLabelFor(info)
+        if (!restarting) {
+            when (DictConfig.defaultMode(applicationContext)) {
+                "pinyin" -> { textMode = Mode.PINYIN; chineseMode = Mode.PINYIN }
+                "stroke" -> { textMode = Mode.STROKE; chineseMode = Mode.STROKE }
+                "english" -> textMode = Mode.ENGLISH
+            }
+        }
         mode = forced ?: textMode
         shift = false
         shiftLock = false
