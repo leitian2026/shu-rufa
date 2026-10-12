@@ -66,7 +66,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             field = v
             englishEngine?.prev = v
         }
-    private var prevChinese: String? = null   // 上一个上屏的中文词,给中文联想("我常在 X 后面打 Y")用
+    private var prevChinese2: String? = null  // 再上一个词(两词上下文,更准)
+    private var prevChinese: String? = null   // 上一个上屏的中文词,给中文联想("我常在 X 后面打 Y")和拼音候选排序用
+        set(v) {
+            prevChinese2 = if (v == null) null else field   // 设新词时,旧的退到"上上个";清空时两个一起清
+            field = v
+            (pinyinEngine as? PinyinEngine)?.let { it.prev = v; it.prev2 = prevChinese2 }
+        }
     private var assocKey: String? = null      // 中文联想:接着往下查词库的前缀
     private var lastOwnEditAt = 0L            // 我们自己最近一次改输入框的时间,用来分辨光标是不是被用户挪了
 
@@ -129,7 +135,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             main.post {
                 if (gen == dictGen) {
                     when (kind) {
-                        KIND_PINYIN -> pinyinEngine = engine as Engine?
+                        KIND_PINYIN -> {
+                            pinyinEngine = engine as Engine?
+                            (engine as? PinyinEngine)?.let {
+                                it.chain = UserData.chain(applicationContext)
+                                it.prev = prevChinese
+                                it.prev2 = prevChinese2
+                            }
+                        }
                         KIND_STROKE -> strokeEngine = engine as Engine?
                         else -> {
                             val en = engine as EnglishEngine?
@@ -1025,7 +1038,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val prev = prevChinese
         if (allowLearn && prev != null && prev.length <= 8 && text.length <= 8) {
             val ctx = applicationContext
-            worker.execute { UserData.chain(ctx).learn(prev, text) }
+            val prev2 = prevChinese2
+            worker.execute {
+                val c = UserData.chain(ctx)
+                c.learn(prev, text)
+                if (prev2 != null && prev2.length <= 8) c.learn(prev2 + UserChain.SEP + prev, text)
+            }
         }
         val key = assocKey
         assocKey = if (extend && key != null && key.length + text.length <= 6) key + text else text
@@ -1058,6 +1076,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         if (dictState[KIND_PINYIN] == 0) loadKind(KIND_PINYIN)
         val prev = prevChinese
+        val prev2 = prevChinese2
         val learnOn = allowLearn
         val ctx = applicationContext
         val gen = ++queryGen
@@ -1066,7 +1085,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             val seen = HashSet<String>()
             try {
                 if (learnOn && prev != null) {
-                    for (w in UserData.chain(ctx).next(prev)) if (seen.add(w)) list.add(Candidate(w, 0, 2))
+                    for (w in UserData.chain(ctx).next(prev2, prev)) if (seen.add(w)) list.add(Candidate(w, 0, 2))
                 }
                 val eng = pinyinEngine as? PinyinEngine
                 if (eng != null) {
