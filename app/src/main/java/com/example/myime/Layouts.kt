@@ -10,7 +10,7 @@ enum class ActionType {
     EDIT,       // 光标编辑页里的各个键
 }
 
-enum class Mode { PINYIN, STROKE, ENGLISH, SYMBOL, NUMBER, EDIT, EMOJI, CLIPBOARD }
+enum class Mode { PINYIN, STROKE, ENGLISH, SYMBOL, NUMBER, EDIT, EMOJI, CLIPBOARD, SETTINGS, KEYBOARD }
 
 object Icon {
     const val NONE = 0
@@ -21,6 +21,9 @@ object Icon {
     const val DOWN = 5
     const val LEFT = 6
     const val RIGHT = 7
+    const val SHIFT = 8        // 小写(空心箭头)
+    const val SHIFT_ON = 9     // 下一个字母大写(实心箭头)
+    const val SHIFT_LOCK = 10  // 锁定大写(实心箭头 + 下划线,蓝底)
 }
 
 /**
@@ -59,6 +62,7 @@ class KbState(
     val shift: Boolean,
     val composing: Boolean,
     val selecting: Boolean,
+    val shiftLock: Boolean = false,
 )
 
 object Layouts {
@@ -69,8 +73,8 @@ object Layouts {
         Mode.SYMBOL -> symbol(s, wide)
         Mode.NUMBER -> number(s, wide)
         Mode.EDIT -> edit(s, wide)
-        // 表情、剪贴板是独立的面板视图,不走按键布局;这里只是占位,不会显示
-        Mode.EMOJI, Mode.CLIPBOARD -> qwerty(Mode.PINYIN, s, wide)
+        // 表情、剪贴板、功能页是独立的面板视图,不走按键布局;这里只是占位,不会显示
+        Mode.EMOJI, Mode.CLIPBOARD, Mode.SETTINGS, Mode.KEYBOARD -> qwerty(Mode.PINYIN, s, wide)
     }
 
     // ---------------------------------------------------------------- 工具
@@ -124,7 +128,13 @@ object Layouts {
         }
 
         val left = when {
-            english -> KeySpec("大写", ActionType.SHIFT, function = true, active = s.shift)
+            english -> {
+                val locked = s.shift && s.shiftLock
+                KeySpec(
+                    "", ActionType.SHIFT, function = true, active = locked,
+                    icon = if (locked) Icon.SHIFT_LOCK else if (s.shift) Icon.SHIFT_ON else Icon.SHIFT,
+                )
+            }
             s.composing -> KeySpec("分词", ActionType.SEPARATOR, function = true)
             else -> KeySpec("笔画", ActionType.METHOD, function = true)
         }
@@ -163,7 +173,7 @@ object Layouts {
         keys.add(punct.at(x0, 0f, pw, 4f))
 
         val x1 = x0 + pw
-        val glyphs = listOf("一" to "h", "丨" to "s", "丿" to "p", "丶" to "n", "乙" to "z")
+        val glyphs = listOf("一" to "h", "丨" to "s", "丿" to "p", "丶" to "n", "ㄥ" to "z")
         for (i in glyphs.indices) {
             val col = i % 3
             val row = i / 3
