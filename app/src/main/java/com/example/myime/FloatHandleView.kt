@@ -58,7 +58,7 @@ class FloatHandleView(
         val h = height.toFloat()
         // 输入翻译打开时整条换成绿色实底、白色图案,在悬浮键盘上一眼就能看出翻译开着
         val tr = Palette.translating
-        bg.color = if (tr) palette.accent else palette.topBar
+        bg.color = if (tr) palette.transAccent else palette.topBar
         canvas.drawRect(0f, 0f, w, h, bg)
 
         // 中间的小药丸
