@@ -34,10 +34,23 @@ object KbSize {
 
     var floating = false
 
-    fun minWidthFrac(c: Context): Float =
-        if (floating) (200f / c.resources.configuration.screenWidthDp).coerceIn(0.2f, 0.9f) else MIN_W
+    /** 悬浮键盘的缩放比例:键盘按 floatRefWidthPx 宽、默认高度排好版,再整体等比缩放,字和按键一起变。 */
+    var scale = 0.85f
+    const val MIN_SCALE = 0.7f   // 再小字就看不清了
 
-    fun minHeightDp(): Float = if (floating) FLOAT_MIN_H else MIN_H
+    fun floatRefWidthPx(c: Context): Int =
+        minOf(c.resources.displayMetrics.widthPixels, c.dpi(600f))
+
+    fun maxScale(c: Context): Float {
+        val sw = c.resources.displayMetrics.widthPixels.toFloat()
+        val byW = sw / floatRefWidthPx(c)
+        val byH = (c.resources.configuration.screenHeightDp * 0.7f) / (defaultHeightDp(c) + 100f)
+        return minOf(1.5f, byW, byH).coerceAtLeast(MIN_SCALE)
+    }
+
+    fun minWidthFrac(c: Context): Float = MIN_W
+
+    fun minHeightDp(): Float = MIN_H
 
     var heightDp = -1f
     var widthFrac = 1f
@@ -47,24 +60,24 @@ object KbSize {
     fun defaultHeightDp(c: Context): Float = if (c.isWide()) 279f else 224f
 
     fun heightDp(c: Context): Float =
-        (if (heightDp < 0f) defaultHeightDp(c) else heightDp).coerceIn(minHeightDp(), maxHeightDp(c))
+        if (floating) defaultHeightDp(c)   // 悬浮时版式高度固定,靠缩放变大变小
+        else (if (heightDp < 0f) defaultHeightDp(c) else heightDp).coerceIn(minHeightDp(), maxHeightDp(c))
 
     fun maxHeightDp(c: Context): Float =
         minOf(460f, c.resources.configuration.screenHeightDp * 0.6f).coerceAtLeast(minHeightDp())
 
     fun maxBottomDp(c: Context): Float =
-        if (floating) (c.resources.configuration.screenHeightDp - minHeightDp() - 90f).coerceAtLeast(0f)
-        else (c.resources.configuration.screenHeightDp * 0.35f).coerceAtLeast(0f)
+        (c.resources.configuration.screenHeightDp * 0.35f).coerceAtLeast(0f)
 
     /** 打开悬浮键盘:如果还是贴底全宽,先缩成一个居中、抬离底边的小键盘。 */
     fun enterFloating(c: Context) {
         floating = true
-        if (widthFrac >= 0.99f && bottomDp <= 0f) {
-            widthFrac = if (c.isWide()) 0.5f else 0.85f
-            leftFrac = (1f - widthFrac) / 2f
-            bottomDp = 96f
-            heightDp = defaultHeightDp(c) * 0.8f
-        }
+        heightDp = -1f
+        widthFrac = 1f
+        scale = (if (c.isWide()) 0.8f else 0.85f).coerceIn(MIN_SCALE, maxScale(c))
+        val sw = c.resources.displayMetrics.widthPixels.toFloat()
+        leftFrac = ((1f - floatRefWidthPx(c) * scale / sw) / 2f).coerceAtLeast(0f)
+        bottomDp = 96f
     }
 
     /** 关掉悬浮:回到贴底全宽的默认键盘。 */
@@ -80,15 +93,16 @@ object KbSize {
         val p = c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
         heightDp = p.getFloat("h", -1f)
         floating = p.getBoolean("f", false)
-        widthFrac = p.getFloat("w", 1f).coerceIn(if (floating) 0.2f else MIN_W, 1f)
-        leftFrac = p.getFloat("l", 0f).coerceIn(0f, 1f - widthFrac)
+        scale = p.getFloat("s", 0.85f).coerceIn(MIN_SCALE, maxScale(c))
+        widthFrac = p.getFloat("w", 1f).coerceIn(MIN_W, 1f)
+        leftFrac = p.getFloat("l", 0f).coerceIn(0f, if (floating) 1f else 1f - widthFrac)
         bottomDp = p.getFloat("b", 0f).coerceAtLeast(0f)
     }
 
     fun save(c: Context) {
         c.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit()
             .putFloat("h", heightDp).putFloat("w", widthFrac)
-            .putFloat("l", leftFrac).putFloat("b", bottomDp).putBoolean("f", floating).apply()
+            .putFloat("l", leftFrac).putFloat("b", bottomDp).putBoolean("f", floating).putFloat("s", scale).apply()
     }
 
     fun reset() {
