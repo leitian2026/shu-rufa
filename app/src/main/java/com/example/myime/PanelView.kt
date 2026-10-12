@@ -34,7 +34,7 @@ class BarKey(
 
 /**
  * 表情、剪贴板这类面板的基类:
- *  - 上方是可上下滑动的内容区(带惯性),下方是一排固定的按键条
+ *  - 最上面是一排固定的按键条(有标题的面板:标题在左、按键紧凑靠右在同一行),下面是可上下滑动的内容区(带惯性)
  *  - 高度和键盘完全一致,切换时不跳动
  *  - 动画(显示、按键高亮消退、点分类跳转)都用 Motion 里的同一个时长和曲线
  */
@@ -69,6 +69,12 @@ abstract class PanelView(context: Context) : View(context) {
     protected open fun isBarSelected(id: Int): Boolean = false
     protected open fun onMetricsChanged() {}
     protected open fun onShown() {}
+
+    /** true:标题在左、按键紧凑靠右排在同一行(剪贴板、功能页、键盘选择);false:按键铺满整行(表情的分类条)。 */
+    protected open val titledHeader: Boolean get() = false
+
+    /** 画标题。left 是标题的左边,centerY 是这一行的竖直中心。只有 titledHeader 为 true 时才会调用。 */
+    protected open fun drawHeaderTitle(canvas: Canvas, left: Float, centerY: Float) {}
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pressPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -149,8 +155,15 @@ abstract class PanelView(context: Context) : View(context) {
         applyMetrics()
     }
 
-    protected fun contentTop(): Float = padTop
-    protected fun contentBottom(): Float = height - padBottom - barH - barGap
+    protected fun contentTop(): Float = padTop + barH + barGap
+    protected fun contentBottom(): Float = height - padBottom
+
+    /** 标题行里最左边那个按键的左边缘,标题别画到它下面。 */
+    protected fun barLeftEdge(): Float {
+        var l = width.toFloat()
+        for (r in barRects) if (r.width() > 0f && r.left < l) l = r.left
+        return l
+    }
     protected fun viewportHeight(): Float = contentBottom() - contentTop()
     protected fun maxOffsetY(): Float = (contentHeight() - viewportHeight()).coerceAtLeast(0f)
 
@@ -222,16 +235,36 @@ abstract class PanelView(context: Context) : View(context) {
         val keys = barKeys
         if (width == 0 || height == 0) return
         val gx = context.dpf(6f)
-        var total = 0f
-        for (k in keys) total += k.weight
-        val unit = (width - 2 * padX - gx * (keys.size - 1)) / total
-        val top = height - padBottom - barH
+        val top = padTop
         barRects.clear()
-        var x = padX
-        for (k in keys) {
-            val w = unit * k.weight
-            barRects.add(RectF(x, top, x + w, top + barH))
-            x += w + gx
+        if (titledHeader) {
+            // 每个键的宽度跟着文字走,整组靠右排;左边留给标题
+            val wide = context.isWide()
+            val minW = context.dpf(if (wide) 64f else 54f)
+            val padW = context.dpf(28f)
+            val widths = FloatArray(keys.size)
+            var total = 0f
+            for (i in keys.indices) {
+                val k = keys[i]
+                widths[i] = if (k.kind == BarKind.SPACER) 0f else maxOf(minW, barText.measureText(k.label) + padW)
+                total += widths[i]
+                if (i > 0) total += gx
+            }
+            var x = maxOf(padX, width - padX - total)
+            for (i in keys.indices) {
+                barRects.add(RectF(x, top, x + widths[i], top + barH))
+                x += widths[i] + gx
+            }
+        } else {
+            var total = 0f
+            for (k in keys) total += k.weight
+            val unit = (width - 2 * padX - gx * (keys.size - 1)) / total
+            var x = padX
+            for (k in keys) {
+                val w = unit * k.weight
+                barRects.add(RectF(x, top, x + w, top + barH))
+                x += w + gx
+            }
         }
         barIsDown = BooleanArray(keys.size)
         barReleasedAt = LongArray(keys.size) { -1L }
@@ -250,6 +283,7 @@ abstract class PanelView(context: Context) : View(context) {
         drawContent(canvas, offsetY, offsetY + (bottom - top))
         canvas.restore()
         drawBar(canvas)
+        if (titledHeader) drawHeaderTitle(canvas, padX + context.dpf(4f), padTop + barH / 2f)
     }
 
     /** 按下时高亮,松手立刻恢复,没有渐隐动画。 */
