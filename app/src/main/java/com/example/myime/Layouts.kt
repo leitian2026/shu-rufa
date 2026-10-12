@@ -233,7 +233,7 @@ object Layouts {
         val cw = floatArrayOf(0.83f, 1f, 1f, 1f, 0.83f)
         val grid = arrayOf(
             arrayOf(
-                e("Tab", "tab", fn = true), e("复制", "copy"),
+                e("页首", "tab", fn = true), e("复制", "copy"),
                 e("", "up", icon = Icon.UP, rep = true), e("粘贴", "paste"), backspace(),
             ),
             arrayOf(
