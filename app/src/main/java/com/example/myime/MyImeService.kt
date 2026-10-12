@@ -40,6 +40,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private var settingsPanel: SettingsPanelView? = null
     private var choicePanel: SettingsPanelView? = null     // 键盘选择(拼音/笔画/英文)
     private var adjustOverlay: AdjustOverlayView? = null
+    private var floatHandle: FloatHandleView? = null
     private var boxView: FrameLayout? = null
     private var adjusting = false           // 正在「键盘调节」
 
@@ -273,8 +274,31 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         choice.extraLabel = defaultModeLabel()
         adjustOverlay = overlay
 
+        val handle = FloatHandleView(this, object : FloatHandleView.Listener {
+            override fun onMove() {
+                applyBoxSize()
+            }
+
+            override fun onResize() {
+                applySizeLive()
+            }
+
+            override fun onDone() {
+                KbSize.save(this@MyImeService)
+            }
+
+            override fun boxHeightPx(): Int = boxView?.height ?: 0
+        })
+        floatHandle = handle
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            addView(
+                handle,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ),
+            )
             addView(
                 bar,
                 LinearLayout.LayoutParams(
@@ -334,9 +358,41 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val lp = box.layoutParams as FrameLayout.LayoutParams
         lp.width = (sw * KbSize.widthFrac).toInt().coerceAtLeast(1)
         lp.leftMargin = (sw * KbSize.leftFrac).toInt()
-        lp.bottomMargin = dpi(KbSize.bottomDp)
+        var bottom = dpi(KbSize.bottomDp)
+        if (KbSize.floating && box.height > 0) {
+            // 别让键盘顶出屏幕上沿
+            val maxB = (resources.displayMetrics.heightPixels - box.height - dpi(24f)).coerceAtLeast(0)
+            if (bottom > maxB) bottom = maxB
+        }
+        lp.bottomMargin = bottom
         lp.gravity = Gravity.START or Gravity.BOTTOM
         box.layoutParams = lp
+        floatHandle?.visibility = if (KbSize.floating) View.VISIBLE else View.GONE
+        floatHandle?.refresh()
+    }
+
+    /**
+     * 悬浮键盘:只有键盘那一块接收触摸,其余地方的点击直接落到下面的应用上;
+     * 也不把应用界面往上顶(键盘盖在应用上面,想放哪放哪)。贴底的普通模式照旧。
+     */
+    override fun onComputeInsets(outInsets: InputMethodService.Insets) {
+        super.onComputeInsets(outInsets)
+        val box = boxView ?: return
+        if (!KbSize.floating || box.width == 0 || box.height == 0 || box.visibility != View.VISIBLE) return
+        val decorH = window?.window?.decorView?.height ?: return
+        val loc = IntArray(2)
+        box.getLocationInWindow(loc)
+        outInsets.contentTopInsets = decorH
+        outInsets.visibleTopInsets = decorH
+        outInsets.touchableInsets = InputMethodService.Insets.TOUCHABLE_INSETS_REGION
+        outInsets.touchableRegion.set(loc[0], loc[1], loc[0] + box.width, loc[1] + box.height)
+    }
+
+    private fun toggleFloating() {
+        if (KbSize.floating) KbSize.exitFloating() else KbSize.enterFloating(this)
+        KbSize.save(this)
+        leavePage()
+        applySizeLive()
     }
 
     /** 拖动过程中实时生效:位置/宽度走布局参数,高度要让键盘和各面板重新取一次。 */
@@ -444,6 +500,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 leavePage()
                 (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
             }
+            SettingsPanelView.ID_FLOAT -> toggleFloating()
             SettingsPanelView.ID_ADJUST -> enterAdjust()
             SettingsPanelView.ID_APP -> {
                 startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -455,27 +512,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
-    /** 每个输入框只在第一次自动弹出时收起一次,之后你再点输入框就正常弹出。 */
-    private var autoHidden = false
-
-    override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
-        super.onStartInput(attribute, restarting)
-        if (!restarting) autoHidden = false
-    }
-
-    /** Edge 打开收藏夹面板时会自动把焦点给里面的搜索框,顺带弹出键盘;识别出来就收起。 */
-    private fun isEdgeFavoritesSearch(info: EditorInfo): Boolean {
-        if (info.packageName?.startsWith("com.microsoft.emmx") != true) return false
-        val hint = info.hintText?.toString() ?: return false
-        return hint.contains("收藏") || hint.contains("bookmark", true) || hint.contains("favorite", true)
-    }
-
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        if (!restarting && !autoHidden && isEdgeFavoritesSearch(info)) {
-            autoHidden = true
-            main.post { requestHideSelf(0) }
-        }
+
         composing.clear()
         queryGen++
         candidates = emptyList()
