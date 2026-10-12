@@ -385,6 +385,16 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 path.lineTo(cx + h * 0.3f, cy + h * 0.75f)
                 canvas.drawPath(path, iconPaint)
             }
+            Icon.BACK -> {
+                val bw = w * 0.8f
+                val bh = h * 0.85f
+                path.moveTo(cx + bw, cy)
+                path.lineTo(cx - bw, cy)
+                path.moveTo(cx - bw + bh, cy - bh)
+                path.lineTo(cx - bw, cy)
+                path.lineTo(cx - bw + bh, cy + bh)
+                canvas.drawPath(path, iconPaint)
+            }
             Icon.RIGHT -> {
                 path.moveTo(cx - h * 0.3f, cy - h * 0.75f)
                 path.lineTo(cx + h * 0.4f, cy)
