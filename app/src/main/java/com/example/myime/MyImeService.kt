@@ -104,11 +104,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 leavePage()
             }
 
-            override fun onDelete(index: Int) {
-                if (index in clips.indices) {
-                    clips.removeAt(index)
-                    clipPanel?.setItems(clips.toList())
-                }
+            override fun onDeleteMany(texts: List<String>) {
+                clips.removeAll(texts.toSet())
+                clipPanel?.setItems(clips.toList())
             }
 
             override fun onClear() {
