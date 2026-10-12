@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 只申请联网一项,只给"词库管理"页下载词库用;键盘本身(MyImeService)的代码里没有任何联网。 -->
+    <!-- 只申请联网一项,用在两处:"词库管理"页下载词库;"输入翻译"打开后,把翻译框里的原文发给微软 / 谷歌翻译。
+         除此之外键盘本身不联网,翻译没打开时一个请求都不会发。 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 只用来在发请求前看一眼有没有网(没网就不发,省得空等超时);网络恢复时自动重试一次。普通权限,不弹窗。 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:allowBackup="false"
