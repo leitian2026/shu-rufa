@@ -8,7 +8,7 @@ import android.graphics.RectF
 /**
  * 剪贴板面板:按时间倒序列出最近复制过的文字。
  *  - 点一条 = 粘贴到输入框并返回键盘
- *  - 长按一条 = 进入多选:每条前面出现圆圈,点哪条选哪条;底部变成「取消 / 全选 / 删除」
+ *  - 长按一条 = 进入多选:每条前面出现圆圈,点哪条选哪条;标题右边的按键变成「取消 / 全选 / 删除」
  *  - 「清空」删除全部;离开面板或点「取消」都会退出多选
  */
 class ClipboardPanelView(
@@ -35,7 +35,6 @@ class ClipboardPanelView(
     private var lineH = 0f
     private var cardPad = 0f
     private var cardGap = 0f
-    private var headerH = 0f
     private var checkW = 0f      // 多选时每条左边圆圈占的宽度
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
@@ -58,16 +57,15 @@ class ClipboardPanelView(
 
     private var barList: List<BarKey> = normalBar()
     override val barKeys: List<BarKey> get() = barList
+    override val titledHeader: Boolean get() = true
 
     private fun normalBar() = listOf(
         BarKey(ID_BACK, "返回", 1.6f, BarKind.PRIMARY),
-        BarKey(ID_SPACER, "", 6f, BarKind.SPACER),
         BarKey(ID_CLEAR, "清空", 1.6f, BarKind.FUNCTION),
     )
 
     private fun selectBar() = listOf(
         BarKey(ID_CANCEL, "取消", 1.6f, BarKind.PRIMARY),
-        BarKey(ID_SPACER, "", 3.4f, BarKind.SPACER),
         BarKey(
             ID_ALL,
             if (items.isNotEmpty() && selected.size == items.size) "取消全选" else "全选",
@@ -96,7 +94,6 @@ class ClipboardPanelView(
         cardPad = context.dpf(if (wide) 14f else 10f)
         cardGap = context.dpf(if (wide) 10f else 6f)
         checkW = context.dpf(if (wide) 40f else 34f)
-        headerH = lineH * 1.9f
         textBase = baseline(textPaint)
         hintBase = baseline(hintPaint)
         titleBase = baseline(titlePaint)
@@ -148,7 +145,7 @@ class ClipboardPanelView(
         lines = items.map { wrap(it, maxTextW) }
         tops = FloatArray(items.size + 1)
         cardH = FloatArray(items.size)
-        var y = headerH
+        var y = 0f
         for (i in items.indices) {
             tops[i] = y
             val h = cardPad * 2 + maxOf(lines[i].size, 1) * lineH
@@ -183,20 +180,20 @@ class ClipboardPanelView(
 
     override fun contentHeight(): Float = totalH
 
-    override fun drawContent(canvas: Canvas, visTop: Float, visBottom: Float) {
-        // 标题行
+    /** 标题行:左边是标题和条数,右边是按键(由基类排)。条数放不下就不画,免得压到按键。 */
+    override fun drawHeaderTitle(canvas: Canvas, left: Float, centerY: Float) {
         titlePaint.color = palette.text
         countPaint.color = palette.textFaint
         val title = if (selecting) "已选 ${selected.size} 项" else "剪贴板"
-        val tx = padX + cardPad * 0.5f
-        canvas.drawText(title, tx, headerH / 2f + titleBase, titlePaint)
+        canvas.drawText(title, left, centerY + titleBase, titlePaint)
         val count = if (selecting) "共 ${items.size} 条" else "${items.size}/500"
-        canvas.drawText(
-            count,
-            tx + titlePaint.measureText(title) + context.dpf(10f),
-            headerH / 2f + baseline(countPaint),
-            countPaint,
-        )
+        val cx = left + titlePaint.measureText(title) + context.dpf(10f)
+        if (cx + countPaint.measureText(count) + context.dpf(8f) <= barLeftEdge()) {
+            canvas.drawText(count, cx, centerY + baseline(countPaint), countPaint)
+        }
+    }
+
+    override fun drawContent(canvas: Canvas, visTop: Float, visBottom: Float) {
         if (items.isEmpty()) {
             hintPaint.color = palette.textFaint
             val cy = viewportHeight() / 2f
@@ -300,7 +297,6 @@ class ClipboardPanelView(
 
     private companion object {
         const val ID_BACK = 0
-        const val ID_SPACER = 1
         const val ID_CLEAR = 2
         const val ID_CANCEL = 3
         const val ID_ALL = 4
