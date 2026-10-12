@@ -33,6 +33,7 @@ class TranslateBarView(
     private var text = ""
     private var lang = ""
     private var status = STATUS_NONE
+    private var detail = ""
 
     private val bgPaint = Paint()
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -97,9 +98,10 @@ class TranslateBarView(
     }
 
     /** 原文、方向按钮上的文字、状态(转圈用的 … / 失败)变了就重画;都没变不重画。 */
-    fun setContent(text: String, lang: String, status: Int) {
+    fun setContent(text: String, lang: String, status: Int, detail: String = "") {
         val t = text.replace('\n', ' ')
-        if (t == this.text && lang == this.lang && status == this.status) return
+        if (t == this.text && lang == this.lang && status == this.status && detail == this.detail) return
+        this.detail = detail
         // 排版只和「方向文字」「框里有没有字(完成 / 关闭)」有关,打字过程中不用重排
         val relayout = lang != this.lang || t.isEmpty() != this.text.isEmpty()
         this.text = t
@@ -159,7 +161,7 @@ class TranslateBarView(
         // 输入框:空的时候是浅灰底;有字时换成主题色的浅底 + 描边
         val filled = text.isNotEmpty()
         if (filled) {
-            boxPaint.color = palette.accent
+            boxPaint.color = palette.transAccent
             boxPaint.alpha = 34
         } else {
             boxPaint.color = palette.pill
@@ -167,7 +169,7 @@ class TranslateBarView(
         }
         canvas.drawRoundRect(boxRect, radius, radius, boxPaint)
         if (filled) {
-            linePaint.color = palette.accent
+            linePaint.color = palette.transAccent
             linePaint.alpha = 255
             canvas.drawRoundRect(boxRect, radius, radius, linePaint)
         }
@@ -192,7 +194,7 @@ class TranslateBarView(
             canvas.drawText(text, innerL + shift, cy + textBase, textPaint)
             // 光标:一根静止的竖线
             val cx = innerL + shift + tw + caretGap
-            linePaint.color = palette.accent
+            linePaint.color = palette.transAccent
             linePaint.alpha = 255
             canvas.drawLine(cx, cy - context.dpf(10f), cx, cy + context.dpf(10f), linePaint)
             canvas.restore()
@@ -200,7 +202,7 @@ class TranslateBarView(
             // 状态:翻译中 / 失败(画在 × 的左边)
             if (status != STATUS_NONE) {
                 smallPaint.color = if (status == STATUS_FAILED) 0xFFD93025.toInt() else palette.textFaint
-                canvas.drawText(if (status == STATUS_FAILED) "翻译失败" else "…", innerR - context.dpf(2f), cy + smallBase, smallPaint)
+                canvas.drawText(if (status == STATUS_FAILED) (if (detail.isEmpty()) "翻译失败" else "失败:$detail") else "…", innerR - context.dpf(2f), cy + smallBase, smallPaint)
             }
 
             // × 清空
@@ -216,7 +218,7 @@ class TranslateBarView(
         }
 
         // 右边的「完成 / 关闭」
-        btnPaint.color = if (filled) palette.accent else palette.text
+        btnPaint.color = if (filled) palette.transAccent else palette.text
         canvas.drawText(btnLabel(), btnRect.left + (btnRect.width() - context.dpf(4f)) / 2f, cy + btnBase, btnPaint)
     }
 
