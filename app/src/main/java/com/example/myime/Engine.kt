@@ -126,6 +126,57 @@ class PinyinEngine(
         initialKeys = Array(i.size) { initials[i[it]] }
     }
 
+
+    // 联想用:按词本身排序的下标。第一次要联想时才在后台算一次,不用联想就不占内存
+    private val textOrder: IntArray by lazy { texts.indices.sortedBy { texts[it] }.toIntArray() }
+    private val textKeys: Array<String> by lazy {
+        val o = textOrder
+        Array(o.size) { texts[o[it]] }
+    }
+
+    /**
+     * 词库里以 prefix 开头的词,去掉 prefix 后剩下的部分,按词频从高到低(最多 max 个,去重)。
+     * 比如 prefix = "吃" → 饭、惊、力…… 只取剩余 1 到 4 个字的。
+     */
+    fun followers(prefix: String, max: Int): List<String> {
+        if (prefix.isEmpty()) return emptyList()
+        val keys = textKeys
+        val ord = textOrder
+        val lo = lowerBound(keys, prefix)
+        val hi = lowerBound(keys, prefix + '\uffff')
+        if (hi <= lo) return emptyList()
+        val pool = 48
+        val bestId = IntArray(pool)
+        val bestFreq = IntArray(pool)
+        var size = 0
+        for (j in lo until hi) {
+            val id = ord[j]
+            val rest = texts[id].length - prefix.length
+            if (rest < 1 || rest > 4) continue
+            val f = freqs[id]
+            if (size == pool && f <= bestFreq[pool - 1]) continue
+            var pos = if (size < pool) size else pool - 1
+            while (pos > 0 && bestFreq[pos - 1] < f) {
+                bestFreq[pos] = bestFreq[pos - 1]
+                bestId[pos] = bestId[pos - 1]
+                pos--
+            }
+            bestFreq[pos] = f
+            bestId[pos] = id
+            if (size < pool) size++
+        }
+        val out = ArrayList<String>()
+        val seen = HashSet<String>()
+        for (k in 0 until size) {
+            val r = texts[bestId[k]].substring(prefix.length)
+            if (seen.add(r)) {
+                out.add(r)
+                if (out.size >= max) break
+            }
+        }
+        return out
+    }
+
     override fun query(code: String): List<Candidate> {
         val raw = code.lowercase()
         val p = raw.replace("'", "")
