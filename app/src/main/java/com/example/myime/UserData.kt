@@ -1,0 +1,298 @@
+package com.example.myime
+
+import android.content.Context
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * 用户词频学习的数据,只存在应用私有目录(filesDir/user/),不联网、不上传。
+ * 输入法服务和词库管理页在同一个进程里,共用这里的单例。
+ * 所有方法都加了同步:候选查询在后台线程,学习在主线程。
+ */
+
+/** 拼音 / 笔画用:记"选过哪个词"。同一个词按过的次数越多,排得越靠前。 */
+class UserFreq(private val file: File) {
+    // 候选排序在后台线程里对每个匹配项都要查分数,用 ConcurrentHashMap 让读不加锁;写(学习、保存)仍然串行
+    private val byText = ConcurrentHashMap<String, Int>()
+    private val byPair = ConcurrentHashMap<String, Int>() // "输入的编码\t词" -> 次数
+    private var dirty = false
+    @Volatile private var loaded = false
+
+    @Synchronized
+    private fun ensureLoaded() {
+        if (loaded) return
+        try {
+            if (!file.isFile) return
+            file.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                for (line in lines) {
+                    val p = line.split('\t')
+                    if (p.size == 3 && p[0] == "t") {
+                        val c = p[2].toIntOrNull() ?: continue
+                        byText[p[1]] = c
+                    } else if (p.size == 4 && p[0] == "p") {
+                        val c = p[3].toIntOrNull() ?: continue
+                        byPair[p[1] + "\t" + p[2]] = c
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // 读不了就当没有
+        } finally {
+            loaded = true   // 读完才标记,别的线程在这之前会等在 ensureLoaded 的锁上
+        }
+    }
+
+    /** 有没有学过任何词。没有的话排序时可以完全不查分数。 */
+    fun hasLearned(): Boolean {
+        if (!loaded) ensureLoaded()
+        return !byText.isEmpty()
+    }
+
+    /** 排序用的加分;0 表示没学过。不加锁。 */
+    fun score(text: String, code: String): Int {
+        if (!loaded) ensureLoaded()
+        val t = byText[text] ?: return 0
+        val p = byPair["$code\t$text"] ?: 0
+        return minOf(t, 20) + minOf(p, 20) * 3
+    }
+
+    @Synchronized
+    fun learn(code: String, text: String) {
+        if (text.isEmpty() || code.isEmpty()) return
+        ensureLoaded()
+        byText[text] = (byText[text] ?: 0) + 1
+        val k = "$code\t$text"
+        byPair[k] = (byPair[k] ?: 0) + 1
+        dirty = true
+        if (byText.size > MAX_ENTRIES) prune()
+    }
+
+    private fun prune() {
+        val keep = byText.entries.sortedByDescending { it.value }
+            .take(MAX_ENTRIES * 3 / 4).map { it.key }.toHashSet()
+        byText.keys.retainAll(keep)
+        byPair.keys.removeAll { k -> !keep.contains(k.substring(k.indexOf('\t') + 1)) }
+    }
+
+    @Synchronized
+    fun count(): Int {
+        ensureLoaded()
+        return byText.size
+    }
+
+    @Synchronized
+    fun saveIfDirty() {
+        if (!dirty) return
+        try {
+            val tmp = File(file.parentFile, file.name + ".tmp")
+            tmp.bufferedWriter(Charsets.UTF_8).use { w ->
+                for ((k, v) in byText) w.write("t\t$k\t$v\n")
+                for ((k, v) in byPair) w.write("p\t$k\t$v\n")
+            }
+            if (file.exists()) file.delete()
+            tmp.renameTo(file)
+            dirty = false
+        } catch (e: Exception) {
+            // 存失败下次再试
+        }
+    }
+
+    @Synchronized
+    fun clear() {
+        loaded = true
+        byText.clear()
+        byPair.clear()
+        dirty = false
+        file.delete()
+    }
+
+    private companion object {
+        const val MAX_ENTRIES = 20_000
+    }
+}
+
+/** 英文用:记打过的词、选过的词、词和词的先后关系(用于联想)。词库里没有的新词出现 2 次才收。 */
+class UserEnglish(private val file: File) {
+    private val words = HashMap<String, Int>()         // 小写词 -> 次数
+    private val display = HashMap<String, String>()    // 小写词 -> 写法(只记词库里没有的词)
+    private val pending = HashMap<String, Int>()       // 词库里没有的词,还没到 2 次
+    private val bigrams = HashMap<String, HashMap<String, Int>>() // 前词 -> (后词 -> 次数)
+    private var dirty = false
+    private var loaded = false
+
+    private fun ensureLoaded() {
+        if (loaded) return
+        loaded = true
+        try {
+            if (!file.isFile) return
+            file.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                for (line in lines) {
+                    val p = line.split('\t')
+                    when {
+                        p.size == 3 && p[0] == "w" -> words[p[1]] = p[2].toIntOrNull() ?: continue
+                        p.size == 3 && p[0] == "d" -> display[p[1]] = p[2]
+                        p.size == 4 && p[0] == "b" -> {
+                            val c = p[3].toIntOrNull() ?: continue
+                            bigrams.getOrPut(p[1]) { HashMap() }[p[2]] = c
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // 读不了就当没有
+        }
+    }
+
+    @Synchronized
+    fun wordScore(lower: String): Int {
+        ensureLoaded()
+        return words[lower] ?: 0
+    }
+
+    @Synchronized
+    fun hasWord(lower: String): Boolean {
+        ensureLoaded()
+        return words.containsKey(lower)
+    }
+
+    @Synchronized
+    fun bigramScore(prev: String, next: String): Int {
+        ensureLoaded()
+        return bigrams[prev]?.get(next) ?: 0
+    }
+
+    @Synchronized
+    fun displayOf(lower: String): String? {
+        ensureLoaded()
+        return display[lower]
+    }
+
+    /** 以 prefix(小写)开头的、学过的词,带次数。 */
+    @Synchronized
+    fun prefixWords(prefix: String): List<Pair<String, Int>> {
+        ensureLoaded()
+        val out = ArrayList<Pair<String, Int>>()
+        for ((w, c) in words) if (w.startsWith(prefix)) out.add(Pair(w, c))
+        return out
+    }
+
+    /** prev 之后我最常打的词。 */
+    @Synchronized
+    fun nextWords(prev: String): List<Pair<String, Int>> {
+        ensureLoaded()
+        val m = bigrams[prev] ?: return emptyList()
+        return m.entries.sortedByDescending { it.value }.take(6).map { Pair(it.key, it.value) }
+    }
+
+    /** known:这个词在词库里。word 是用户实际打出来的写法。 */
+    @Synchronized
+    fun learn(prev: String?, word: String, known: Boolean) {
+        if (word.isEmpty()) return
+        ensureLoaded()
+        val lower = word.lowercase()
+        if (known || words.containsKey(lower)) {
+            words[lower] = (words[lower] ?: 0) + 1
+        } else {
+            val c = (pending[lower] ?: 0) + 1
+            if (c >= 2) {
+                words[lower] = c
+                pending.remove(lower)
+            } else {
+                if (pending.size > 2000) pending.clear()
+                pending[lower] = c
+            }
+        }
+        if (!known && words.containsKey(lower)) display[lower] = word
+        if (prev != null && words.containsKey(lower)) {
+            val m = bigrams.getOrPut(prev) { HashMap() }
+            m[lower] = (m[lower] ?: 0) + 1
+        }
+        dirty = true
+        if (words.size > MAX_WORDS) prune()
+    }
+
+    private fun prune() {
+        val keep = words.entries.sortedByDescending { it.value }
+            .take(MAX_WORDS * 3 / 4).map { it.key }.toHashSet()
+        words.keys.retainAll(keep)
+        display.keys.retainAll(keep)
+        bigrams.keys.retainAll(keep)
+        for (m in bigrams.values) m.keys.retainAll(keep)
+    }
+
+    @Synchronized
+    fun count(): Int {
+        ensureLoaded()
+        return words.size
+    }
+
+    @Synchronized
+    fun saveIfDirty() {
+        if (!dirty) return
+        try {
+            val tmp = File(file.parentFile, file.name + ".tmp")
+            tmp.bufferedWriter(Charsets.UTF_8).use { w ->
+                for ((k, v) in words) w.write("w\t$k\t$v\n")
+                for ((k, v) in display) w.write("d\t$k\t$v\n")
+                for ((a, m) in bigrams) for ((b, c) in m) w.write("b\t$a\t$b\t$c\n")
+            }
+            if (file.exists()) file.delete()
+            tmp.renameTo(file)
+            dirty = false
+        } catch (e: Exception) {
+            // 存失败下次再试
+        }
+    }
+
+    @Synchronized
+    fun clear() {
+        loaded = true
+        words.clear()
+        display.clear()
+        pending.clear()
+        bigrams.clear()
+        dirty = false
+        file.delete()
+    }
+
+    private companion object {
+        const val MAX_WORDS = 20_000
+    }
+}
+
+object UserData {
+    private var pinyinFreq: UserFreq? = null
+    private var strokeFreq: UserFreq? = null
+    private var englishData: UserEnglish? = null
+
+    private fun dir(ctx: Context): File {
+        val d = File(ctx.applicationContext.filesDir, "user")
+        if (!d.isDirectory) d.mkdirs()
+        return d
+    }
+
+    @Synchronized
+    fun pinyin(ctx: Context): UserFreq =
+        pinyinFreq ?: UserFreq(File(dir(ctx), "pinyin.txt")).also { pinyinFreq = it }
+
+    @Synchronized
+    fun stroke(ctx: Context): UserFreq =
+        strokeFreq ?: UserFreq(File(dir(ctx), "stroke.txt")).also { strokeFreq = it }
+
+    @Synchronized
+    fun english(ctx: Context): UserEnglish =
+        englishData ?: UserEnglish(File(dir(ctx), "english.txt")).also { englishData = it }
+
+    @Synchronized
+    fun saveAll() {
+        pinyinFreq?.saveIfDirty()
+        strokeFreq?.saveIfDirty()
+        englishData?.saveIfDirty()
+    }
+
+    fun clearAll(ctx: Context) {
+        pinyin(ctx).clear()
+        stroke(ctx).clear()
+        english(ctx).clear()
+    }
+}
