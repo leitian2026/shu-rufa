@@ -165,19 +165,26 @@ class SettingsPanelView(
         }
     }
 
-    override fun onContentTap(x: Float, y: Float) {
-        if (width == 0) return
+    override val coversCandidateBar: Boolean get() = true
+
+    override fun onBlankTap() {
+        listener.onBack()
+    }
+
+    override fun onContentTap(x: Float, y: Float): Boolean {
+        if (width == 0) return false
         calc()
         val c = ((x - padX) / (cellW + gap)).toInt()
         val r = ((y - top0) / (cellH + gap)).toInt()
-        if (x < padX || y < top0 || c !in 0 until cols || r < 0) return
+        if (x < padX || y < top0 || c !in 0 until cols || r < 0) return false
         val i = r * cols + c
-        if (i !in items.indices) return
-        // 点在格子之间的缝隙里不算
+        if (i !in items.indices) return false
+        // 点在格子之间的缝隙里算空白
         val left = padX + c * (cellW + gap)
         val top = top0 + r * (cellH + gap)
-        if (x > left + cellW || y > top + cellH) return
+        if (x > left + cellW || y > top + cellH) return false
         listener.onAction(items[i].id)
+        return true
     }
 
     override fun onBarKey(id: Int) {
