@@ -260,10 +260,112 @@ class UserEnglish(private val file: File) {
     }
 }
 
+/**
+ * 中文联想用:记"上一个上屏的词 → 下一个上屏的词"出现过几次(比如我打过"吃"后面接"苹果")。
+ * 只存在本机应用私有目录。读不加锁,写串行。
+ */
+class UserChain(private val file: File) {
+    private val map = ConcurrentHashMap<String, ConcurrentHashMap<String, Int>>()
+    private var dirty = false
+    private var sincePrune = 0
+    @Volatile private var loaded = false
+
+    @Synchronized
+    private fun ensureLoaded() {
+        if (loaded) return
+        try {
+            if (!file.isFile) return
+            file.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                for (line in lines) {
+                    val p = line.split('\t')
+                    if (p.size == 4 && p[0] == "c") {
+                        val c = p[3].toIntOrNull() ?: continue
+                        map.getOrPut(p[1]) { ConcurrentHashMap() }[p[2]] = c
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // 读不了就当没有
+        } finally {
+            loaded = true
+        }
+    }
+
+    /** prev 之后我最常接的词,最多 6 个。 */
+    fun next(prev: String): List<String> {
+        if (!loaded) ensureLoaded()
+        val m = map[prev] ?: return emptyList()
+        return m.entries.sortedByDescending { it.value }.take(6).map { it.key }
+    }
+
+    @Synchronized
+    fun learn(prev: String, next: String) {
+        if (prev.isEmpty() || next.isEmpty()) return
+        if (prev.indexOf('\t') >= 0 || prev.indexOf('\n') >= 0) return
+        if (next.indexOf('\t') >= 0 || next.indexOf('\n') >= 0) return
+        ensureLoaded()
+        val m = map.getOrPut(prev) { ConcurrentHashMap() }
+        m[next] = (m[next] ?: 0) + 1
+        dirty = true
+        if (++sincePrune >= 500) {
+            sincePrune = 0
+            if (count() > MAX_PAIRS) prune()
+        }
+    }
+
+    private fun prune() {
+        val all = ArrayList<Triple<String, String, Int>>()
+        for ((a, m) in map) for ((b, c) in m) all.add(Triple(a, b, c))
+        all.sortByDescending { it.third }
+        map.clear()
+        for (i in 0 until minOf(all.size, MAX_PAIRS * 3 / 4)) {
+            val t = all[i]
+            map.getOrPut(t.first) { ConcurrentHashMap() }[t.second] = t.third
+        }
+    }
+
+    @Synchronized
+    fun count(): Int {
+        ensureLoaded()
+        var n = 0
+        for (m in map.values) n += m.size
+        return n
+    }
+
+    @Synchronized
+    fun saveIfDirty() {
+        if (!dirty) return
+        try {
+            val tmp = File(file.parentFile, file.name + ".tmp")
+            tmp.bufferedWriter(Charsets.UTF_8).use { w ->
+                for ((a, m) in map) for ((b, c) in m) w.write("c\t$a\t$b\t$c\n")
+            }
+            if (file.exists()) file.delete()
+            tmp.renameTo(file)
+            dirty = false
+        } catch (e: Exception) {
+            // 存失败下次再试
+        }
+    }
+
+    @Synchronized
+    fun clear() {
+        loaded = true
+        map.clear()
+        dirty = false
+        file.delete()
+    }
+
+    private companion object {
+        const val MAX_PAIRS = 20_000
+    }
+}
+
 object UserData {
     private var pinyinFreq: UserFreq? = null
     private var strokeFreq: UserFreq? = null
     private var englishData: UserEnglish? = null
+    private var chainData: UserChain? = null
 
     private fun dir(ctx: Context): File {
         val d = File(ctx.applicationContext.filesDir, "user")
@@ -284,15 +386,21 @@ object UserData {
         englishData ?: UserEnglish(File(dir(ctx), "english.txt")).also { englishData = it }
 
     @Synchronized
+    fun chain(ctx: Context): UserChain =
+        chainData ?: UserChain(File(dir(ctx), "chain.txt")).also { chainData = it }
+
+    @Synchronized
     fun saveAll() {
         pinyinFreq?.saveIfDirty()
         strokeFreq?.saveIfDirty()
         englishData?.saveIfDirty()
+        chainData?.saveIfDirty()
     }
 
     fun clearAll(ctx: Context) {
         pinyin(ctx).clear()
         stroke(ctx).clear()
         english(ctx).clear()
+        chain(ctx).clear()
     }
 }
