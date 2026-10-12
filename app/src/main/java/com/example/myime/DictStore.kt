@@ -82,6 +82,13 @@ object DictConfig {
         p(ctx).edit().putBoolean("learn", v).apply()
     }
 
+    /** 打开输入法时默认的输入方式:pinyin / stroke / english;last = 沿用上次用的。 */
+    fun defaultMode(ctx: Context): String = p(ctx).getString("default_mode", "last") ?: "last"
+
+    fun setDefaultMode(ctx: Context, v: String) {
+        p(ctx).edit().putString("default_mode", v).apply()
+    }
+
     /** 英文:按空格时自动把拼错的词改成最可能的词。默认关,只在候选里给出纠正。 */
     fun autoCorrect(ctx: Context): Boolean = p(ctx).getBoolean("auto_correct", false)
 
