@@ -74,10 +74,10 @@ class DictManagerActivity : Activity() {
             "雾凇拼音:8105 字表 + 基础词库 + 扩展词库 + 41448 大字表(生僻字),再加朙月拼音(繁体字)。" +
                 "下载量较大,建议连 Wi-Fi;转换需要几十秒。",
         )
-        capButton = Button(this).apply {
+        capButton = smallButton().apply {
             setOnClickListener { cycleCap() }
         }
-        root.addView(capButton)
+        root.addView(capButton, smallButtonParams())
         addCard(
             root, DictPacks.ENGLISH, "英文词库",
             "Norvig 整理的谷歌语料词频:单词(前缀补全、纠错)+ 双词(下一个词联想),约 10 MB。",
@@ -98,13 +98,13 @@ class DictManagerActivity : Activity() {
         }
         root.addView(mirror)
         root.addView(
-            Button(this).apply {
-                text = "保存镜像前缀"
+            smallButton("保存镜像前缀").apply {
                 setOnClickListener {
                     DictConfig.setMirror(this@DictManagerActivity, mirror.text.toString())
                     Toast.makeText(this@DictManagerActivity, "已保存", Toast.LENGTH_SHORT).show()
                 }
             },
+            smallButtonParams(),
         )
 
         // ---- 学习
@@ -133,8 +133,7 @@ class DictManagerActivity : Activity() {
         userInfo = label("", 13f, alpha = 0.7f)
         root.addView(userInfo)
         root.addView(
-            Button(this).apply {
-                text = "清除学习数据"
+            smallButton("清除学习数据").apply {
                 setOnClickListener {
                     AlertDialog.Builder(this@DictManagerActivity)
                         .setMessage("拼音、笔画、英文的词频学习记录都会删除,无法恢复。")
@@ -146,6 +145,7 @@ class DictManagerActivity : Activity() {
                         .show()
                 }
             },
+            smallButtonParams(),
         )
 
         setContentView(ScrollView(this).apply { addView(root) })
@@ -194,9 +194,8 @@ class DictManagerActivity : Activity() {
         box.addView(card.bar)
 
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        card.install = Button(this).apply { setOnClickListener { onInstallClick(pack) } }
-        card.delete = Button(this).apply {
-            text = "删除"
+        card.install = smallButton().apply { setOnClickListener { onInstallClick(pack) } }
+        card.delete = smallButton("删除").apply {
             setOnClickListener {
                 if (busyPack == null) {
                     DictInstaller.delete(applicationContext, pack)
@@ -205,8 +204,8 @@ class DictManagerActivity : Activity() {
                 }
             }
         }
-        row.addView(card.install, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(card.delete, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(card.install, smallButtonParams())
+        row.addView(card.delete, smallButtonParams())
         box.addView(row)
 
         val lp = LinearLayout.LayoutParams(
