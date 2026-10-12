@@ -197,29 +197,12 @@ class CandidateBarView(
         invalidate()
     }
 
+    /** 不做淡入淡出:直接切到目标透明度。 */
     private fun fadeTo(target: Float, onEnd: (() -> Unit)?) {
         animator?.cancel()
-        val a = ValueAnimator.ofFloat(contentAlpha, target)
-        a.duration = Motion.DURATION_MS
-        a.interpolator = Motion.interpolator
-        a.addUpdateListener {
-            contentAlpha = it.animatedValue as Float
-            invalidate()
-        }
-        if (onEnd != null) {
-            a.addListener(object : AnimatorListenerAdapter() {
-                private var canceled = false
-                override fun onAnimationCancel(animation: Animator) {
-                    canceled = true
-                }
-
-                override fun onAnimationEnd(animation: Animator) {
-                    if (!canceled) onEnd()
-                }
-            })
-        }
-        animator = a
-        a.start()
+        contentAlpha = target
+        invalidate()
+        onEnd?.invoke()
     }
 
     private fun relayout() {
