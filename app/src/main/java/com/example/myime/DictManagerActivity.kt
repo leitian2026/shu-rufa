@@ -29,6 +29,7 @@ class DictManagerActivity : Activity() {
 
     private class Card(val pack: String) {
         lateinit var status: TextView
+        lateinit var source: TextView
         lateinit var bar: ProgressBar
         lateinit var install: Button
         lateinit var delete: Button
@@ -187,6 +188,8 @@ class DictManagerActivity : Activity() {
         box.addView(label(desc, 13f, alpha = 0.7f).apply { setPadding(0, dpi(2f), 0, dpi(6f)) })
         card.status = label("", 14f)
         box.addView(card.status)
+        card.source = label("", 12f, alpha = 0.7f)
+        box.addView(card.source)
         card.bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000
             visibility = View.GONE
@@ -204,7 +207,9 @@ class DictManagerActivity : Activity() {
                 }
             }
         }
+        val customBtn = smallButton("自定义来源").apply { setOnClickListener { showCustomDialog(pack, title) } }
         row.addView(card.install, smallButtonParams())
+        row.addView(customBtn, smallButtonParams())
         row.addView(card.delete, smallButtonParams())
         box.addView(row)
 
@@ -244,6 +249,8 @@ class DictManagerActivity : Activity() {
         for ((pack, card) in cards) {
             val installed = DictStore.file(this, DictPacks.outputs(pack)[0]).isFile
             card.status.text = statusText(pack)
+            val customN = DictConfig.customUrls(this, pack).size
+            card.source.text = if (customN == 0) "下载来源:默认" else "下载来源:自定义($customN 个地址)"
             val mine = busy == pack
             card.bar.visibility = if (mine) View.VISIBLE else View.GONE
             card.install.text = if (mine) "取消" else if (installed) "重新下载并更新" else "下载并安装"
@@ -254,6 +261,58 @@ class DictManagerActivity : Activity() {
         capButton.isEnabled = busy == null
         userInfo.text = "已学习:拼音 ${UserData.pinyin(this).count()} 个 · 笔画 ${UserData.stroke(this).count()} 个 · " +
             "英文 ${UserData.english(this).count()} 个词 · 联想 ${UserData.chain(this).count()} 条"
+    }
+
+    private fun customHint(pack: String): String = when (pack) {
+        DictPacks.PINYIN ->
+            "每行一个地址(http/https),按顺序合并。每个文件是 Rime 的 *.dict.yaml,或「词<Tab>拼音(音节空格分开)<Tab>词频」文本。"
+        DictPacks.STROKE ->
+            "第 1 行:笔画字表(Rime stroke.dict.yaml 格式)。\n第 2 行(可选):字频表(Rime 格式,用来决定常用字排前面)。"
+        else ->
+            "第 1 行:单词词频(每行「词<Tab>次数」,按次数从高到低)。\n第 2 行(可选):双词词频(每行「词1 词2<Tab>次数」,用来做下一个词联想)。"
+    }
+
+    private fun showCustomDialog(pack: String, title: String) {
+        if (busyPack != null) return
+        val pad = dpi(16f)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        box.addView(label(customHint(pack) + "\n留空 = 用默认来源。连不上时可以在页面下方填镜像前缀。", 13f, alpha = 0.7f))
+        val input = EditText(this).apply {
+            hint = "https://example.com/xxx.dict.yaml"
+            setText(DictConfig.customText(this@DictManagerActivity, pack))
+            minLines = 3
+            maxLines = 8
+            isSingleLine = false
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                android.text.InputType.TYPE_TEXT_VARIATION_URI
+            gravity = android.view.Gravity.TOP
+        }
+        box.addView(input)
+        AlertDialog.Builder(this)
+            .setTitle("$title · 自定义来源")
+            .setView(box)
+            .setPositiveButton("保存并下载") { _, _ ->
+                val text = input.text.toString()
+                val hasUrl = text.lines().any { it.trim().startsWith("http://") || it.trim().startsWith("https://") }
+                if (text.isNotBlank() && !hasUrl) {
+                    Toast.makeText(this, "地址要以 http:// 或 https:// 开头", Toast.LENGTH_LONG).show()
+                } else {
+                    DictConfig.setCustomText(this, pack, text)
+                    refresh()
+                    if (busyPack == null) startInstall(pack)
+                }
+            }
+            .setNegativeButton("恢复默认") { _, _ ->
+                DictConfig.setCustomText(this, pack, "")
+                refresh()
+                Toast.makeText(this, "已恢复默认来源,点「下载并更新」生效", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("取消", null)
+            .show()
     }
 
     private fun showProgress(pack: String, text: String, frac: Float) {
