@@ -149,18 +149,10 @@ class SettingsPanelView(
     }
 
     companion object {
+        /** 功能页只放别处没有的功能:中英/拼笔/数字/符号在键盘上有键,表情/编辑/剪贴板/收起在工具栏,切换输入法在「键盘选择」里。 */
         fun settingsItems() = listOf(
-            GridItem(ID_LANG, "中/英", "中英切换"),
-            GridItem(ID_METHOD, "拼/笔", "拼音笔画"),
-            GridItem(ID_NUMBER, "123", "数字"),
-            GridItem(ID_SYMBOL, "@#", "符号"),
-            GridItem(ID_EMOJI, "☺", "表情"),
-            GridItem(ID_CLIP, "✂", "剪贴板"),
-            GridItem(ID_EDIT, "‹I›", "光标编辑"),
-            GridItem(ID_IME, "换", "切换输入法"),
             GridItem(ID_ADJUST, "↔↕", "键盘调节"),
             GridItem(ID_APP, "设", "输入法设置"),
-            GridItem(ID_HIDE, "∨", "收起键盘"),
         )
 
         fun keyboardItems() = listOf(
