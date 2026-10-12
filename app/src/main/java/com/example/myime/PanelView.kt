@@ -65,6 +65,7 @@ abstract class PanelView(context: Context) : View(context) {
     /** x 是视图坐标,y 是内容坐标。 */
     protected abstract fun onContentTap(x: Float, y: Float)
     protected abstract fun onBarKey(id: Int)
+    protected open fun onContentLongPress(x: Float, y: Float) {}
     protected open fun isBarSelected(id: Int): Boolean = false
     protected open fun onMetricsChanged() {}
     protected open fun onShown() {}
@@ -128,6 +129,12 @@ abstract class PanelView(context: Context) : View(context) {
             scroller.fling(0, offsetY.toInt(), 0, (-velocityY).toInt(), 0, 0, 0, maxOffsetY().toInt())
             postOnAnimation(flingRunnable)
             return true
+        }
+
+        override fun onLongPress(e: MotionEvent) {
+            if (e.y < contentTop() || e.y > contentBottom()) return
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            onContentLongPress(e.x, e.y - contentTop() + offsetY)
         }
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
