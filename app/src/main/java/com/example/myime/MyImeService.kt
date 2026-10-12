@@ -63,6 +63,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             field = v
             englishEngine?.prev = v
         }
+    private var prevChinese: String? = null   // 上一个上屏的中文词,给中文联想("我常在 X 后面打 Y")用
+    private var assocKey: String? = null      // 中文联想:接着往下查词库的前缀
+    private var lastOwnEditAt = 0L            // 我们自己最近一次改输入框的时间,用来分辨光标是不是被用户挪了
 
     /** 联想词显示一会儿就收回去,把工具栏还给用户。 */
     private val assocClear = Runnable {
@@ -132,6 +135,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                     }
                     dictState[kind] = 2 // 不管成败都算试过一次,不会反复重试
                     if (composing.isNotEmpty()) requery()
+                    else if (kind == KIND_PINYIN && assocKey != null) showChineseAssoc()
                 }
             }
         }
@@ -431,6 +435,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         layoutComposing = false
         selecting = false
         prevWord = null
+        prevChinese = null
+        assocKey = null
         main.removeCallbacks(assocClear)
         main.removeCallbacks(releaseLater)
         val stamp = DictStore.stamp(applicationContext)
@@ -493,6 +499,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         queryGen++
         applyCandidates("", emptyList())
         prevWord = null
+        prevChinese = null
+        assocKey = null
         main.removeCallbacks(assocClear)
         worker.execute { UserData.saveAll() }
     }
@@ -512,7 +520,19 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             queryGen++
             applyCandidates("", emptyList())
             prevWord = null
+            prevChinese = null
+            assocKey = null
             currentInputConnection?.finishComposingText()
+        } else if ((newSelStart != oldSelStart || newSelEnd != oldSelEnd) &&
+            SystemClock.uptimeMillis() - lastOwnEditAt > 500
+        ) {
+            // 不是我们自己改的、光标却变了。笔画的组合区不在输入框里(没有 candidatesStart 可比),这里一并处理
+            if (mode == Mode.STROKE && composing.isNotEmpty()) {
+                composing.clear()
+                queryGen++
+                applyCandidates("", emptyList())
+            }
+            if (assocKey != null && composing.isEmpty()) breakAssoc()
         }
     }
 
@@ -571,8 +591,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         ic.beginBatchEdit()
         flushComposition(ic)
-        ic.commitText(t, 1)
+        commitTo(ic, t)
         ic.endBatchEdit()
+        if (mode != Mode.ENGLISH) breakAssoc()
         if (mode == Mode.ENGLISH) {
             // 打了标点/数字:联想断开
             prevWord = null
@@ -609,6 +630,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 prevWord = null
                 main.removeCallbacks(assocClear)
                 clearCandidates()
+            } else {
+                breakAssoc()
             }
             sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
             afterCommit()
@@ -629,23 +652,29 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             ic.beginBatchEdit()
             val c = bestCandidate()
             if (c == null) {
-                if (mode == Mode.PINYIN) ic.commitText(composing.toString(), 1) else ic.commitText("", 1)
+                if (mode == Mode.PINYIN) commitTo(ic, composing.toString()) else commitTo(ic, "")
                 composing.clear()
+                prevChinese = null
+                assocKey = null
             } else {
                 learnChinese(c)
-                ic.commitText(c.text, 1)
+                commitTo(ic, c.text)
+                noteChineseCommit(c.text, false)
                 composing.delete(0, c.consumed.coerceIn(1, composing.length))
                 if (composing.isNotEmpty()) showComposing()
             }
             ic.endBatchEdit()
             requery()
+            if (composing.isEmpty()) showChineseAssoc()
             return
         }
-        ic.commitText(" ", 1)
+        commitTo(ic, " ")
         if (mode == Mode.ENGLISH) {
             prevWord = null
             main.removeCallbacks(assocClear)
             clearCandidates()
+        } else {
+            breakAssoc()
         }
         afterCommit()
     }
@@ -669,6 +698,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             main.removeCallbacks(assocClear)
             clearCandidates()
         }
+        if (mode != Mode.ENGLISH) breakAssoc()
         val info = currentInputEditorInfo
         val options = info?.imeOptions ?: 0
         val action = options and EditorInfo.IME_MASK_ACTION
@@ -819,7 +849,81 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         else -> 'ㄥ'
     }
 
+    /** 上屏文字,并记下时间(笔画不进输入框,光标位置的变化要靠这个时间来区分是谁挪的)。 */
+    private fun commitTo(ic: InputConnection, text: String) {
+        lastOwnEditAt = SystemClock.uptimeMillis()
+        ic.commitText(text, 1)
+    }
+
+    // ------------------------------------------------------------ 中文联想
+
+    /** 记一笔:这个词刚上屏。extend = 点的是联想词,联想前缀接着往后长。 */
+    private fun noteChineseCommit(text: String, extend: Boolean) {
+        if (text.isEmpty() || mode == Mode.ENGLISH) return
+        val prev = prevChinese
+        if (allowLearn && prev != null && prev.length <= 8 && text.length <= 8) {
+            val ctx = applicationContext
+            worker.execute { UserData.chain(ctx).learn(prev, text) }
+        }
+        val key = assocKey
+        assocKey = if (extend && key != null && key.length + text.length <= 6) key + text else text
+        prevChinese = text
+    }
+
+    /** 联想断开:打了标点/空格/回车/退格,或者换了输入框、挪了光标。 */
+    private fun breakAssoc() {
+        prevChinese = null
+        assocKey = null
+        if (mode != Mode.ENGLISH && composing.isEmpty()) {
+            main.removeCallbacks(assocClear)
+            clearCandidates()
+        }
+    }
+
+    /**
+     * 拼音/笔画:上屏一个词之后,在候选栏给出联想:我自己接过的词在前,词库里以它开头的词的后半截在后。
+     * 词库没加载就先加载(加载完会再来一次)。查询放在词库线程,不堵住候选查询。
+     */
+    private fun showChineseAssoc() {
+        main.removeCallbacks(assocClear)
+        val key = assocKey
+        if (key == null || !englishAssist || composing.isNotEmpty() ||
+            (mode != Mode.PINYIN && mode != Mode.STROKE)
+        ) {
+            return
+        }
+        if (dictState[KIND_PINYIN] == 0) loadKind(KIND_PINYIN)
+        val prev = prevChinese
+        val learnOn = allowLearn
+        val ctx = applicationContext
+        val gen = ++queryGen
+        loader.execute {
+            val list = ArrayList<Candidate>()
+            val seen = HashSet<String>()
+            try {
+                if (learnOn && prev != null) {
+                    for (w in UserData.chain(ctx).next(prev)) if (seen.add(w)) list.add(Candidate(w, 0, 2))
+                }
+                val eng = pinyinEngine as? PinyinEngine
+                if (eng != null) {
+                    for (w in eng.followers(key, 12)) if (seen.add(w)) list.add(Candidate(w, 0, 2))
+                }
+            } catch (t: Throwable) {
+                // 查不出来就不显示联想
+            }
+            val shown = if (list.size > 12) ArrayList(list.subList(0, 12)) else list
+            main.post {
+                if (gen == queryGen && composing.isEmpty() && assocKey == key) {
+                    applyCandidates("", shown)
+                    if (shown.isNotEmpty()) main.postDelayed(assocClear, 6000)
+                }
+            }
+        }
+    }
+
     private fun showComposing() {
+        // 笔画不放进输入框(光标处什么都不显示),只在候选栏上方显示;拼音和英文仍用输入框的组合区
+        if (mode == Mode.STROKE) return
         currentInputConnection?.setComposingText(displayComposing(), 1)
     }
 
@@ -886,14 +990,25 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             pickEnglish(ic, c)
             return
         }
-        if (composing.isEmpty()) return
+        if (composing.isEmpty()) {
+            if (c.kind == 2) {   // 点了联想词:上屏,联想前缀接着往后长
+                ic.beginBatchEdit()
+                commitTo(ic, c.text)
+                noteChineseCommit(c.text, true)
+                ic.endBatchEdit()
+                showChineseAssoc()
+            }
+            return
+        }
         learnChinese(c)
         ic.beginBatchEdit()
-        ic.commitText(c.text, 1)
+        commitTo(ic, c.text)
+        noteChineseCommit(c.text, false)
         composing.delete(0, c.consumed.coerceIn(1, composing.length))
         if (composing.isNotEmpty()) showComposing()
         ic.endBatchEdit()
         requery()
+        if (composing.isEmpty()) showChineseAssoc()
         afterCommit()
     }
 
@@ -908,11 +1023,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         while (composing.isNotEmpty() && guard++ < 64) {
             val c = bestCandidate()
             if (c == null) {
-                if (mode == Mode.PINYIN) ic.commitText(composing.toString(), 1) else ic.commitText("", 1)
+                if (mode == Mode.PINYIN) commitTo(ic, composing.toString()) else commitTo(ic, "")
                 composing.clear()
                 break
             }
-            ic.commitText(c.text, 1)
+            commitTo(ic, c.text)
             composing.delete(0, c.consumed.coerceIn(1, composing.length))
         }
         composing.clear()
@@ -925,7 +1040,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             if (mode == Mode.ENGLISH) {
                 commitEnglishWord(ic, auto = false, trailing = "")
             } else {
-                if (mode == Mode.PINYIN) ic.commitText(composing.toString(), 1) else ic.commitText("", 1)
+                if (mode == Mode.PINYIN) commitTo(ic, composing.toString()) else commitTo(ic, "")
                 composing.clear()
             }
         }
@@ -933,6 +1048,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             prevWord = null
             main.removeCallbacks(assocClear)
         }
+        prevChinese = null
+        assocKey = null
         clearCandidates()
     }
 
@@ -957,7 +1074,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 if (fix != null && !known) text = fix.text
             }
         }
-        ic.commitText(text + trailing, 1)
+        commitTo(ic, text + trailing)
         composing.clear()
         learnEnglish(text)
         candidates = emptyList()
@@ -968,7 +1085,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     /** 点了英文候选(补全、纠错或联想):上屏并跟一个空格,然后给出下一个词的联想。 */
     private fun pickEnglish(ic: InputConnection, c: Candidate) {
         ic.beginBatchEdit()
-        ic.commitText(c.text + " ", 1)
+        commitTo(ic, c.text + " ")
         composing.clear()
         learnEnglish(c.text)
         candidates = emptyList()
