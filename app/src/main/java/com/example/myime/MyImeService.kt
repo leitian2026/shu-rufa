@@ -746,21 +746,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
             }
             SettingsPanelView.ID_FLOAT -> toggleFloating()
-            SettingsPanelView.ID_TRANS -> setTransOn(!transOn)
-            SettingsPanelView.ID_TRANS_ENGINE -> {
-                // 微软 ⇄ 谷歌:选中的是主用,主用失败时会自动换另一个
-                val next = Translator.other(DictConfig.translateEngine(applicationContext))
-                DictConfig.setTranslateEngine(applicationContext, next)
-                settingsPanel?.setItemLabel(SettingsPanelView.ID_TRANS_ENGINE, transEngineLabel())
-                if (transActive && transBuf.isNotBlank()) {
-                    // 换了引擎,当前这句用新引擎重翻一次
-                    main.removeCallbacks(transRun)
-                    transGen++
-                    transInflight = null
-                    transSrc = ""
-                    startTranslate()
-                }
-            }
+            SettingsPanelView.ID_TRANS_MS -> onTransKey(Translator.MS)
+            SettingsPanelView.ID_TRANS_GOOGLE -> onTransKey(Translator.GOOGLE)
             SettingsPanelView.ID_ADJUST -> {
                 // 键盘调节是给贴底模式用的,悬浮模式用顶上的拖动条
                 if (KbSize.floating) {
@@ -1756,7 +1743,46 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
-    private fun transEngineLabel(): String = "翻译:" + Translator.engineLabel(DictConfig.translateEngine(applicationContext))
+    /**
+     * 功能页「翻译微软 / 翻译谷歌」两个键:
+     *  - 这个引擎正开着 → 关掉输入翻译;
+     *  - 没开,或开着的是另一个引擎 → 把它设为主用并打开(正开着时当前这句用新引擎重翻)。
+     * 主用失败时仍会自动换另一个引擎试。
+     */
+    private fun onTransKey(engine: String) {
+        val cur = DictConfig.translateEngine(applicationContext)
+        if (transOn && cur == engine) {
+            setTransOn(false)
+            return
+        }
+        DictConfig.setTranslateEngine(applicationContext, engine)
+        transUsedEngine = null
+        if (!transOn) {
+            setTransOn(true)
+            return
+        }
+        applyTransState()
+        if (transActive && transBuf.isNotBlank()) {
+            main.removeCallbacks(transRun)
+            transGen++
+            transInflight = null
+            transSrc = ""
+            startTranslate()
+        }
+    }
+
+    /** 实际翻出上一句的引擎:主用失败换了备用时就是备用;还没翻 / 点了按钮重选 / 关闭后为 null(按主用算)。 */
+    private var transUsedEngine: String? = null
+
+    /** 功能页只有一个翻译键是绿的:实际在用的那个引擎(主用失败换了备用,绿色跟着换过去,主用的键变回原样)。 */
+    private fun updateTransButtons() {
+        val eng = transUsedEngine ?: DictConfig.translateEngine(applicationContext)
+        settingsPanel?.filledId = when {
+            !transOn -> -1
+            eng == Translator.GOOGLE -> SettingsPanelView.ID_TRANS_GOOGLE
+            else -> SettingsPanelView.ID_TRANS_MS
+        }
+    }
 
     private fun transUi() {
         transBar?.setContent(
@@ -1765,11 +1791,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         )
     }
 
-    /** 翻译开关 / 当前输入框是否可用 变了:显示或隐藏翻译框,悬浮条换色。「译」按钮的变色由 settingsPanel.selectedId 负责。 */
+    /** 翻译开关 / 当前输入框是否可用 变了:显示或隐藏翻译框,悬浮条换色。「翻译微软 / 翻译谷歌」按钮的变色由 settingsPanel.filledId 负责。 */
     private fun applyTransState() {
         warmTranslate()
-        settingsPanel?.selectedId = if (transOn) SettingsPanelView.ID_TRANS else -1
-        settingsPanel?.setItemLabel(SettingsPanelView.ID_TRANS_ENGINE, transEngineLabel())
+        updateTransButtons()
         transUi()
         val changed = Palette.translating != transActive
         val barVisible = transBar?.visibility == View.VISIBLE
@@ -1801,6 +1826,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (on == transOn) return
         DictConfig.setTranslateOn(applicationContext, on)
         transOn = on
+        transUsedEngine = null
         val was = transActive
         transActive = on && transAllowed
         if (was && !transActive) {
@@ -1926,6 +1952,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         transStatus = TranslateBarView.STATUS_NONE
         transSrc = src
+        if (r.engine != "cache" && r.engine != transUsedEngine) {
+            transUsedEngine = r.engine
+            updateTransButtons()
+        }
         writeShown(r.text)
         transUi()
         if (transFinishing) {
