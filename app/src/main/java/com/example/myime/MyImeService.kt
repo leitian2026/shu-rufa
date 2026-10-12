@@ -29,6 +29,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     @Volatile private var englishEngine: EnglishEngine? = null
     private val loader = Executors.newSingleThreadExecutor()   // 词库加载单独一个线程,不堵住候选查询
     private var loadedStamp = ""
+    private var lastStampCheck = 0L
     private val dictState = IntArray(3)          // 0 没加载 1 加载中 2 已试过
     private var dictGen = 0                      // 词库被换/释放一次就加一,过期的加载结果直接丢掉
     private val releaseLater = Runnable { releaseDicts() }
@@ -118,6 +119,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         dictState[kind] = 1
         val gen = dictGen
         loader.execute {
+            if (gen != dictGen) return@execute   // 排队期间词库已被换/释放:不用再读了
             val ctx = applicationContext
             val engine: Any? = when (kind) {
                 KIND_PINYIN -> DictLoader.loadPinyin(ctx)
@@ -588,10 +590,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         assocKey = null
         main.removeCallbacks(assocClear)
         main.removeCallbacks(releaseLater)
-        val stamp = DictStore.stamp(applicationContext)
-        if (stamp != loadedStamp) {   // 词库被下载 / 手动换过
-            loadedStamp = stamp
-            releaseDicts()
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastStampCheck > 5000) {   // 连续切换输入框时不必每次都去查文件
+            lastStampCheck = now
+            val stamp = DictStore.stamp(applicationContext)
+            if (stamp != loadedStamp) {   // 词库被下载 / 手动换过
+                loadedStamp = stamp
+                releaseDicts()
+            }
         }
 
         val cls = info.inputType and InputType.TYPE_MASK_CLASS
@@ -1071,7 +1077,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             main.post {
                 if (gen == queryGen && composing.isEmpty() && assocKey == key) {
                     applyCandidates("", shown)
-                    if (shown.isNotEmpty()) main.postDelayed(assocClear, 6000)
+                    if (shown.isNotEmpty()) {
+                        main.removeCallbacks(assocClear)
+                        main.postDelayed(assocClear, 6000)
+                    }
                 }
             }
         }
@@ -1317,7 +1326,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             main.post {
                 if (gen == queryGen && composing.isEmpty()) {
                     applyCandidates("", list)
-                    if (list.isNotEmpty()) main.postDelayed(assocClear, 6000)
+                    if (list.isNotEmpty()) {
+                        main.removeCallbacks(assocClear)
+                        main.postDelayed(assocClear, 6000)
+                    }
                 }
             }
         }
