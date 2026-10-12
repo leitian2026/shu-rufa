@@ -63,7 +63,14 @@ abstract class PanelView(context: Context) : View(context) {
     protected abstract fun drawContent(canvas: Canvas, visTop: Float, visBottom: Float)
 
     /** x 是视图坐标,y 是内容坐标。 */
-    protected abstract fun onContentTap(x: Float, y: Float)
+    /** 点在了某一项上并处理了返回 true;点在空白处返回 false(交给 onBlankTap)。 */
+    protected abstract fun onContentTap(x: Float, y: Float): Boolean
+
+    /** 点在面板空白处(标题行空白、格子缝隙、内容下方空白):默认什么都不做,子类按需改成「返回键盘」。 */
+    protected open fun onBlankTap() {}
+
+    /** true:面板同时盖住候选栏那一块,高度 = 键盘高度 + 候选栏高度(整个键盘一样大);false:只和键盘按键区一样高。 */
+    open val coversCandidateBar: Boolean get() = false
     protected abstract fun onBarKey(id: Int)
     protected open fun onContentLongPress(x: Float, y: Float) {}
     protected open fun isBarSelected(id: Int): Boolean = false
@@ -144,9 +151,16 @@ abstract class PanelView(context: Context) : View(context) {
         }
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            if (e.y < contentTop() || e.y > contentBottom()) return false
-            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-            onContentTap(e.x, e.y - contentTop() + offsetY)
+            // 标题行里没点到按键的地方、内容区下面的空白:算空白处
+            if (e.y < contentTop() || e.y > contentBottom()) {
+                onBlankTap()
+                return true
+            }
+            if (onContentTap(e.x, e.y - contentTop() + offsetY)) {
+                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            } else {
+                onBlankTap()
+            }
             return true
         }
     })
@@ -182,7 +196,7 @@ abstract class PanelView(context: Context) : View(context) {
         radius = context.dpf(if (wide) 10f else 8f)
         shadowH = context.dpf(2f)
         slideY = context.dpf(10f)
-        fixedHeight = context.keyboardHeightPx()
+        fixedHeight = context.keyboardHeightPx() + (if (coversCandidateBar) context.candidateBarHeightPx() else 0)
         iconW = context.dpf(if (wide) 13f else 11f)
         iconH = context.dpf(if (wide) 9f else 8f)
         barText.textSize = context.spf(if (wide) 15f else 13f)
