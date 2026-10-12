@@ -40,9 +40,8 @@ class FloatHandleView(
     private var drag = Drag.NONE
     private var startX = 0f
     private var startY = 0f
-    private var startW = 1f
+    private var startS = 1f
     private var startL = 0f
-    private var startH = 0f
     private var startB = 0f
 
     fun refresh() {
@@ -51,7 +50,7 @@ class FloatHandleView(
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), context.dpi(28f))
+        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), context.dpi(32f))
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -83,7 +82,7 @@ class FloatHandleView(
     override fun onTouchEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                val zone = context.dpf(56f)
+                val zone = context.dpf(64f)
                 drag = when {
                     e.x < zone -> Drag.LEFT
                     e.x > width - zone -> Drag.RIGHT
@@ -91,9 +90,8 @@ class FloatHandleView(
                 }
                 startX = e.rawX
                 startY = e.rawY
-                startW = KbSize.widthFrac
+                startS = KbSize.scale
                 startL = KbSize.leftFrac
-                startH = KbSize.heightDp(context)
                 startB = KbSize.bottomDp
                 parent?.requestDisallowInterceptTouchEvent(true)
                 return true
@@ -111,29 +109,38 @@ class FloatHandleView(
         return true
     }
 
+    /** 键盘是按 refW 宽排好版、再整体缩放的:拖动只改位置,缩放只改一个比例,都不重新排版,所以能跟手。 */
     private fun applyDrag(dx: Float, dy: Float) {
         val dm = resources.displayMetrics
-        val df = dx / dm.widthPixels
+        val sw = dm.widthPixels.toFloat()
         val d = dm.density
-        val minW = KbSize.minWidthFrac(context)
+        val refW = KbSize.floatRefWidthPx(context).toFloat()
+        val boxH = listener.boxHeightPx().toFloat()
+        val startVisW = refW * startS
+        val startVisH = boxH * startS
+        val margin = context.dpf(24f)
         when (drag) {
             Drag.MOVE -> {
-                KbSize.leftFrac = (startL + df).coerceIn(0f, 1f - startW)
-                val maxB = ((dm.heightPixels - listener.boxHeightPx() - context.dpf(24f)) / d).coerceAtLeast(0f)
+                KbSize.leftFrac = (startL + dx / sw).coerceIn(0f, ((sw - startVisW) / sw).coerceAtLeast(0f))
+                val maxB = ((dm.heightPixels - startVisH - margin) / d).coerceAtLeast(0f)
                 KbSize.bottomDp = (startB - dy / d).coerceIn(0f, maxB)
                 listener.onMove()
             }
-            Drag.RIGHT -> {
-                KbSize.widthFrac = (startW + df).coerceIn(minW, 1f - startL)
-                KbSize.heightDp = (startH - dy / d).coerceIn(KbSize.minHeightDp(), KbSize.maxHeightDp(context))
-                listener.onResize()
-            }
-            Drag.LEFT -> {
-                val right = startL + startW
-                val l = (startL + df).coerceIn(0f, right - minW)
-                KbSize.leftFrac = l
-                KbSize.widthFrac = right - l
-                KbSize.heightDp = (startH - dy / d).coerceIn(KbSize.minHeightDp(), KbSize.maxHeightDp(context))
+            Drag.RIGHT, Drag.LEFT -> {
+                val sign = if (drag == Drag.RIGHT) 1f else -1f
+                // 宽度和高度各算一个比例,取平均:往外拉就变大,往里拉就变小
+                val byW = (startVisW + sign * dx) / startVisW
+                val byH = (startVisH - dy) / startVisH
+                var s = startS * (byW + byH) / 2f
+                // 不超出屏幕,也不小于最小比例
+                val maxByW = if (drag == Drag.RIGHT) (sw - startL * sw) / refW else (startL * sw + startVisW) / refW
+                val maxByH = (dm.heightPixels - margin - startB * d) / boxH
+                s = s.coerceIn(KbSize.MIN_SCALE, minOf(KbSize.maxScale(context), maxByW, maxByH).coerceAtLeast(KbSize.MIN_SCALE))
+                KbSize.scale = s
+                if (drag == Drag.LEFT) {
+                    // 右边缘不动,左边缘跟着变
+                    KbSize.leftFrac = ((startL * sw + startVisW - refW * s) / sw).coerceAtLeast(0f)
+                }
                 listener.onResize()
             }
             Drag.NONE -> {}
