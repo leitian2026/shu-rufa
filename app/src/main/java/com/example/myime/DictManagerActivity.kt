@@ -254,7 +254,7 @@ class DictManagerActivity : Activity() {
         capButton.text = "拼音词条上限:${DictConfig.pinyinCap(this) / 10000} 万(点击切换,重新安装后生效;单字不受限)"
         capButton.isEnabled = busy == null
         userInfo.text = "已学习:拼音 ${UserData.pinyin(this).count()} 个 · 笔画 ${UserData.stroke(this).count()} 个 · " +
-            "英文 ${UserData.english(this).count()} 个词"
+            "英文 ${UserData.english(this).count()} 个词 · 联想 ${UserData.chain(this).count()} 条"
     }
 
     private fun showProgress(pack: String, text: String, frac: Float) {
