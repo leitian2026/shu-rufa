@@ -55,6 +55,29 @@ object Translator {
     private const val UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/124.0.0.0 Mobile Safari/537.36 EdgA/124.0.0.0"
 
+    /** 最近一次两个引擎都失败时的原因,给翻译框显示(例如「微软403 谷歌超时」),方便判断是网络还是接口的问题。 */
+    @Volatile var lastFail = ""
+        private set
+    private val reasons = ConcurrentHashMap<String, String>()
+
+    /** 微软翻译的两个域名:Edge 用的 api-edge 在前,不通再试官方域名;哪个通过就记住,下次先用它。 */
+    private val msHosts = listOf(
+        "api-edge.cognitive.microsofttranslator.com",
+        "api.cognitive.microsofttranslator.com",
+    )
+    @Volatile private var msHostIdx = 0
+
+    private class HttpFail(val code: Int) : IOException("HTTP $code")
+
+    private fun reasonOf(t: Throwable): String = when (t) {
+        is HttpFail -> "${t.code}"
+        is java.net.SocketTimeoutException -> "超时"
+        is java.net.UnknownHostException -> "域名失败"
+        is javax.net.ssl.SSLException -> "TLS失败"
+        is org.json.JSONException -> "返回异常"
+        else -> t.javaClass.simpleName.take(10)
+    }
+
     private val cache = LruCache<String, String>(80)
     private val failedAt = ConcurrentHashMap<String, Long>()
     private val lock = Any()
@@ -78,6 +101,7 @@ object Translator {
         val firstBad = f0 != null && now - f0 < FAIL_BACKOFF_MS
         val secondBad = f1 != null && now - f1 < FAIL_BACKOFF_MS
         if (firstBad && !secondBad) order = order.reversed()
+        reasons.clear()
         for (e in order) {
             if (cancelled()) return null   // 原文已经又变了:不再发请求(也不再换备用引擎)
             try {
@@ -87,11 +111,14 @@ object Translator {
                     cache.put(key(text, p), out)
                     return TransResult(out, e)
                 }
+                reasons[e] = "无结果"
             } catch (t: Throwable) {
                 // 这个引擎这次不行,换下一个
+                reasons[e] = reasonOf(t)
             }
             failedAt[e] = SystemClock.elapsedRealtime()
         }
+        lastFail = order.joinToString(" ") { engineLabel(it) + (reasons[it] ?: "") }
         return null
     }
 
@@ -100,32 +127,52 @@ object Translator {
     private fun msCode(c: String) = if (c == "zh") "zh-Hans" else c
 
     private fun microsoft(text: String, p: LangPair): String? {
+        // 先用上次成功的域名;它失败了(网络层错误或 HTTP 错误)再换另一个,最多各试一次
+        var lastErr: Throwable? = null
+        val n = msHosts.size
+        for (k in 0 until n) {
+            val idx = (msHostIdx + k) % n
+            try {
+                val out = microsoftOn(msHosts[idx], text, p)
+                if (!out.isNullOrEmpty()) {
+                    msHostIdx = idx
+                    return out
+                }
+            } catch (t: Throwable) {
+                lastErr = t
+                if (t is java.net.UnknownHostException) continue   // 这个域名解析不了:换下一个
+            }
+        }
+        if (lastErr != null) throw lastErr
+        return null
+    }
+
+    private fun microsoftOn(host: String, text: String, p: LangPair): String? {
         for (attempt in 0..1) {
             val tk = msToken()
-            val url = "https://api-edge.cognitive.microsofttranslator.com/translate" +
+            val url = "https://$host/translate" +
                 "?from=${msCode(p.from)}&to=${msCode(p.to)}&api-version=3.0&includeSentenceLength=true"
             val body = JSONArray().put(JSONObject().put("Text", text)).toString()
             val c = open(url, "POST")
-            try {
-                c.setRequestProperty("Authorization", "Bearer $tk")
-                c.setRequestProperty("Content-Type", "application/json")
-                c.doOutput = true
-                c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-                val code = c.responseCode
-                if (code == 401 || code == 403) {
-                    // 令牌被拒(过期 / 被换掉):丢掉缓存,重新要一个再试一次
-                    synchronized(lock) { token = null }
-                    continue
-                }
-                if (code != 200) {
-                    c.errorStream?.close()
-                    return null
-                }
-                val arr = JSONArray(readAll(c))
-                return arr.getJSONObject(0).getJSONArray("translations").getJSONObject(0).getString("text")
-            } finally {
-                // 不调 disconnect():读完关掉流,连接会回到系统的连接池,下一次直接复用,省掉 TCP + TLS 握手
+            c.setRequestProperty("Authorization", "Bearer $tk")
+            c.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            c.doOutput = true
+            c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val code = c.responseCode
+            if (code == 401 || code == 403) {
+                // 令牌被拒(过期 / 被换掉):丢掉缓存,重新要一个再试一次
+                c.errorStream?.close()
+                synchronized(lock) { token = null }
+                if (attempt == 1) throw HttpFail(code)
+                continue
             }
+            if (code != 200) {
+                c.errorStream?.close()
+                throw HttpFail(code)
+            }
+            // 不调 disconnect():读完关掉流,连接会回到系统的连接池,下一次直接复用,省掉 TCP + TLS 握手
+            val arr = JSONArray(readAll(c))
+            return arr.getJSONObject(0).getJSONArray("translations").getJSONObject(0).getString("text")
         }
         return null
     }
@@ -139,9 +186,10 @@ object Translator {
             } else {
                 val c = open("https://edge.microsoft.com/translate/auth", "GET")
                 try {
-                    if (c.responseCode != 200) {
+                    val rc = c.responseCode
+                    if (rc != 200) {
                         c.errorStream?.close()
-                        throw IOException("auth ${c.responseCode}")
+                        throw HttpFail(rc)   // 令牌接口没给令牌:翻译框会显示「微软xxx」
                     }
                     val s = readAll(c).trim()
                     if (s.isEmpty()) throw IOException("auth empty")
@@ -211,6 +259,7 @@ object Translator {
         c.readTimeout = 6000
         c.setRequestProperty("User-Agent", UA)
         c.setRequestProperty("Accept", "application/json, text/plain, */*")
+        c.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         return c
     }
 
