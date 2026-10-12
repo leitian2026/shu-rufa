@@ -70,6 +70,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private var strokeBase = 0f
     private var multiBase = 0f
     private var richBase = 0f
+    private var richZ = 0f
+    private var richS = 0f
+    private var richE = 0f
 
     private val shadowRect = RectF()
     private val segRect = RectF()
@@ -122,10 +125,19 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         strokeBase = baseline(strokePaint)
         multiBase = baseline(multiPaint)
         richBase = baseline(richPaint)
+        richPaint.isFakeBoldText = false
+        richZ = richPaint.measureText("中")
+        richS = richPaint.measureText("/")
+        richE = richPaint.measureText("英")
     }
 
     /** 每次开始输入时调用:跟随深色模式、屏幕宽度变化。 */
+    private var uiSig = ""
+
     fun refresh() {
+        val sig = context.uiSignature()
+        if (sig == uiSig && width > 0) return   // 深色模式/屏幕/字号/高度都没变:不重算
+        uiSig = sig
         palette = Palette(context)
         applyMetrics()
         layoutKeys()
@@ -297,9 +309,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     /** 「中/英」:当前语言加粗,另一个变淡。 */
     private fun drawRich(canvas: Canvas, which: Int, cx: Float, baseY: Float) {
-        val wZ = richPaint.measureText("中")
-        val wS = richPaint.measureText("/")
-        val wE = richPaint.measureText("英")
+        val wZ = richZ
+        val wS = richS
+        val wE = richE
         val x = cx - (wZ + wS + wE) / 2f
 
         richPaint.isFakeBoldText = which == 1
