@@ -455,8 +455,27 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
+    /** 每个输入框只在第一次自动弹出时收起一次,之后你再点输入框就正常弹出。 */
+    private var autoHidden = false
+
+    override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(attribute, restarting)
+        if (!restarting) autoHidden = false
+    }
+
+    /** Edge 打开收藏夹面板时会自动把焦点给里面的搜索框,顺带弹出键盘;识别出来就收起。 */
+    private fun isEdgeFavoritesSearch(info: EditorInfo): Boolean {
+        if (info.packageName?.startsWith("com.microsoft.emmx") != true) return false
+        val hint = info.hintText?.toString() ?: return false
+        return hint.contains("收藏") || hint.contains("bookmark", true) || hint.contains("favorite", true)
+    }
+
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        if (!restarting && !autoHidden && isEdgeFavoritesSearch(info)) {
+            autoHidden = true
+            main.post { requestHideSelf(0) }
+        }
         composing.clear()
         queryGen++
         candidates = emptyList()
