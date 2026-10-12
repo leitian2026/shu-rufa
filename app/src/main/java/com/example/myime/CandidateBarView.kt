@@ -146,7 +146,12 @@ class CandidateBarView(
     private fun maxOffset(): Float = (contentWidth + inset + closeW - width).coerceAtLeast(0f)
 
     /** 每次开始输入时调用:跟随深色模式、屏幕宽度变化。 */
+    private var uiSig = ""
+
     fun refresh() {
+        val sig = context.uiSignature()
+        if (sig == uiSig && width > 0) return
+        uiSig = sig
         palette = Palette(context)
         applyMetrics()
         relayout()
