@@ -24,6 +24,7 @@ class SettingsPanelView(
     interface Listener {
         fun onAction(id: Int)
         fun onBack()
+        fun onExtra(id: Int) {}
     }
 
     private val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
@@ -52,9 +53,25 @@ class SettingsPanelView(
     private var cellW = 0f
     private var cellH = 0f
 
-    override val barKeys: List<BarKey> by lazy {
-        listOf(BarKey(ID_BACK_KEY, "", 0.7f, BarKind.PRIMARY, icon = Icon.BACK))
+    /** 标题行右边在「返回」后面再多放一个小按钮(键盘选择页用来设默认输入方式);null = 不放。 */
+    var extraLabel: String? = null
+        set(v) {
+            if (field == v) return
+            field = v
+            barList = buildBar()
+            layoutBar()
+            invalidate()
+        }
+
+    private fun buildBar(): List<BarKey> {
+        val l = ArrayList<BarKey>()
+        l.add(BarKey(ID_BACK_KEY, "", 1f, BarKind.PRIMARY, icon = Icon.BACK))
+        extraLabel?.let { l.add(BarKey(ID_EXTRA_KEY, it, 1f, BarKind.FUNCTION)) }
+        return l
     }
+
+    private var barList: List<BarKey> = buildBar()
+    override val barKeys: List<BarKey> get() = barList
 
     override val titledHeader: Boolean get() = true
 
@@ -146,7 +163,7 @@ class SettingsPanelView(
     }
 
     override fun onBarKey(id: Int) {
-        if (id == ID_BACK_KEY) listener.onBack()
+        if (id == ID_BACK_KEY) listener.onBack() else if (id == ID_EXTRA_KEY) listener.onExtra(id)
     }
 
     companion object {
@@ -182,5 +199,6 @@ class SettingsPanelView(
         const val ID_PICKER = 24
 
         private const val ID_BACK_KEY = 0
+        private const val ID_EXTRA_KEY = 1
     }
 }
