@@ -60,9 +60,10 @@ android {
 
     buildTypes {
         release {
-            // R8 先关闭,以后要开:把下面两个改成 true 即可
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // 开启 R8:去掉没用到的代码和资源,APK 更小、启动略快。
+            // 本项目没有反射和第三方库,清单里声明的组件会自动保留;若发布版出现闪退,把下面两个改回 false 排查
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
