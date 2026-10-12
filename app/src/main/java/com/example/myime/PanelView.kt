@@ -229,7 +229,7 @@ abstract class PanelView(context: Context) : View(context) {
         onMetricsChanged()
     }
 
-    private fun layoutBar() {
+    protected fun layoutBar() {
         val keys = barKeys
         if (width == 0 || height == 0) return
         val gx = context.dpf(6f)
