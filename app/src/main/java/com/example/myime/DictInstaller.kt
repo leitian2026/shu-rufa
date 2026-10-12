@@ -63,6 +63,19 @@ object DictPacks {
         else -> emptyList()
     }
 
+    /** 自定义来源在 raw/ 里的文件名。 */
+    fun customName(pack: String, i: Int) = "custom_${pack}_$i.txt"
+
+    /** 有自定义地址就用自定义的,否则用内置默认来源。 */
+    fun sources(ctx: Context, pack: String): List<Source> {
+        val urls = DictConfig.customUrls(ctx, pack)
+        if (urls.isEmpty()) return sources(pack)
+        return urls.mapIndexed { i, u ->
+            val optional = pack != PINYIN && i >= 1   // 笔画的字频表、英文的双词表可以缺
+            Source(customName(pack, i), listOf(u), optional = optional)
+        }
+    }
+
     /** 这个词库包转换后生成的文件。 */
     fun outputs(pack: String): List<String> = when (pack) {
         STROKE -> listOf(DictStore.STROKE_FILE)
@@ -167,8 +180,16 @@ object DictInstaller {
     /** 下载 → 转换 → 换上新词库。返回给界面显示的一句话。耗时,要在后台线程调用。 */
     fun install(ctx: Context, pack: String, cancel: AtomicBoolean, progress: Progress): String {
         val raw = DictStore.raw(ctx)
-        val sources = DictPacks.sources(pack)
+        val custom = DictConfig.customUrls(ctx, pack).isNotEmpty()
+        val sources = DictPacks.sources(ctx, pack)
         val notes = ArrayList<String>()
+        if (custom) {
+            // 自定义来源:清掉以前多出来的自定义原始文件,避免地址变少后旧文件混进来
+            val keep = sources.map { it.name }.toSet()
+            raw.listFiles()?.forEach {
+                if (it.name.startsWith("custom_${pack}_") && it.name !in keep) it.delete()
+            }
+        }
         val n = sources.size
 
         for (i in sources.indices) {
@@ -200,26 +221,31 @@ object DictInstaller {
 
         val count: Int = when (pack) {
             DictPacks.STROKE -> {
-                val stroke = rawFile("stroke.dict.yaml") ?: throw IOException("缺少 raw/stroke.dict.yaml")
+                val strokeName = if (custom) DictPacks.customName(pack, 0) else "stroke.dict.yaml"
+                val stroke = rawFile(strokeName) ?: throw IOException("缺少 raw/$strokeName")
+                val freq = if (custom) rawFile(DictPacks.customName(pack, 1)) else rawFile(DictPacks.freqFileName())
                 DictConvert.buildStroke(
-                    stroke, rawFile(DictPacks.freqFileName()),
+                    stroke, freq,
                     DictStore.file(ctx, DictStore.STROKE_FILE), cancel, conv,
                 )
             }
             DictPacks.PINYIN -> {
-                val main = listOf(DictPacks.freqFileName(), "base.dict.yaml", "ext.dict.yaml", "41448.dict.yaml")
+                val main = if (custom) sources.mapNotNull { rawFile(it.name) }
+                else listOf(DictPacks.freqFileName(), "base.dict.yaml", "ext.dict.yaml", "41448.dict.yaml")
                     .mapNotNull { rawFile(it) }
                 if (main.isEmpty()) throw IOException("缺少 raw/ 里的拼音词库文件")
-                val supplement = listOfNotNull(rawFile("luna_pinyin.dict.yaml"))
+                val supplement = if (custom) emptyList() else listOfNotNull(rawFile("luna_pinyin.dict.yaml"))
                 DictConvert.buildPinyin(
                     main, supplement, DictStore.file(ctx, DictStore.PINYIN_FILE),
                     DictConfig.pinyinCap(ctx), cancel, conv,
                 )
             }
             DictPacks.ENGLISH -> {
-                val c1 = rawFile("count_1w.txt") ?: throw IOException("缺少 raw/count_1w.txt")
+                val n1 = if (custom) DictPacks.customName(pack, 0) else "count_1w.txt"
+                val n2 = if (custom) DictPacks.customName(pack, 1) else "count_2w.txt"
+                val c1 = rawFile(n1) ?: throw IOException("缺少 raw/$n1")
                 DictConvert.buildEnglish(
-                    c1, rawFile("count_2w.txt"),
+                    c1, rawFile(n2),
                     DictStore.file(ctx, DictStore.ENGLISH_FILE),
                     DictStore.file(ctx, DictStore.ENGLISH_BIGRAM_FILE),
                     DictConfig.englishCap(ctx), cancel, conv,
@@ -238,6 +264,7 @@ object DictInstaller {
         for (s in DictPacks.sources(pack)) {
             if (s.name != DictPacks.freqFileName()) File(raw, s.name).delete()
         }
+        raw.listFiles()?.forEach { if (it.name.startsWith("custom_${pack}_")) it.delete() }
         // 8105 是拼音、笔画共用的,两边都没有了才删
         if (!DictStore.file(ctx, DictStore.PINYIN_FILE).isFile &&
             !DictStore.file(ctx, DictStore.STROKE_FILE).isFile
