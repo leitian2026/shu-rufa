@@ -158,7 +158,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     private fun sameShape(l: Layout): Boolean {
         val old = layout ?: return false
-        if (old.cols != l.cols || old.rows != l.rows || old.gapX != l.gapX || old.gapY != l.gapY) return false
+        if (old.cols != l.cols || old.rows != l.rows || old.gapX != l.gapX || old.gapY != l.gapY || old.padX != l.padX) return false
         if (keys.size != l.keys.size) return false
         for (i in keys.indices) {
             val a = keys[i]
@@ -177,11 +177,14 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         layoutKeys()
     }
 
+    private fun curPadX(): Float = layout?.padX?.let { context.dpf(it) } ?: padX
+
     private fun layoutKeys() {
         val l = layout ?: return
         if (width == 0 || height == 0 || rects.size != keys.size) return
         val gx = context.dpf(l.gapX)
         val gy = context.dpf(l.gapY)
+        val padX = curPadX()
         val pitchX = (width - 2 * padX + gx) / l.cols
         val pitchY = (height - padTop - padBottom + gy) / l.rows
         for (i in keys.indices) {
@@ -421,7 +424,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     }
 
     private fun hit(x0: Float, y0: Float): Int {
-        val x = x0.coerceIn(padX, width - padX)
+        val x = x0.coerceIn(curPadX(), width - curPadX())
         val y = y0.coerceIn(padTop, height - padBottom)
         for (i in rects.indices) {
             val r = rects[i]
