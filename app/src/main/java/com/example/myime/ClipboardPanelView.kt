@@ -7,7 +7,9 @@ import android.graphics.RectF
 
 /**
  * 剪贴板面板:按时间倒序列出最近复制过的文字。
- * 点一条 = 粘贴到输入框并返回键盘;长按一条 = 展开全文并出现「删除」;「清空」删除全部。
+ *  - 点一条 = 粘贴到输入框并返回键盘
+ *  - 长按一条 = 进入多选:每条前面出现圆圈,点哪条选哪条;底部变成「取消 / 全选 / 删除」
+ *  - 「清空」删除全部;离开面板或点「取消」都会退出多选
  */
 class ClipboardPanelView(
     context: Context,
@@ -16,7 +18,7 @@ class ClipboardPanelView(
 
     interface Listener {
         fun onPaste(text: String)
-        fun onDelete(index: Int)
+        fun onDeleteMany(texts: List<String>)
         fun onClear()
         fun onBack()
     }
@@ -27,34 +29,52 @@ class ClipboardPanelView(
     private var cardH = FloatArray(0)
     private var totalH = 0f
 
+    private var selecting = false
+    private val selected = LinkedHashSet<String>()
+
     private var lineH = 0f
     private var cardPad = 0f
     private var cardGap = 0f
     private var headerH = 0f
-    private var btnRowH = 0f
-    private var expanded = -1
+    private var checkW = 0f      // 多选时每条左边圆圈占的宽度
+
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
+    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.LEFT
         isFakeBoldText = true
     }
     private val countPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
-    private val btnPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
-    private var titleBase = 0f
-
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
-    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
     private val tmp = RectF()
     private var textBase = 0f
     private var hintBase = 0f
+    private var titleBase = 0f
 
-    override val barKeys: List<BarKey> by lazy {
-        listOf(
-            BarKey(ID_BACK, "返回", 1.6f, BarKind.PRIMARY),
-            BarKey(ID_SPACER, "", 6f, BarKind.SPACER),
-            BarKey(ID_CLEAR, "清空", 1.6f, BarKind.FUNCTION),
-        )
-    }
+    private var barList: List<BarKey> = normalBar()
+    override val barKeys: List<BarKey> get() = barList
+
+    private fun normalBar() = listOf(
+        BarKey(ID_BACK, "返回", 1.6f, BarKind.PRIMARY),
+        BarKey(ID_SPACER, "", 6f, BarKind.SPACER),
+        BarKey(ID_CLEAR, "清空", 1.6f, BarKind.FUNCTION),
+    )
+
+    private fun selectBar() = listOf(
+        BarKey(ID_CANCEL, "取消", 1.6f, BarKind.PRIMARY),
+        BarKey(ID_SPACER, "", 3.4f, BarKind.SPACER),
+        BarKey(
+            ID_ALL,
+            if (items.isNotEmpty() && selected.size == items.size) "取消全选" else "全选",
+            2f, BarKind.FUNCTION,
+        ),
+        BarKey(ID_DEL, if (selected.isEmpty()) "删除" else "删除(${selected.size})", 2f, BarKind.FUNCTION),
+    )
 
     init {
         applyClipMetrics()
@@ -71,22 +91,23 @@ class ClipboardPanelView(
         hintPaint.textSize = context.spf(if (wide) 16f else 14f)
         titlePaint.textSize = context.spf(if (wide) 18f else 16f)
         countPaint.textSize = context.spf(if (wide) 15f else 13f)
-        btnPaint.textSize = context.spf(if (wide) 15f else 14f)
-        titleBase = baseline(titlePaint)
-        headerH = lineH * 1.9f
-        btnRowH = lineH * 2.0f
+        ring.strokeWidth = context.dpf(1.8f)
         lineH = textPaint.fontSpacing
         cardPad = context.dpf(if (wide) 14f else 10f)
         cardGap = context.dpf(if (wide) 10f else 6f)
+        checkW = context.dpf(if (wide) 40f else 34f)
+        headerH = lineH * 1.9f
         textBase = baseline(textPaint)
         hintBase = baseline(hintPaint)
+        titleBase = baseline(titlePaint)
     }
 
     fun setItems(list: List<String>) {
         items = list
-        if (expanded >= list.size) expanded = -1
+        selected.retainAll(list.toSet())
         relayout()
         offsetY = offsetY.coerceIn(0f, maxOffsetY())
+        if (selecting) updateBar()
         invalidate()
     }
 
@@ -95,42 +116,47 @@ class ClipboardPanelView(
         relayout()
     }
 
+    /** 每次打开面板都从普通状态开始。 */
+    override fun onShown() {
+        if (selecting) exitSelect()
+    }
+
+    private fun updateBar() {
+        barList = if (selecting) selectBar() else normalBar()
+        layoutBar()
+        invalidate()
+    }
+
+    private fun enterSelect(first: String) {
+        selecting = true
+        selected.clear()
+        selected.add(first)
+        relayout()
+        updateBar()
+    }
+
+    private fun exitSelect() {
+        selecting = false
+        selected.clear()
+        relayout()
+        updateBar()
+    }
+
     private fun relayout() {
         if (width == 0) return
-        val maxTextW = width - 2 * padX - 2 * cardPad
-        if (expanded >= items.size) expanded = -1
-        lines = items.mapIndexed { i, t -> if (i == expanded) wrapFull(t, maxTextW) else wrap(t, maxTextW) }
+        val maxTextW = width - 2 * padX - 2 * cardPad - (if (selecting) checkW else 0f)
+        lines = items.map { wrap(it, maxTextW) }
         tops = FloatArray(items.size + 1)
         cardH = FloatArray(items.size)
         var y = headerH
         for (i in items.indices) {
             tops[i] = y
-            var h = cardPad * 2 + lines[i].size * lineH
-            if (i == expanded) h += btnRowH
+            val h = cardPad * 2 + maxOf(lines[i].size, 1) * lineH
             cardH[i] = h
             y += h + cardGap
         }
         tops[items.size] = y
         totalH = y
-    }
-
-    /** 展开时显示全文,保留换行(最多 60 行)。 */
-    private fun wrapFull(text: String, maxW: Float): List<String> {
-        val out = ArrayList<String>()
-        if (maxW <= 0f) return out
-        for (para in text.replace("\r", "").replace('\t', ' ').split('\n')) {
-            if (para.isEmpty()) { out.add(""); continue }
-            var start = 0
-            while (start < para.length && out.size < 60) {
-                val n = textPaint.breakText(para, start, para.length, true, maxW, null)
-                if (n <= 0) break
-                out.add(para.substring(start, start + n))
-                start += n
-            }
-            if (out.size >= 60) break
-        }
-        while (out.isNotEmpty() && out.last().isEmpty()) out.removeAt(out.size - 1)
-        return out
     }
 
     /** 最多两行,放不下时第二行末尾加省略号。 */
@@ -158,14 +184,16 @@ class ClipboardPanelView(
     override fun contentHeight(): Float = totalH
 
     override fun drawContent(canvas: Canvas, visTop: Float, visBottom: Float) {
-        // 标题行:剪贴板  n/500
+        // 标题行
         titlePaint.color = palette.text
         countPaint.color = palette.textFaint
-        val title = "剪贴板"
-        canvas.drawText(title, padX + cardPad * 0.5f, headerH / 2f + titleBase, titlePaint)
+        val title = if (selecting) "已选 ${selected.size} 项" else "剪贴板"
+        val tx = padX + cardPad * 0.5f
+        canvas.drawText(title, tx, headerH / 2f + titleBase, titlePaint)
+        val count = if (selecting) "共 ${items.size} 条" else "${items.size}/500"
         canvas.drawText(
-            "${items.size}/500",
-            padX + cardPad * 0.5f + titlePaint.measureText(title) + context.dpf(10f),
+            count,
+            tx + titlePaint.measureText(title) + context.dpf(10f),
             headerH / 2f + baseline(countPaint),
             countPaint,
         )
@@ -180,6 +208,7 @@ class ClipboardPanelView(
 
         val left = padX
         val right = width - padX
+        val textLeft = left + cardPad + (if (selecting) checkW else 0f)
         for (i in items.indices) {
             val top = tops[i]
             val h = cardH[i]
@@ -197,63 +226,75 @@ class ClipboardPanelView(
             for (li in lines[i].indices) {
                 canvas.drawText(
                     lines[i][li],
-                    left + cardPad,
+                    textLeft,
                     top + cardPad + lineH * (li + 0.5f) + textBase,
                     textPaint,
                 )
             }
 
-            if (i == expanded) {
-                val r = deleteRect(i)
-                fill.color = palette.functionKey
-                canvas.drawRoundRect(r, radius, radius, fill)
-                btnPaint.color = palette.text
-                canvas.drawText("删除", r.centerX(), r.centerY() + baseline(btnPaint), btnPaint)
+            if (selecting) {
+                val cx = left + cardPad + checkW * 0.4f
+                val cy = top + h / 2f
+                val r = context.dpf(10f)
+                if (items[i] in selected) {
+                    fill.color = palette.accent
+                    canvas.drawCircle(cx, cy, r, fill)
+                    ring.color = palette.onAccent
+                    canvas.drawLine(cx - r * 0.45f, cy, cx - r * 0.1f, cy + r * 0.38f, ring)
+                    canvas.drawLine(cx - r * 0.1f, cy + r * 0.38f, cx + r * 0.5f, cy - r * 0.35f, ring)
+                } else {
+                    ring.color = palette.icon
+                    canvas.drawCircle(cx, cy, r, ring)
+                }
             }
         }
     }
 
-    private fun deleteRect(i: Int): RectF {
-        val right = width - padX - cardPad
-        val bottom = tops[i] + cardH[i] - cardPad * 0.5f
-        val w = context.dpf(64f)
-        val h = btnRowH - cardPad * 0.5f - context.dpf(4f)
-        return RectF(right - w, bottom - h, right, bottom)
+    private fun hit(y: Float): Int {
+        if (items.isEmpty() || cardH.size != items.size) return -1
+        for (i in items.indices) {
+            if (y >= tops[i] && y <= tops[i] + cardH[i]) return i
+        }
+        return -1
     }
 
     override fun onContentTap(x: Float, y: Float) {
-        if (items.isEmpty() || cardH.size != items.size) return
-        for (i in items.indices) {
-            if (y >= tops[i] && y <= tops[i] + cardH[i]) {
-                if (i == expanded && deleteRect(i).contains(x, y)) {
-                    expanded = -1
-                    listener.onDelete(i)
-                } else {
-                    listener.onPaste(items[i])
-                }
-                return
-            }
+        val i = hit(y)
+        if (i < 0) return
+        if (selecting) {
+            toggle(items[i])
+        } else {
+            listener.onPaste(items[i])
         }
     }
 
-    /** 长按一条:展开全文并出现「删除」;再长按收起。 */
+    /** 长按:进入多选并选中这一条;已在多选时,长按等于点一下。 */
     override fun onContentLongPress(x: Float, y: Float) {
-        if (items.isEmpty() || cardH.size != items.size) return
-        for (i in items.indices) {
-            if (y >= tops[i] && y <= tops[i] + cardH[i]) {
-                expanded = if (expanded == i) -1 else i
-                relayout()
-                offsetY = offsetY.coerceIn(0f, maxOffsetY())
-                invalidate()
-                return
-            }
-        }
+        val i = hit(y)
+        if (i < 0) return
+        if (selecting) toggle(items[i]) else enterSelect(items[i])
+    }
+
+    private fun toggle(t: String) {
+        if (!selected.remove(t)) selected.add(t)
+        updateBar()
     }
 
     override fun onBarKey(id: Int) {
         when (id) {
             ID_BACK -> listener.onBack()
             ID_CLEAR -> listener.onClear()
+            ID_CANCEL -> exitSelect()
+            ID_ALL -> {
+                if (selected.size == items.size) selected.clear() else selected.addAll(items)
+                updateBar()
+            }
+            ID_DEL -> {
+                if (selected.isEmpty()) return
+                val gone = selected.toList()
+                exitSelect()
+                listener.onDeleteMany(gone)
+            }
         }
     }
 
@@ -261,5 +302,8 @@ class ClipboardPanelView(
         const val ID_BACK = 0
         const val ID_SPACER = 1
         const val ID_CLEAR = 2
+        const val ID_CANCEL = 3
+        const val ID_ALL = 4
+        const val ID_DEL = 5
     }
 }
