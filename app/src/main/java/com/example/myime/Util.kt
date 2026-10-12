@@ -2,6 +2,7 @@ package com.example.myime
 
 import android.content.Context
 import android.util.TypedValue
+import android.widget.Button
 
 fun Context.dpf(v: Float): Float =
     TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics)
@@ -66,3 +67,21 @@ object KbSize {
         bottomDp = 0f
     }
 }
+
+/** 界面里的小按钮:贴着文字大小,不撑满整行。 */
+fun Context.smallButton(label: String? = null): Button = Button(this).apply {
+    if (label != null) text = label
+    isAllCaps = false
+    textSize = 13f
+    minWidth = 0
+    minimumWidth = 0
+    minHeight = 0
+    minimumHeight = 0
+    setPadding(dpi(14f), dpi(6f), dpi(14f), dpi(6f))
+}
+
+/** 小按钮在竖排布局里靠左、不撑满,上下留一点空隙。 */
+fun Context.smallButtonParams(): android.widget.LinearLayout.LayoutParams =
+    android.widget.LinearLayout.LayoutParams(
+        android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+    ).apply { topMargin = dpi(4f); bottomMargin = dpi(4f); rightMargin = dpi(8f) }
