@@ -7,7 +7,7 @@ import android.graphics.RectF
 
 /**
  * 剪贴板面板:按时间倒序列出最近复制过的文字。
- * 点一条 = 粘贴到输入框并返回键盘;点右侧 × 删除这一条;「清空」删除全部。
+ * 点一条 = 粘贴到输入框并返回键盘;长按一条 = 展开全文并出现「删除」;「清空」删除全部。
  */
 class ClipboardPanelView(
     context: Context,
@@ -30,15 +30,20 @@ class ClipboardPanelView(
     private var lineH = 0f
     private var cardPad = 0f
     private var cardGap = 0f
-    private var delW = 0f
+    private var headerH = 0f
+    private var btnRowH = 0f
+    private var expanded = -1
+    private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.LEFT
+        isFakeBoldText = true
+    }
+    private val countPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
+    private val btnPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+    private var titleBase = 0f
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val xPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-    }
     private val tmp = RectF()
     private var textBase = 0f
     private var hintBase = 0f
@@ -64,17 +69,22 @@ class ClipboardPanelView(
         val wide = context.isWide()
         textPaint.textSize = context.spf(if (wide) 17f else 15f)
         hintPaint.textSize = context.spf(if (wide) 16f else 14f)
-        xPaint.strokeWidth = context.dpf(1.8f)
+        titlePaint.textSize = context.spf(if (wide) 18f else 16f)
+        countPaint.textSize = context.spf(if (wide) 15f else 13f)
+        btnPaint.textSize = context.spf(if (wide) 15f else 14f)
+        titleBase = baseline(titlePaint)
+        headerH = lineH * 1.9f
+        btnRowH = lineH * 2.0f
         lineH = textPaint.fontSpacing
         cardPad = context.dpf(if (wide) 14f else 10f)
         cardGap = context.dpf(if (wide) 10f else 6f)
-        delW = context.dpf(if (wide) 56f else 44f)
         textBase = baseline(textPaint)
         hintBase = baseline(hintPaint)
     }
 
     fun setItems(list: List<String>) {
         items = list
+        if (expanded >= list.size) expanded = -1
         relayout()
         offsetY = offsetY.coerceIn(0f, maxOffsetY())
         invalidate()
@@ -87,19 +97,40 @@ class ClipboardPanelView(
 
     private fun relayout() {
         if (width == 0) return
-        val maxTextW = width - 2 * padX - 2 * cardPad - delW
-        lines = items.map { wrap(it, maxTextW) }
+        val maxTextW = width - 2 * padX - 2 * cardPad
+        if (expanded >= items.size) expanded = -1
+        lines = items.mapIndexed { i, t -> if (i == expanded) wrapFull(t, maxTextW) else wrap(t, maxTextW) }
         tops = FloatArray(items.size + 1)
         cardH = FloatArray(items.size)
-        var y = 0f
+        var y = headerH
         for (i in items.indices) {
             tops[i] = y
-            val h = cardPad * 2 + lines[i].size * lineH
+            var h = cardPad * 2 + lines[i].size * lineH
+            if (i == expanded) h += btnRowH
             cardH[i] = h
             y += h + cardGap
         }
         tops[items.size] = y
         totalH = y
+    }
+
+    /** 展开时显示全文,保留换行(最多 60 行)。 */
+    private fun wrapFull(text: String, maxW: Float): List<String> {
+        val out = ArrayList<String>()
+        if (maxW <= 0f) return out
+        for (para in text.replace("\r", "").replace('\t', ' ').split('\n')) {
+            if (para.isEmpty()) { out.add(""); continue }
+            var start = 0
+            while (start < para.length && out.size < 60) {
+                val n = textPaint.breakText(para, start, para.length, true, maxW, null)
+                if (n <= 0) break
+                out.add(para.substring(start, start + n))
+                start += n
+            }
+            if (out.size >= 60) break
+        }
+        while (out.isNotEmpty() && out.last().isEmpty()) out.removeAt(out.size - 1)
+        return out
     }
 
     /** 最多两行,放不下时第二行末尾加省略号。 */
@@ -127,6 +158,17 @@ class ClipboardPanelView(
     override fun contentHeight(): Float = totalH
 
     override fun drawContent(canvas: Canvas, visTop: Float, visBottom: Float) {
+        // 标题行:剪贴板  n/500
+        titlePaint.color = palette.text
+        countPaint.color = palette.textFaint
+        val title = "剪贴板"
+        canvas.drawText(title, padX + cardPad * 0.5f, headerH / 2f + titleBase, titlePaint)
+        canvas.drawText(
+            "${items.size}/500",
+            padX + cardPad * 0.5f + titlePaint.measureText(title) + context.dpf(10f),
+            headerH / 2f + baseline(countPaint),
+            countPaint,
+        )
         if (items.isEmpty()) {
             hintPaint.color = palette.textFaint
             val cy = viewportHeight() / 2f
@@ -161,21 +203,48 @@ class ClipboardPanelView(
                 )
             }
 
-            // 右侧 ×
-            xPaint.color = palette.icon
-            val cx = right - delW / 2f
-            val cy = top + h / 2f
-            val arm = context.dpf(5f)
-            canvas.drawLine(cx - arm, cy - arm, cx + arm, cy + arm, xPaint)
-            canvas.drawLine(cx + arm, cy - arm, cx - arm, cy + arm, xPaint)
+            if (i == expanded) {
+                val r = deleteRect(i)
+                fill.color = palette.functionKey
+                canvas.drawRoundRect(r, radius, radius, fill)
+                btnPaint.color = palette.text
+                canvas.drawText("删除", r.centerX(), r.centerY() + baseline(btnPaint), btnPaint)
+            }
         }
+    }
+
+    private fun deleteRect(i: Int): RectF {
+        val right = width - padX - cardPad
+        val bottom = tops[i] + cardH[i] - cardPad * 0.5f
+        val w = context.dpf(64f)
+        val h = btnRowH - cardPad * 0.5f - context.dpf(4f)
+        return RectF(right - w, bottom - h, right, bottom)
     }
 
     override fun onContentTap(x: Float, y: Float) {
         if (items.isEmpty() || cardH.size != items.size) return
         for (i in items.indices) {
             if (y >= tops[i] && y <= tops[i] + cardH[i]) {
-                if (x > width - padX - delW) listener.onDelete(i) else listener.onPaste(items[i])
+                if (i == expanded && deleteRect(i).contains(x, y)) {
+                    expanded = -1
+                    listener.onDelete(i)
+                } else {
+                    listener.onPaste(items[i])
+                }
+                return
+            }
+        }
+    }
+
+    /** 长按一条:展开全文并出现「删除」;再长按收起。 */
+    override fun onContentLongPress(x: Float, y: Float) {
+        if (items.isEmpty() || cardH.size != items.size) return
+        for (i in items.indices) {
+            if (y >= tops[i] && y <= tops[i] + cardH[i]) {
+                expanded = if (expanded == i) -1 else i
+                relayout()
+                offsetY = offsetY.coerceIn(0f, maxOffsetY())
+                invalidate()
                 return
             }
         }
