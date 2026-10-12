@@ -784,7 +784,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 settingsPanel?.visibility = View.GONE
                 choicePanel?.visibility = View.GONE
                 kb.visibility = View.VISIBLE
-                kb.setLayout(Layouts.build(mode, kbState(), isWide()), animate)
+                kb.setLayout(Layouts.build(mode, kbState(), isWide()), false)
             }
         }
     }
@@ -798,7 +798,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         val wasVisible = panel.visibility == View.VISIBLE
         panel.visibility = View.VISIBLE
-        if (!wasVisible) panel.onShow(animate)
+        if (!wasVisible) panel.onShow(false)   // 不做滑入/淡入动画,直接显示
     }
 
     /** 读取当前剪贴板并加入历史(跳过被标记为敏感的内容,如密码管理器复制的密码)。 */
