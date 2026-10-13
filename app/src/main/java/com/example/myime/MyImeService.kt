@@ -81,6 +81,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private var clipsVersion = 0            // 每改一次加一
     @Volatile private var clipsSavedVersion = 0
     private val saveClipsLater = Runnable { saveClipsNow() }
+
+    // 回收箱:剪贴板里删掉的内容先放这里,最多 10 条;最新删的在最前(界面最上面),满了挤掉最后一条(最旧的)。
+    // 和剪贴板共用同一套延迟合并写盘,不额外唤醒磁盘。
+    private val trash = ArrayList<String>()
+    private var trashVersion = 0
+    @Volatile private var trashSavedVersion = 0
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClipboardNow() }
 
     private var textMode = Mode.PINYIN      // 最近使用的文字模式(拼音/笔画/英文)
@@ -121,6 +127,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         const val KIND_PINYIN = 0
         const val KIND_STROKE = 1
         const val KIND_ENGLISH = 2
+        const val TRASH_MAX = 10          // 回收箱最多放几条
         const val MAX_CLIP_CHARS = 5000   // 单条剪贴板最多保存的字数,更长的不收
         const val TRANS_DEBOUNCE_MS = 600L   // 翻译框停多久才去翻:越长请求越少越省电,越短译文越跟手
     }
@@ -151,9 +158,19 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val ctx = applicationContext
         worker.execute {
             val saved = ClipStore.load(ctx)
+            val savedTrash = ClipStore.load(ctx, ClipStore.TRASH)
             main.post {
                 if (clipsLoaded) return@post
                 clipsLoaded = true
+                if (savedTrash.isNotEmpty()) {
+                    val seenT = HashSet<String>(trash)
+                    for (t in savedTrash) {
+                        if (trash.size >= TRASH_MAX) break
+                        if (seenT.add(t)) trash.add(t)
+                    }
+                    if (mode == Mode.CLIPBOARD) clipPanel?.setTrash(trash.toList())
+                }
+                if (trash != savedTrash) trashChanged()
                 if (saved.isNotEmpty()) {
                     val seen = HashSet<String>(clips)
                     for (t in saved) {
@@ -175,17 +192,46 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         main.postDelayed(saveClipsLater, 2000)
     }
 
-    /** 立刻在后台线程写盘(键盘隐藏时调用)。 */
+    /** 回收箱改了:和剪贴板一样 2 秒后合并写一次盘。 */
+    private fun trashChanged() {
+        trashVersion++
+        if (!clipsLoaded) return
+        main.removeCallbacks(saveClipsLater)
+        main.postDelayed(saveClipsLater, 2000)
+    }
+
+    /** 剪贴板里删掉的内容放进回收箱。texts 要按它们在剪贴板里的顺序给(上面新、下面旧),原样放到回收箱最前面。 */
+    private fun moveToTrash(texts: List<String>) {
+        if (texts.isEmpty()) return
+        val batch = if (texts.size > TRASH_MAX) texts.subList(0, TRASH_MAX) else texts   // 一次删得比 10 条多:留靠前的(新的),挤掉后面最旧的
+        trash.removeAll(batch.toSet())   // 回收箱里已经有同样的内容:挪到最前,不重复
+        trash.addAll(0, batch)
+        while (trash.size > TRASH_MAX) trash.removeAt(trash.size - 1)
+        trashChanged()
+    }
+
+    /** 立刻在后台线程写盘(键盘隐藏时调用)。只写有变化的那一个文件。 */
     private fun saveClipsNow() {
         main.removeCallbacks(saveClipsLater)
-        if (!clipsLoaded || clipsSavedVersion == clipsVersion) return
-        val v = clipsVersion
-        val snapshot = ArrayList(clips)
+        if (!clipsLoaded) return
+        val cv = clipsVersion
+        val tv = trashVersion
+        val saveC = clipsSavedVersion != cv
+        val saveT = trashSavedVersion != tv
+        if (!saveC && !saveT) return
+        val snapshot = if (saveC) ArrayList(clips) else null
+        val trashSnap = if (saveT) ArrayList(trash) else null
         val ctx = applicationContext
         try {
             worker.execute {
-                ClipStore.save(ctx, snapshot)
-                clipsSavedVersion = v
+                if (snapshot != null) {
+                    ClipStore.save(ctx, snapshot)
+                    clipsSavedVersion = cv
+                }
+                if (trashSnap != null) {
+                    ClipStore.save(ctx, trashSnap, ClipStore.TRASH)
+                    trashSavedVersion = tv
+                }
             }
         } catch (e: Exception) {
             // 线程池已关闭:onDestroy 里会同步补写
@@ -303,6 +349,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             ClipStore.save(applicationContext, ArrayList(clips))
             clipsSavedVersion = clipsVersion
         }
+        if (clipsLoaded && trashSavedVersion != trashVersion) {
+            ClipStore.save(applicationContext, ArrayList(trash), ClipStore.TRASH)
+            trashSavedVersion = trashVersion
+        }
         worker.shutdownNow()
         loader.shutdownNow()
         super.onDestroy()
@@ -368,19 +418,41 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val clip = ClipboardPanelView(this, object : ClipboardPanelView.Listener {
             override fun onPaste(text: String) {
                 currentInputConnection?.commitText(text, 1)
+                // 点过的这一条挪到剪贴板最前面(已经在最前面就什么都不动,也不写盘)
+                if (clips.firstOrNull() != text && clips.remove(text)) {
+                    clips.add(0, text)
+                    clipsChanged()
+                }
                 leavePage()
             }
 
             override fun onDeleteMany(texts: List<String>) {
-                clips.removeAll(texts.toSet())
+                val gone = texts.toSet()
+                // 按剪贴板里的顺序放进回收箱(不按点选的先后),这样回收箱最下面那条永远是最旧的
+                moveToTrash(clips.filter { it in gone })
+                clips.removeAll(gone)
                 clipsChanged()
                 clipPanel?.setItems(clips.toList())
+                clipPanel?.setTrash(trash.toList())
             }
 
             override fun onClear() {
+                moveToTrash(clips.toList())
                 clips.clear()
                 clipsChanged()
                 clipPanel?.setItems(emptyList())
+                clipPanel?.setTrash(trash.toList())
+            }
+
+            override fun onPasteTrash(text: String) {
+                currentInputConnection?.commitText(text, 1)
+                leavePage()
+            }
+
+            override fun onTrashDelete(texts: List<String>) {
+                trash.removeAll(texts.toSet())
+                trashChanged()
+                clipPanel?.setTrash(trash.toList())
             }
 
             override fun onBack() {
@@ -637,7 +709,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun toggleFloating() {
         if (KbSize.floating) KbSize.exitFloating(this) else KbSize.enterFloating(this)
         KbSize.save(this)
-        settingsPanel?.accentId = if (KbSize.floating) SettingsPanelView.ID_FLOAT else -1
+        leavePage()   // 点完悬浮自动回到键盘(功能页里该键的颜色在 refreshLayout 里同步,下次打开就是对的)
         applySizeLive()
         floatHandle?.refresh()
         inputRoot?.requestLayout()
@@ -2253,6 +2325,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             Mode.SYMBOL -> showPanel(symbolPanel, animate)
             Mode.CLIPBOARD -> {
                 clipPanel?.setItems(clips.toList())
+                clipPanel?.setTrash(trash.toList())
                 showPanel(clipPanel, animate)
             }
             Mode.SETTINGS -> showPanel(settingsPanel, animate)
