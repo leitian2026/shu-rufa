@@ -31,6 +31,10 @@ class Palette(context: Context) {
     val functionKey = if (dark) 0xFF2B2E34.toInt() else 0xFFCBD2DE.toInt()
     val functionShadow = if (dark) 0xFF0E0F11.toInt() else 0xFFA9B1BF.toInt()
 
+    // 「返回」键:灰白浅色
+    val backKey = if (dark) 0xFF4A4E56.toInt() else 0xFFF1F2F5.toInt()
+    val backShadow = if (dark) 0xFF0E0F11.toInt() else 0xFFC4CAD5.toInt()
+
     // 蓝色主按钮(返回)、第一候选、选中状态
     val accent = if (dark) 0xFF4C8DFF.toInt() else 0xFF2468F2.toInt()
     val accentShadow = if (dark) 0xFF1D4DB0.toInt() else 0xFF1A4DB8.toInt()
