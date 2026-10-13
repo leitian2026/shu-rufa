@@ -31,7 +31,8 @@ class MainActivity : Activity() {
         })
         root.addView(TextView(this).apply {
             text = "拼音 / 笔画 / 英文 / 表情 / 剪贴板 / 输入翻译。联网只有两处:「词库管理」页点下载时;以及你在键盘「功能」页打开「输入翻译」并在翻译框里打字时(原文会发给微软 / 谷歌翻译)。其余时候键盘不联网。\n" +
-                "剪贴板历史只保存在内存里,不写入存储;输入习惯(词频)只存在本机应用私有目录,可在词库管理里清除。\n\n" +
+                "剪贴板历史只保存在内存里,不写入存储;输入习惯(词频)只存在本机应用私有目录,可在词库管理里清除。\n" +
+                "「备份与还原」可以把输入习惯和设置加密后存到你选的文件夹(本地、网盘),备份文件没有你的密码就打不开;网盘上传由网盘 App 完成,本输入法自己不联网。\n\n" +
                 "先点第一个按钮,在系统设置里打开本输入法;再点第二个按钮切换过来,然后在下面的输入框里试试。"
             textSize = 15f
             setPadding(0, pad / 2, 0, pad)
@@ -47,6 +48,9 @@ class MainActivity : Activity() {
         }, smallButtonParams())
         root.addView(smallButton("3. 词库管理(下载笔画 / 拼音 / 英文词库)").apply {
             setOnClickListener { startActivity(Intent(this@MainActivity, DictManagerActivity::class.java)) }
+        }, smallButtonParams())
+        root.addView(smallButton("4. 备份与还原(加密,本地 + 网盘)").apply {
+            setOnClickListener { startActivity(Intent(this@MainActivity, BackupActivity::class.java)) }
         }, smallButtonParams())
         addTranslateSettings(root, pad)
         root.addView(EditText(this).apply {
