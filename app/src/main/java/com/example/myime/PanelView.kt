@@ -178,7 +178,10 @@ abstract class PanelView(context: Context) : View(context) {
         applyMetrics()
     }
 
-    protected fun contentTop(): Float = padTop + barH + barGap
+    /** 标题行下面、内容区上面要多留的高度(放一行不随内容滚动的说明文字等);默认 0。 */
+    protected open fun extraTop(): Float = 0f
+
+    protected fun contentTop(): Float = padTop + barH + barGap + extraTop()
     protected fun contentBottom(): Float = height - padBottom
 
     /** 标题行里最左边那个按键的左边缘,标题别画到它下面。 */
