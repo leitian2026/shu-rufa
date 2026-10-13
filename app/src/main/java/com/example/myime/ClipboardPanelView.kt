@@ -281,9 +281,7 @@ class ClipboardPanelView(
             if (top + h < visTop) continue
             if (top > visBottom) break
 
-            tmp.set(left, top + shadowH, right, top + h + shadowH)
-            fill.color = palette.keyShadow
-            canvas.drawRoundRect(tmp, radius, radius, fill)
+            // 扁平:不画下方的立体阴影,只画一块纯色圆角底
             tmp.set(left, top, right, top + h)
             fill.color = palette.key
             canvas.drawRoundRect(tmp, radius, radius, fill)
