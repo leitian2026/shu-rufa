@@ -19,17 +19,19 @@ class EnglishPins(private val file: File) {
     private fun ensureLoaded() {
         if (loaded) return
         try {
-            if (file.isFile) {
-                file.bufferedReader(Charsets.UTF_8).useLines { lines ->
-                    for (line in lines) {
-                        val t = line.indexOf('\t')
-                        if (t <= 0) continue
-                        val lower = line.substring(0, t)
-                        val spelling = line.substring(t + 1).ifEmpty { lower }
-                        map[lower] = spelling
-                    }
+            val r = SafeFile.read(file)
+            if (r != null) {
+                for (line in r.lines) {
+                    val t = line.indexOf('\t')
+                    if (t <= 0) continue
+                    val lower = line.substring(0, t)
+                    val spelling = line.substring(t + 1).ifEmpty { lower }
+                    map[lower] = spelling
                 }
                 publish()
+                if (r.fromBackup) dirty = true
+            } else if (file.isFile) {
+                ErrorHint.set("pins", "固定词文件已损坏且没有可用备份,原文件另存为 ${file.name}.corrupt")
             }
         } catch (e: Exception) {
             ErrorHint.set("pins", ErrorHint.of("固定词读取失败", e))
@@ -74,12 +76,9 @@ class EnglishPins(private val file: File) {
     fun saveIfDirty() {
         if (!dirty) return
         try {
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.bufferedWriter(Charsets.UTF_8).use { w ->
+            SafeFile.write(file) { w ->
                 for ((k, v) in map) w.write("$k\t$v\n")
             }
-            if (file.exists()) file.delete()
-            tmp.renameTo(file)
             dirty = false
             ErrorHint.clear("pins")
         } catch (e: Exception) {
