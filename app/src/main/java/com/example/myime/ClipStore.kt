@@ -70,6 +70,7 @@ object ClipStore {
                 }
             }
         } catch (e: Exception) {
+            ErrorHint.set("clip", ErrorHint.of("剪贴板读取出错", e))
             // 读到一半出错:已读到的照样用;原文件另存一份,免得之后的写入把它盖掉
             try {
                 f.copyTo(File(f.parentFile, "$name.bak"), overwrite = true)
@@ -96,7 +97,9 @@ object ClipStore {
                 f.delete()
                 tmp.renameTo(f)
             }
+            ErrorHint.clear("clip")
         } catch (e: Exception) {
+            ErrorHint.set("clip", ErrorHint.of("剪贴板保存失败", e))
             // 存失败下次再试
         }
     }
