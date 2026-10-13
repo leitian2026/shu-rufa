@@ -23,9 +23,9 @@ class UserFreq(private val file: File) {
     private fun ensureLoaded() {
         if (loaded) return
         try {
-            if (!file.isFile) return
-            file.bufferedReader(Charsets.UTF_8).useLines { lines ->
-                for (line in lines) {
+            val r = SafeFile.read(file)
+            if (r != null) {
+                for (line in r.lines) {
                     val p = line.split('\t')
                     if (p.size == 3 && p[0] == "t") {
                         val c = p[2].toIntOrNull() ?: continue
@@ -35,6 +35,9 @@ class UserFreq(private val file: File) {
                         byPair[p[1] + "\t" + p[2]] = c
                     }
                 }
+                if (r.fromBackup) dirty = true   // 主文件坏了、这是从备份恢复的:下次保存时把主文件重写好
+            } else if (file.isFile) {
+                ErrorHint.set("learn", "用词习惯文件已损坏且没有可用备份,原文件另存为 ${file.name}.corrupt")
             }
         } catch (e: Exception) {
             ErrorHint.set("learn", ErrorHint.of("用词习惯读取失败", e))
@@ -95,13 +98,10 @@ class UserFreq(private val file: File) {
     fun saveIfDirty() {
         if (!dirty) return
         try {
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.bufferedWriter(Charsets.UTF_8).use { w ->
+            SafeFile.write(file) { w ->
                 for ((k, v) in byText) w.write("t\t$k\t$v\n")
                 for ((k, v) in byPair) w.write("p\t$k\t$v\n")
             }
-            if (file.exists()) file.delete()
-            tmp.renameTo(file)
             dirty = false
             ErrorHint.clear("learn")
         } catch (e: Exception) {
@@ -115,7 +115,7 @@ class UserFreq(private val file: File) {
         byText.clear()
         byPair.clear()
         dirty = false
-        file.delete()
+        SafeFile.deleteAll(file)
     }
 
     private companion object {
@@ -138,9 +138,9 @@ class UserEnglish(private val file: File) {
         if (loaded) return
         loaded = true
         try {
-            if (!file.isFile) return
-            file.bufferedReader(Charsets.UTF_8).useLines { lines ->
-                for (line in lines) {
+            val r = SafeFile.read(file)
+            if (r != null) {
+                for (line in r.lines) {
                     val p = line.split('\t')
                     when {
                         p.size == 3 && p[0] == "w" -> words[p[1]] = p[2].toIntOrNull() ?: continue
@@ -151,6 +151,9 @@ class UserEnglish(private val file: File) {
                         }
                     }
                 }
+                if (r.fromBackup) dirty = true
+            } else if (file.isFile) {
+                ErrorHint.set("learn", "英文用词文件已损坏且没有可用备份,原文件另存为 ${file.name}.corrupt")
             }
         } catch (e: Exception) {
             ErrorHint.set("learn", ErrorHint.of("用词习惯读取失败", e))
@@ -269,14 +272,11 @@ class UserEnglish(private val file: File) {
     fun saveIfDirty() {
         if (!dirty) return
         try {
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.bufferedWriter(Charsets.UTF_8).use { w ->
+            SafeFile.write(file) { w ->
                 for ((k, v) in words) w.write("w\t$k\t$v\n")
                 for ((k, v) in display) w.write("d\t$k\t$v\n")
                 for ((a, m) in bigrams) for ((b, c) in m) w.write("b\t$a\t$b\t$c\n")
             }
-            if (file.exists()) file.delete()
-            tmp.renameTo(file)
             dirty = false
             ErrorHint.clear("learn")
         } catch (e: Exception) {
@@ -292,7 +292,7 @@ class UserEnglish(private val file: File) {
         pending.clear()
         bigrams.clear()
         dirty = false
-        file.delete()
+        SafeFile.deleteAll(file)
     }
 
     private companion object {
@@ -316,15 +316,18 @@ class UserChain(private val file: File) {
     private fun ensureLoaded() {
         if (loaded) return
         try {
-            if (!file.isFile) return
-            file.bufferedReader(Charsets.UTF_8).useLines { lines ->
-                for (line in lines) {
+            val r = SafeFile.read(file)
+            if (r != null) {
+                for (line in r.lines) {
                     val p = line.split('\t')
                     if (p.size == 4 && p[0] == "c") {
                         val c = p[3].toIntOrNull() ?: continue
                         map.getOrPut(p[1]) { ConcurrentHashMap() }[p[2]] = c
                     }
                 }
+                if (r.fromBackup) dirty = true
+            } else if (file.isFile) {
+                ErrorHint.set("learn", "联想数据文件已损坏且没有可用备份,原文件另存为 ${file.name}.corrupt")
             }
         } catch (e: Exception) {
             ErrorHint.set("learn", ErrorHint.of("用词习惯读取失败", e))
@@ -406,12 +409,9 @@ class UserChain(private val file: File) {
     fun saveIfDirty() {
         if (!dirty) return
         try {
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.bufferedWriter(Charsets.UTF_8).use { w ->
+            SafeFile.write(file) { w ->
                 for ((a, m) in map) for ((b, c) in m) w.write("c\t$a\t$b\t$c\n")
             }
-            if (file.exists()) file.delete()
-            tmp.renameTo(file)
             dirty = false
             ErrorHint.clear("learn")
         } catch (e: Exception) {
@@ -424,7 +424,7 @@ class UserChain(private val file: File) {
         loaded = true
         map.clear()
         dirty = false
-        file.delete()
+        SafeFile.deleteAll(file)
     }
 
     companion object {
