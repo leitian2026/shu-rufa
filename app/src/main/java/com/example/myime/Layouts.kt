@@ -213,7 +213,7 @@ object Layouts {
         keys.add(backspace().at(4f, 0f))
         keys.add(spaceKey().at(4f, 1f))
         keys.add(enterKey(s.enterLabel).at(4f, 2f))
-        keys.add(symKey("", "back", Icon.BACK).at(4f, 3f))
+        keys.add(symKey("返回", "back").at(4f, 3f))
         return Layout(5f, 4f, if (wide) 10.5f else 5f, if (wide) 7f else 6f, keys)
     }
 
@@ -244,7 +244,7 @@ object Layouts {
             arrayOf(
                 e("末尾", "end", fn = true), e("全选", "all"),
                 e("", "down", icon = Icon.DOWN, rep = true), e("剪切", "cut"),
-                e("", "back", icon = Icon.BACK, primary = true),
+                e("返回", "back", fn = true),
             ),
         )
         for (r in grid.indices) {
