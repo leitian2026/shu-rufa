@@ -10,6 +10,8 @@ import android.graphics.RectF
  *  - 点一条 = 粘贴到输入框并返回键盘
  *  - 长按一条 = 进入多选:每条前面出现圆圈,点哪条选哪条;标题右边的按键变成「取消 / 全选 / 删除」
  *  - 「清空」删除全部;离开面板或点「取消」都会退出多选
+ *  - 「回收箱」:剪贴板里删掉的内容先放这里(最多 10 条,最新删的在最上面,满了挤掉最下面最旧的)。
+ *    回收箱里也能点一条粘贴、长按多选、全选、删除(这里的删除是真删)。回收箱里「返回」/点空白回到剪贴板。
  */
 class ClipboardPanelView(
     context: Context,
@@ -21,9 +23,16 @@ class ClipboardPanelView(
         fun onDeleteMany(texts: List<String>)
         fun onClear()
         fun onBack()
+        fun onPasteTrash(text: String)
+        fun onTrashDelete(texts: List<String>)
     }
 
-    private var items: List<String> = emptyList()
+    private var clipItems: List<String> = emptyList()
+    private var trashItems: List<String> = emptyList()
+    private var inTrash = false
+
+    /** 当前页面显示的列表:剪贴板或回收箱。 */
+    private val items: List<String> get() = if (inTrash) trashItems else clipItems
     private var lines: List<List<String>> = emptyList()
     private var tops = FloatArray(1)
     private var cardH = FloatArray(0)
@@ -59,10 +68,16 @@ class ClipboardPanelView(
     override val barKeys: List<BarKey> get() = barList
     override val titledHeader: Boolean get() = true
 
-    private fun normalBar() = listOf(
-        BarKey(ID_BACK, "", 0.7f, BarKind.PRIMARY, icon = Icon.BACK),
-        BarKey(ID_CLEAR, "清空", 1.6f, BarKind.FUNCTION),
-    )
+    private fun normalBar() =
+        if (inTrash) {
+            listOf(BarKey(ID_BACK, "", 0.7f, BarKind.PRIMARY, icon = Icon.BACK))
+        } else {
+            listOf(
+                BarKey(ID_BACK, "", 0.7f, BarKind.PRIMARY, icon = Icon.BACK),
+                BarKey(ID_TRASH, if (trashItems.isEmpty()) "回收箱" else "回收箱(${trashItems.size})", 1.8f, BarKind.FUNCTION),
+                BarKey(ID_CLEAR, "清空", 1.6f, BarKind.FUNCTION),
+            )
+        }
 
     private fun selectBar() = listOf(
         BarKey(ID_CANCEL, "取消", 1.6f, BarKind.PRIMARY),
@@ -100,12 +115,20 @@ class ClipboardPanelView(
     }
 
     fun setItems(list: List<String>) {
-        items = list
-        selected.retainAll(list.toSet())
+        clipItems = list
+        onListChanged()
+    }
+
+    fun setTrash(list: List<String>) {
+        trashItems = list
+        onListChanged()
+    }
+
+    private fun onListChanged() {
+        selected.retainAll(items.toSet())
         relayout()
         offsetY = offsetY.coerceIn(0f, maxOffsetY())
-        if (selecting) updateBar()
-        invalidate()
+        updateBar()   // 回收箱按键上的条数、多选的「删除(n)」都跟着变
     }
 
     override fun onMetricsChanged() {
@@ -113,9 +136,23 @@ class ClipboardPanelView(
         relayout()
     }
 
-    /** 每次打开面板都从普通状态开始。 */
+    /** 每次打开面板都从普通状态(剪贴板、非多选)开始。 */
     override fun onShown() {
-        if (selecting) exitSelect()
+        selecting = false
+        selected.clear()
+        inTrash = false
+        offsetY = 0f
+        relayout()
+        updateBar()
+    }
+
+    private fun setTrashView(on: Boolean) {
+        inTrash = on
+        selecting = false
+        selected.clear()
+        offsetY = 0f
+        relayout()
+        updateBar()
     }
 
     private fun updateBar() {
@@ -184,9 +221,9 @@ class ClipboardPanelView(
     override fun drawHeaderTitle(canvas: Canvas, left: Float, centerY: Float) {
         titlePaint.color = palette.text
         countPaint.color = palette.textFaint
-        val title = if (selecting) "已选 ${selected.size} 项" else "剪贴板"
+        val title = if (selecting) "已选 ${selected.size} 项" else if (inTrash) "回收箱" else "剪贴板"
         canvas.drawText(title, left, centerY + titleBase, titlePaint)
-        val count = if (selecting) "共 ${items.size} 条" else "${items.size}/500"
+        val count = if (selecting) "共 ${items.size} 条" else if (inTrash) "${items.size}/10" else "${items.size}/500"
         val cx = left + titlePaint.measureText(title) + context.dpf(10f)
         if (cx + countPaint.measureText(count) + context.dpf(8f) <= barLeftEdge()) {
             canvas.drawText(count, cx, centerY + baseline(countPaint), countPaint)
@@ -197,8 +234,10 @@ class ClipboardPanelView(
         if (items.isEmpty()) {
             hintPaint.color = palette.textFaint
             val cy = viewportHeight() / 2f
-            canvas.drawText("还没有复制过内容", width / 2f, cy - lineH * 0.6f + hintBase, hintPaint)
-            canvas.drawText("复制文字后会出现在这里", width / 2f, cy + lineH * 0.6f + hintBase, hintPaint)
+            val l1 = if (inTrash) "回收箱是空的" else "还没有复制过内容"
+            val l2 = if (inTrash) "剪贴板里删掉的内容会先放在这里,最多 10 条" else "复制文字后会出现在这里"
+            canvas.drawText(l1, width / 2f, cy - lineH * 0.6f + hintBase, hintPaint)
+            canvas.drawText(l2, width / 2f, cy + lineH * 0.6f + hintBase, hintPaint)
             return
         }
         if (lines.size != items.size) return
@@ -258,7 +297,8 @@ class ClipboardPanelView(
     override val coversCandidateBar: Boolean get() = true
 
     override fun onBlankTap() {
-        if (!selecting) listener.onBack()   // 多选中:没有返回键,空白处也不返回,免得误触丢掉已选的
+        if (selecting) return   // 多选中:没有返回键,空白处也不返回,免得误触丢掉已选的
+        if (inTrash) setTrashView(false) else listener.onBack()   // 和返回键一样:回收箱里回到剪贴板,剪贴板里回到键盘
     }
 
     override fun onContentTap(x: Float, y: Float): Boolean {
@@ -266,6 +306,8 @@ class ClipboardPanelView(
         if (i < 0) return false
         if (selecting) {
             toggle(items[i])
+        } else if (inTrash) {
+            listener.onPasteTrash(items[i])
         } else {
             listener.onPaste(items[i])
         }
@@ -286,7 +328,8 @@ class ClipboardPanelView(
 
     override fun onBarKey(id: Int) {
         when (id) {
-            ID_BACK -> listener.onBack()
+            ID_BACK -> if (inTrash) setTrashView(false) else listener.onBack()
+            ID_TRASH -> setTrashView(true)
             ID_CLEAR -> listener.onClear()
             ID_CANCEL -> exitSelect()
             ID_ALL -> {
@@ -297,7 +340,7 @@ class ClipboardPanelView(
                 if (selected.isEmpty()) return
                 val gone = selected.toList()
                 exitSelect()
-                listener.onDeleteMany(gone)
+                if (inTrash) listener.onTrashDelete(gone) else listener.onDeleteMany(gone)
             }
         }
     }
@@ -308,5 +351,6 @@ class ClipboardPanelView(
         const val ID_CANCEL = 3
         const val ID_ALL = 4
         const val ID_DEL = 5
+        const val ID_TRASH = 6
     }
 }
