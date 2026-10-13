@@ -32,7 +32,7 @@ object EmojiWords {
                 }
             }
         } catch (t: Throwable) {
-            // 读不到就当没有表情,不影响打字
+            ErrorHint.set("emoji", ErrorHint.of("表情对照表读取失败", t))  // 不影响打字
         }
         map = m
     }
