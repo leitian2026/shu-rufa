@@ -68,6 +68,7 @@ class ClipboardPanelView(
     private var barList: List<BarKey> = normalBar()
     override val barKeys: List<BarKey> get() = barList
     override val titledHeader: Boolean get() = true
+    override val flatBar: Boolean get() = true   // 顶部按键扁平:返回箭头、「回收箱」等只有图标/文字,没有按钮底色
 
     private fun normalBar() =
         if (inTrash) {
@@ -104,6 +105,7 @@ class ClipboardPanelView(
             isFakeBoldText = true
         }.fontSpacing
         headerBtnH = h
+        padX = context.dpf(8f)   // 左右只留一小条边,长条几乎占满输入法两边(平板上基类默认留得很宽)
         padTop = context.dpf(3f)
         barH = h + context.dpf(4f)
         barGap = context.dpf(3f)
@@ -274,6 +276,7 @@ class ClipboardPanelView(
 
         val left = padX
         val right = width - padX
+        val cardR = context.dpf(4f)   // 小圆角
         val textLeft = left + cardPad + (if (selecting) checkW else 0f)
         for (i in items.indices) {
             val top = tops[i]
@@ -284,7 +287,7 @@ class ClipboardPanelView(
             // 扁平:不画下方的立体阴影,只画一块纯色圆角底
             tmp.set(left, top, right, top + h)
             fill.color = palette.key
-            canvas.drawRoundRect(tmp, radius, radius, fill)
+            canvas.drawRoundRect(tmp, cardR, cardR, fill)
 
             textPaint.color = palette.text
             for (li in lines[i].indices) {
