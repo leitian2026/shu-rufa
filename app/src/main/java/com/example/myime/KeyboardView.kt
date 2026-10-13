@@ -180,16 +180,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         return true
     }
 
-    /** 额外加在键盘上面的高度(光标编辑页盖住候选栏时用);只有值变了才重新测量。 */
-    var extraTopPx = 0
-        set(v) {
-            if (field == v) return
-            field = v
-            requestLayout()
-        }
-
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), fixedHeight + extraTopPx)
+        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), fixedHeight)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
