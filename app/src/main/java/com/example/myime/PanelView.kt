@@ -84,6 +84,9 @@ abstract class PanelView(context: Context) : View(context) {
     /** true:标题在左、按键紧凑靠右排在同一行(剪贴板、功能页、键盘选择);false:按键铺满整行(表情的分类条)。 */
     protected open val titledHeader: Boolean get() = false
 
+    /** true:顶部按键条画成扁平的(没有底色和阴影,只有图标/文字,按下时才有一块淡色底)。 */
+    protected open val flatBar: Boolean get() = false
+
     /** 画标题。left 是标题的左边,centerY 是这一行的竖直中心。只有 titledHeader 为 true 时才会调用。 */
     protected open fun drawHeaderTitle(canvas: Canvas, left: Float, centerY: Float) {}
 
@@ -329,7 +332,7 @@ abstract class PanelView(context: Context) : View(context) {
 
             val face: Int
             val shadow: Int
-            val onFace: Int
+            var onFace: Int
             if (k.kind == BarKind.PRIMARY) {
                 face = palette.accent
                 shadow = palette.accentShadow
@@ -344,7 +347,9 @@ abstract class PanelView(context: Context) : View(context) {
                 onFace = palette.text
             }
 
-            if (k.kind != BarKind.TAB || selected) {
+            if (flatBar) {
+                onFace = palette.text   // 扁平:不画底色和阴影,文字/图标用正文色(否则蓝底白字会看不见)
+            } else if (k.kind != BarKind.TAB || selected) {
                 shadowRect.set(r.left, r.top + shadowH, r.right, r.bottom + shadowH)
                 fill.color = shadow
                 canvas.drawRoundRect(shadowRect, radius, radius, fill)
@@ -354,8 +359,8 @@ abstract class PanelView(context: Context) : View(context) {
 
             val a = barPress(i, now)
             if (a > 0f) {
-                pressPaint.color = palette.pressTint
-                pressPaint.alpha = (a * palette.pressAlpha).toInt()
+                pressPaint.color = if (flatBar) palette.pill else palette.pressTint
+                pressPaint.alpha = if (flatBar) 255 else (a * palette.pressAlpha).toInt()
                 canvas.drawRoundRect(r, radius, radius, pressPaint)
                 if (!barIsDown[i]) fading = true
             }
