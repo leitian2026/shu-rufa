@@ -39,7 +39,7 @@ class EmojiPanelView(
 
     override val barKeys: List<BarKey> by lazy {
         val l = ArrayList<BarKey>()
-        l.add(BarKey(ID_BACK, "", 1f, BarKind.PRIMARY, icon = Icon.BACK))
+        l.add(BarKey(ID_BACK, "返回", 1.4f, BarKind.BACK))
         for (i in sections.indices) {
             l.add(BarKey(ID_TAB + i, sections[i].tabIcon, 1f, BarKind.TAB))
         }
