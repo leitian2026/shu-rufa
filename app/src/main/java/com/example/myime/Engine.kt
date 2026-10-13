@@ -370,7 +370,7 @@ class StrokeEngine(
         val u = user?.takeIf { it.hasLearned() }
 
         // 只挑最靠前的 SLOTS 个。排序从高到低:
-        //   有字频的常用字 > 没字频的生僻字;(字频按 2 倍一档 + 我的选择折算的加分);同一档里笔画数刚好等于输入的;精确字频;笔画短的
+        //   有字频的常用字 > 没字频的生僻字;同一组里笔画数刚好等于输入的(或我选过的) > 还没打完的;再按字频(2 倍一档 + 我的选择折算的加分);精确字频;笔画短的
         val bestId = IntArray(SLOTS)
         val bestKey = LongArray(SLOTS)
         var size = 0
@@ -383,9 +383,14 @@ class StrokeEngine(
             // 字频按 2 倍一档(每档 4 点),我的选择折算成同一单位的加分,一起比;
             // 以前"选过一次"会直接压过所有没选过的常用字
             val combined = octave * 4 + learnBoost(learned)   // < 256
+            // 笔画数刚好等于输入的(用户已经打完了整个字)排在还没打完的前面,再按字频;
+            // 我选过的也算在前一组,学习不会被挤掉。
+            // 以前字频排在"笔画数刚好"前面:前缀(如撇折点)后面接着的常用字有几百个,只留前 80 个,
+            // 刚好 3 笔的字(么)字频不够高就被挤出去了,往后翻也没有
+            val exact = len == code.length || learned > 0
             val key = tier or
-                (combined shl 54) or
-                (if (len == code.length) 1L shl 53 else 0L) or
+                (if (exact) 1L shl 61 else 0L) or
+                (combined shl 53) or
                 (f.toLong() shl 18) or
                 (255 - minOf(len, 255)).toLong()
             if (size == SLOTS && key <= bestKey[SLOTS - 1]) return
