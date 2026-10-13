@@ -84,6 +84,9 @@ object BackupManager {
 
     private val running = AtomicBoolean(false)
 
+    /** 有备份 / 还原正在进行(多机同步遇到这种情况先不做)。 */
+    internal fun busy(): Boolean = running.get()
+
     class DestResult(val which: String, val ok: Boolean, val msg: String)
 
     class RestoreResult(val ok: Boolean, val msg: String)
@@ -240,7 +243,7 @@ object BackupManager {
 
     // ------------------------------------------------------------ 坚果云(WebDAV)
 
-    private fun dav(ctx: Context): WebDavClient {
+    internal fun dav(ctx: Context): WebDavClient {
         val user = BackupConfig.davUser(ctx)
         val pw = BackupConfig.davPassword(ctx)
         if (user.isBlank() || pw == null) throw IOException("还没有设置坚果云账号(点「设置坚果云账号」)")
@@ -251,7 +254,7 @@ object BackupManager {
         }
     }
 
-    private fun davFolder(ctx: Context): List<String> {
+    internal fun davFolder(ctx: Context): List<String> {
         val f = WebDavClient.splitFolder(BackupConfig.davFolder(ctx))
         return if (f.isEmpty()) WebDavClient.splitFolder(BackupConfig.DEFAULT_FOLDER) else f
     }
@@ -352,7 +355,7 @@ object BackupManager {
     }
 
     /** 电池低(且没在充电)或系统开着省电模式:自动备份先不做,等条件好了再说。 */
-    private fun lowPower(ctx: Context): Boolean {
+    internal fun lowPower(ctx: Context): Boolean {
         val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
         if (pm != null && pm.isPowerSaveMode) return true
         val i = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return false   // 粘性广播,只读一次,不注册接收器
