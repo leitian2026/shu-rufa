@@ -211,6 +211,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         loader.execute {
             if (gen != dictGen) return@execute   // 排队期间词库已被换/释放:不用再读了
             val ctx = applicationContext
+            EmojiWords.ensure(ctx)               // 候选旁边的表情对照表(很小),先于词库读好
             val engine: Any? = when (kind) {
                 KIND_PINYIN -> DictLoader.loadPinyin(ctx)
                 KIND_STROKE -> DictLoader.loadStroke(ctx)
@@ -239,12 +240,16 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                     else if (kind == KIND_PINYIN && assocKey != null) showChineseAssoc()
                 }
             }
+            // 词库交给主线程之后,接着在这个后台线程把联想用的排序下标建好:
+            // 否则第一次出联想词时要现场给整个词库排序,联想词就会慢半拍才出来
+            if (kind == KIND_PINYIN && gen == dictGen) (engine as? PinyinEngine)?.prepareFollowers()
         }
     }
 
     /** 放掉所有词库:词库文件换了,或键盘隐藏很久 / 系统缺内存。下次用到时 warmUp 会重新加载。 */
     private fun releaseDicts() {
         dictGen++
+        EmojiWords.release()
         pinyinEngine = null
         strokeEngine = null
         englishEngine = null
@@ -264,7 +269,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         worker.execute { UserData.saveAll() }          // 学习数据只在键盘隐藏时落盘,打字过程中不写文件
         saveClipsNow()
         main.removeCallbacks(releaseLater)
-        main.postDelayed(releaseLater, 90_000)         // 隐藏 90 秒还没回来,就把词库内存还给系统
+        main.postDelayed(releaseLater, 600_000)        // 隐藏 10 分钟还没回来,就把词库内存还给系统(太短的话,每次回来都要重读词库,既慢又费电)
     }
 
     override fun onWindowShown() {
@@ -632,7 +637,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun toggleFloating() {
         if (KbSize.floating) KbSize.exitFloating(this) else KbSize.enterFloating(this)
         KbSize.save(this)
-        leavePage()
+        settingsPanel?.accentId = if (KbSize.floating) SettingsPanelView.ID_FLOAT else -1
         applySizeLive()
         floatHandle?.refresh()
         inputRoot?.requestLayout()
@@ -642,6 +647,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun applySizeLive() {
         applyBoxSize()
         keyboardView?.refresh()
+        candidateBar?.refresh()   // 版式(手机/平板)变了才会真的重算,拖动时指纹没变就直接返回
+        transBar?.refresh()
         for (p in listOf<PanelView?>(emojiPanel, symbolPanel, clipPanel, settingsPanel, choicePanel)) {
             if (p != null && p.visibility == View.VISIBLE) p.refresh()
         }
@@ -746,8 +753,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
             }
             SettingsPanelView.ID_FLOAT -> toggleFloating()
-            SettingsPanelView.ID_TRANS_MS -> onTransKey(Translator.MS)
-            SettingsPanelView.ID_TRANS_GOOGLE -> onTransKey(Translator.GOOGLE)
+            SettingsPanelView.ID_TRANS_MS -> {
+                onTransKey(Translator.MS)
+                leavePage()   // 点完翻译自动回到键盘
+            }
+            SettingsPanelView.ID_TRANS_GOOGLE -> {
+                onTransKey(Translator.GOOGLE)
+                leavePage()
+            }
             SettingsPanelView.ID_ADJUST -> {
                 // 键盘调节是给贴底模式用的,悬浮模式用顶上的拖动条
                 if (KbSize.floating) {
@@ -1522,10 +1535,41 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     private fun applyCandidates(code: String, list: List<Candidate>) {
+        val shown = withEmoji(list)
         candidatesFor = code
-        candidates = list
-        candidateBar?.setCandidates(list.map { it.text })
+        candidates = shown
+        candidateBar?.setCandidates(shown.map { it.text })
         onComposingChanged()
+    }
+
+    /**
+     * 中文候选(拼音/笔画,含联想词)里,某个词有对应的表情,就把表情(kind=3)紧跟在这个词后面。
+     * 表情不会排在第一位,所以空格/标点自动上屏的仍是原来的第一候选;最多插 4 个,免得候选栏被表情占满。
+     */
+    private fun withEmoji(list: List<Candidate>): List<Candidate> {
+        if (list.isEmpty() || (mode != Mode.PINYIN && mode != Mode.STROKE)) return list
+        val map = EmojiWords.map ?: return list
+        var out: ArrayList<Candidate>? = null
+        var added = 0
+        for (i in list.indices) {
+            val c = list[i]
+            val es = if (added < 4 && c.kind != 3) map[c.text] else null
+            if (es == null) {
+                out?.add(c)
+                continue
+            }
+            if (out == null) {
+                out = ArrayList(list.size + 4)
+                for (j in 0 until i) out.add(list[j])
+            }
+            out.add(c)
+            for (e in es) {
+                if (added >= 4) break
+                out.add(Candidate(e, c.consumed, 3))
+                added++
+            }
+        }
+        return out ?: list
     }
 
     private fun clearCandidates() {
@@ -1548,6 +1592,23 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val c = candidates.getOrNull(index) ?: return
         if (mode == Mode.ENGLISH) {
             pickEnglish(ic, c)
+            return
+        }
+        if (c.kind == 3) {   // 点了表情:直接上屏。不记进用词习惯,也不拿它做联想
+            ic.beginBatchEdit()
+            commitTo(ic, c.text)
+            if (composing.isNotEmpty()) {
+                composing.delete(0, c.consumed.coerceIn(1, composing.length))
+                if (composing.isNotEmpty()) showComposing()
+            }
+            ic.endBatchEdit()
+            if (composing.isNotEmpty()) {
+                prevChinese = null
+                assocKey = null
+                requery()
+            } else {
+                breakAssoc()
+            }
             return
         }
         if (composing.isEmpty()) {
@@ -2174,6 +2235,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     )
 
     private fun refreshLayout(animate: Boolean) {
+        settingsPanel?.accentId = if (KbSize.floating) SettingsPanelView.ID_FLOAT else -1
         warmUp()
         val kb = keyboardView ?: return
         candidateBar?.setActiveTool(
@@ -2209,10 +2271,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 settingsPanel?.visibility = View.GONE
                 choicePanel?.visibility = View.GONE
                 kb.visibility = View.VISIBLE
-                // 光标编辑页和表情/符号/功能页一样盖住候选栏,和整个键盘一样大;其他键盘页候选栏照常显示
-                val coverBar = mode == Mode.EDIT
-                kb.extraTopPx = if (coverBar) candidateBarHeightPx() else 0
-                candidateBar?.visibility = if (coverBar) View.GONE else View.VISIBLE
+                candidateBar?.visibility = View.VISIBLE   // 打字页/编辑页/数字页:候选栏照常显示
                 kb.setLayout(Layouts.build(mode, kbState(), isWide()), false)
             }
         }
@@ -2222,8 +2281,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun showPanel(panel: PanelView?, animate: Boolean) {
         if (panel == null) return
         keyboardView?.visibility = View.GONE
-        keyboardView?.extraTopPx = 0
-        // 盖住候选栏的面板(表情/符号/功能/键盘选择)把候选栏收起来;剪贴板只盖键盘区,候选栏(含工具图标)照旧
+        // 盖住候选栏的面板(功能/键盘选择/表情/符号/剪贴板)把候选栏收起来,和整个键盘一样大
         candidateBar?.visibility = if (panel.coversCandidateBar) View.GONE else View.VISIBLE
         for (p in listOf<PanelView?>(emojiPanel, symbolPanel, clipPanel, settingsPanel, choicePanel)) {
             if (p !== panel) p?.visibility = View.GONE
