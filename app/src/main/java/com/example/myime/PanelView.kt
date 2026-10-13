@@ -48,6 +48,7 @@ abstract class PanelView(context: Context) : View(context) {
     protected var barGap = 0f
     protected var radius = 0f
     protected var shadowH = 0f
+    protected var headerBtnH = 0f   // 有标题的面板里按键的高度;0 = 用默认值(子类在 adjustMetrics 里改)
     private var slideY = 0f
     private var fixedHeight = 0
     private var iconW = 0f
@@ -75,6 +76,9 @@ abstract class PanelView(context: Context) : View(context) {
     protected open fun onContentLongPress(x: Float, y: Float) {}
     protected open fun isBarSelected(id: Int): Boolean = false
     protected open fun onMetricsChanged() {}
+
+    /** applyMetrics 末尾调用,子类可微调 padTop / barH / barGap / headerBtnH。注意:在基类构造期间调用,只能用 context,不能用子类自己的字段。 */
+    protected open fun adjustMetrics() {}
     protected open fun onShown() {}
 
     /** true:标题在左、按键紧凑靠右排在同一行(剪贴板、功能页、键盘选择);false:按键铺满整行(表情的分类条)。 */
@@ -200,11 +204,13 @@ abstract class PanelView(context: Context) : View(context) {
         fixedHeight = context.keyboardHeightPx() + (if (coversCandidateBar) context.candidateBarHeightPx() else 0)
         iconW = context.dpf(if (wide) 13f else 11f)
         iconH = context.dpf(if (wide) 9f else 8f)
+        headerBtnH = 0f
         barText.textSize = context.spf(if (wide) 15f else 13f)
         tabText.textSize = context.spf(if (wide) 22f else 18f)
         iconPaint.strokeWidth = context.dpf(1.8f)
         barBase = baseline(barText)
         tabBase = baseline(tabText)
+        adjustMetrics()
     }
 
     /** 每次显示面板时调用:跟随深色模式、屏幕宽度变化。 */
@@ -257,7 +263,7 @@ abstract class PanelView(context: Context) : View(context) {
             val wide = context.isWide()
             val minW = context.dpf(if (wide) 44f else 40f)
             val padW = context.dpf(24f)
-            val btnH = context.dpf(if (wide) 34f else 30f)
+            val btnH = if (headerBtnH > 0f) headerBtnH else context.dpf(if (wide) 34f else 30f)
             val btnTop = top + (barH - btnH) / 2f
             val widths = FloatArray(keys.size)
             var total = 0f
