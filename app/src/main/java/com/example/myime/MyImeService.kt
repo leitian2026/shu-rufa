@@ -136,7 +136,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     override fun onCreate() {
         super.onCreate()
         KbSize.load(this)
-        setLearnCoef(DictConfig.learnCoef(applicationContext))
         try {
             (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).addPrimaryClipChangedListener(clipListener)
         } catch (e: Exception) {
