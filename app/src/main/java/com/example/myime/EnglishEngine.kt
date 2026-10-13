@@ -29,11 +29,27 @@ class EnglishEngine(
     @Volatile
     var prev: String? = null
 
+    /** 我固定的词(长按候选 → 固定)。服务在词库加载好后设置。 */
+    @Volatile
+    var pins: EnglishPins? = null
+
     init {
         val ord = order ?: words.indices.sortedBy { lowerById[it] }.toIntArray()
         ids = ord
         keys = Array(ord.size) { lowerById[ord[it]] }
         for (i in words.indices) exact[lowerById[i]] = i
+    }
+
+    fun isPinned(lower: String): Boolean = pins?.isPinned(lower) == true
+
+    /** 固定这个词。写法:词库 / 我学过的写法优先,都没有就用候选上显示的写法。 */
+    fun pin(text: String) {
+        val lower = text.lowercase()
+        pins?.pin(lower, if (isKnown(lower)) displayOf(lower) else text)
+    }
+
+    fun unpin(text: String) {
+        pins?.unpin(text.lowercase())
     }
 
     fun isKnown(lower: String): Boolean =
@@ -105,6 +121,16 @@ class EnglishEngine(
         out.add(Candidate(literalOf(typed, lower), n, 0))
         seen.add(lower)
         var completions = 0
+        // 我固定的词:前缀对得上就排在最前面(原样输入那一项之后),先于词频排序的结果
+        val pl = pins?.list()
+        if (pl != null && pl.isNotEmpty()) {
+            for ((lw, sp) in pl) {
+                if (lw.length <= lower.length || !lw.startsWith(lower)) continue
+                if (!seen.add(lw)) continue
+                out.add(Candidate(applyCase(typed, sp), n, 0))
+                completions++
+            }
+        }
         for (p in scored) {
             if (completions >= MAX_COMPLETIONS) break
             if (!seen.add(p.first)) continue
@@ -139,6 +165,20 @@ class EnglishEngine(
         for (e in score.entries.sortedByDescending { it.value }) {
             out.add(Candidate(displayOf(e.key), 0, 2))
             if (out.size >= 8) break
+        }
+        // 固定的词如果在联想里,排到最前面(按固定的先后)
+        val pl = pins?.list()
+        if (pl != null && pl.isNotEmpty()) {
+            val front = ArrayList<Candidate>()
+            val rest = ArrayList(out)
+            for ((lw, _) in pl) {
+                val i = rest.indexOfFirst { it.text.lowercase() == lw }
+                if (i >= 0) front.add(rest.removeAt(i))
+            }
+            if (front.isNotEmpty()) {
+                front.addAll(rest)
+                return front
+            }
         }
         return out
     }
