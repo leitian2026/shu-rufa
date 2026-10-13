@@ -30,7 +30,7 @@ public final class BackupScope {
     private static final Set<String> SKIP_DIRS = new HashSet<>(Arrays.asList(
             "dictcache", "dicts", "restore_staging", "user_before_restore"));
 
-    /** 不备份的设置文件:备份位置(设备专属的文件夹授权)和包着备份密钥的数据(换手机没用,也不该导出)。 */
+    /** 不备份的设置文件:坚果云账号和包着备份密钥的数据(设备专属,换手机没用,也不该导出)。 */
     private static final Set<String> SKIP_PREFS = new HashSet<>(Collections.singletonList("backupcfg"));
 
     /** 各种临时 / 副本文件(SafeFile 的 .tmp .bak .corrupt .vN 等),它们是主文件的附属,不单独备份。 */
