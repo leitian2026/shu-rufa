@@ -26,6 +26,7 @@ public final class UserChain {
     private int sincePrune = 0;
     private long last = 0L;
     private volatile boolean loaded = false;
+    private volatile long learned = 0L;   // 本进程里学了多少次(多机同步判断"攒够没有"用;合并进来的不算)
 
     public UserChain(File file) {
         this.file = file;
@@ -137,6 +138,7 @@ public final class UserChain {
         ensureLoaded();
         map.computeIfAbsent(prev, k -> new ConcurrentHashMap<>()).put(next, stamp());
         dirty = true;
+        learned++;
         if (++sincePrune >= 500) {
             sincePrune = 0;
             if (count() > MAX_PAIRS) prune();
@@ -157,6 +159,81 @@ public final class UserChain {
             Object[] t = all.get(i);
             map.computeIfAbsent((String) t[0], k -> new ConcurrentHashMap<>()).put((String) t[1], (Long) t[2]);
         }
+    }
+
+
+    /** 本进程里自己学了多少次(不含从别的手机合并进来的)。 */
+    public long learnedCount() {
+        return learned;
+    }
+
+    // ------------------------------------------------------------------ 多机同步(见 LearnShare / LearnSync)
+
+    /** 上一个词(一词上下文),或 上上词 SEP 上一个词(两词上下文):每个词都合格才算合格。 */
+    private static boolean okContext(String prev) {
+        int i = prev.indexOf(SEP);
+        if (i < 0) return LearnShare.okWord(prev);
+        return LearnShare.okWord(prev.substring(0, i)) && LearnShare.okWord(prev.substring(i + 1));
+    }
+
+    /** 导出要共享给别的手机的行(C 行,格式和存盘文件一样)。含数字、长串字母等的词不导出。不加锁(遍历是弱一致的)。 */
+    public void exportShared(java.io.Writer w) throws java.io.IOException {
+        ensureLoaded();
+        for (Map.Entry<String, ConcurrentHashMap<String, Long>> a : map.entrySet()) {
+            if (!okContext(a.getKey())) continue;
+            for (Map.Entry<String, Long> b : a.getValue().entrySet()) {
+                if (LearnShare.okWord(b.getKey())) w.write("C\t" + a.getKey() + "\t" + b.getKey() + "\t" + b.getValue() + "\n");
+            }
+        }
+    }
+
+    private static final int MERGE_CHUNK = 2000;
+
+    /**
+     * 合并别的手机导出的 C 行:同一个(上文, 下一个词)取较大的时间戳。顺序无关、重复合并结果不变;
+     * 时间戳超过 now 的截成 now。分批加锁,不会让正在打字的 learn() 等很久。返回有多少条发生了变化。
+     */
+    public int mergeRows(List<String> lines, long now) {
+        return mergeRows(lines, now, 0L);
+    }
+
+    /** minTs:时间戳早于它的行不收(这台手机清除过学习数据,清除之前的记录不能被别的手机再同步回来)。 */
+    public int mergeRows(List<String> lines, long now, long minTs) {
+        ensureLoaded();
+        int changed = 0;
+        List<Object[]> batch = new ArrayList<>(MERGE_CHUNK);
+        for (String line : lines) {
+            String[] p = line.split("\t", -1);
+            if (p.length != 4 || !p[0].equals("C")) continue;
+            long ts = parseTs(p[3]);
+            if (ts < Math.max(minTs, 1) || p[1].isEmpty() || !okContext(p[1]) || !LearnShare.okWord(p[2])) continue;
+            batch.add(new Object[] {p[1], p[2], Math.min(ts, now)});
+            if (batch.size() >= MERGE_CHUNK) {
+                changed += applyBatch(batch);
+                batch.clear();
+            }
+        }
+        changed += applyBatch(batch);
+        return changed;
+    }
+
+    private synchronized int applyBatch(List<Object[]> batch) {
+        int changed = 0;
+        for (Object[] r : batch) {
+            long ts = (Long) r[2];
+            ConcurrentHashMap<String, Long> row = map.computeIfAbsent((String) r[0], k -> new ConcurrentHashMap<>());
+            Long old = row.get((String) r[1]);
+            if (old == null || old < ts) {
+                row.put((String) r[1], ts);
+                changed++;
+            }
+            if (ts > last) last = ts;
+        }
+        if (changed > 0) {
+            dirty = true;
+            if (count() > MAX_PAIRS) prune();
+        }
+        return changed;
     }
 
     public synchronized int count() {
