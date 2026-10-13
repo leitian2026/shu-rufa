@@ -135,6 +135,36 @@ class DictManagerActivity : Activity() {
                 setOnCheckedChangeListener { _, v -> DictConfig.setAutoCorrect(this@DictManagerActivity, v) }
             },
         )
+        root.addView(label("学习系数(0~20,默认 6)", 15f).apply { setPadding(0, pad / 2, 0, 0) })
+        root.addView(
+            label(
+                "数值越大,选过的词越容易排到前面;填 0 = 排序只看词频。加分 = 系数 × ln(1 + 选择次数)," +
+                    "每 4 档 = 词频翻一倍。例如同一个词选过 3 次:填 3 约加 4 档(词频 ×2),填 6 约加 8 档(×4),填 8 约加 11 档(×7 左右)。保存后马上生效。",
+                13f, alpha = 0.7f,
+            ),
+        )
+        val coef = EditText(this).apply {
+            hint = "6"
+            setText(fmtCoef(DictConfig.learnCoef(this@DictManagerActivity)))
+            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+        }
+        root.addView(coef)
+        root.addView(
+            smallButton("保存学习系数").apply {
+                setOnClickListener {
+                    val v = coef.text.toString().trim().toDoubleOrNull()
+                    if (v == null || v < 0.0 || v > LEARN_COEF_MAX) {
+                        Toast.makeText(this@DictManagerActivity, "请填 0 到 20 之间的数", Toast.LENGTH_SHORT).show()
+                    } else {
+                        DictConfig.setLearnCoef(this@DictManagerActivity, v)
+                        setLearnCoef(v)
+                        Toast.makeText(this@DictManagerActivity, "已保存:" + fmtCoef(v), Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            smallButtonParams(),
+        )
         userInfo = label("", 13f, alpha = 0.7f)
         root.addView(userInfo)
         root.addView(
@@ -168,6 +198,9 @@ class DictManagerActivity : Activity() {
     }
 
     // ------------------------------------------------------------ 界面搭建
+
+    /** 6.0 显示成 6,7.5 显示成 7.5。 */
+    private fun fmtCoef(v: Double): String = if (v == Math.floor(v)) v.toInt().toString() else v.toString()
 
     private fun label(text: String, sp: Float, bold: Boolean = false, alpha: Float = 1f): TextView =
         TextView(this).apply {
@@ -264,7 +297,8 @@ class DictManagerActivity : Activity() {
         capButton.text = "拼音词条上限:${DictConfig.pinyinCap(this) / 10000} 万(点击切换,重新安装后生效;单字不受限)"
         capButton.isEnabled = busy == null
         userInfo.text = "已学习:拼音 ${UserData.pinyin(this).count()} 个 · 笔画 ${UserData.stroke(this).count()} 个 · " +
-            "英文 ${UserData.english(this).count()} 个词 · 联想 ${UserData.chain(this).count()} 条"
+            "英文 ${UserData.english(this).count()} 个词 · 联想 ${UserData.chain(this).count()} 条" +
+            (ErrorHint.all()?.let { "\n最近错误:\n$it" } ?: "")
     }
 
     private fun customHint(pack: String): String = when (pack) {
