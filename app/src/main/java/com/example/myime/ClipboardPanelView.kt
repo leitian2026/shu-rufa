@@ -43,6 +43,8 @@ class ClipboardPanelView(
     private var lineH = 0f
     private var cardPad = 0f
     private var cardGap = 0f
+    private var curPad = 0f      // 实际用的卡片上下内边距、间距:短内容一屏要放 10 条时会收紧(字体不变)
+    private var curGap = 0f
     private var checkW = 0f      // 多选时每条左边圆圈占的宽度
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
@@ -123,7 +125,7 @@ class ClipboardPanelView(
     }
 
     private fun onListChanged() {
-        selected.retainAll(items.toSet())
+        if (selected.isNotEmpty()) selected.retainAll(items.toSet())   // 只有多选时才有选中的,平时不用建集合
         relayout()
         offsetY = offsetY.coerceIn(0f, maxOffsetY())
         updateBar()   // 回收箱按键上的条数、多选的「删除(n)」都跟着变
@@ -177,15 +179,24 @@ class ClipboardPanelView(
     private fun relayout() {
         if (width == 0) return
         val maxTextW = width - 2 * padX - 2 * cardPad - (if (selecting) checkW else 0f)
+        // 一屏要能放下 10 条单行的:字体不动,只收紧卡片上下的内边距和间距。屏幕本来就够高时保持原样
+        val slot = viewportHeight() / ROWS_PER_SCREEN
+        if (slot <= 0f || 2 * cardPad + lineH + cardGap <= slot) {
+            curPad = cardPad
+            curGap = cardGap
+        } else {
+            curGap = minOf(cardGap, context.dpf(3f))
+            curPad = ((slot - curGap - lineH) / 2f).coerceIn(context.dpf(2f), cardPad)
+        }
         lines = items.map { wrap(it, maxTextW) }
         tops = FloatArray(items.size + 1)
         cardH = FloatArray(items.size)
         var y = 0f
         for (i in items.indices) {
             tops[i] = y
-            val h = cardPad * 2 + maxOf(lines[i].size, 1) * lineH
+            val h = curPad * 2 + maxOf(lines[i].size, 1) * lineH
             cardH[i] = h
-            y += h + cardGap
+            y += h + curGap
         }
         tops[items.size] = y
         totalH = y
@@ -193,14 +204,16 @@ class ClipboardPanelView(
 
     /** 最多两行,放不下时第二行末尾加省略号。 */
     private fun wrap(text: String, maxW: Float): List<String> {
-        val t = text.replace('\n', ' ').replace('\t', ' ').trim()
+        // 一条最长 5000 字,但只画两行:只取开头一段来处理,不然 500 条每次重排版都要把全部文字扫一遍
+        val truncated = text.length > PREVIEW_CHARS
+        val t = (if (truncated) text.substring(0, PREVIEW_CHARS) else text).replace('\n', ' ').replace('\t', ' ').trim()
         val out = ArrayList<String>(2)
         if (t.isEmpty() || maxW <= 0f) return out
         var start = 0
         while (start < t.length && out.size < 2) {
             val n = textPaint.breakText(t, start, t.length, true, maxW, null)
             if (n <= 0) break
-            if (out.size == 1 && start + n < t.length) {
+            if (out.size == 1 && (start + n < t.length || truncated)) {
                 val ell = "…"
                 val room = maxW - textPaint.measureText(ell)
                 val n2 = textPaint.breakText(t, start, t.length, true, room, null)
@@ -261,7 +274,7 @@ class ClipboardPanelView(
                 canvas.drawText(
                     lines[i][li],
                     textLeft,
-                    top + cardPad + lineH * (li + 0.5f) + textBase,
+                    top + curPad + lineH * (li + 0.5f) + textBase,
                     textPaint,
                 )
             }
@@ -348,5 +361,7 @@ class ClipboardPanelView(
         const val ID_ALL = 4
         const val ID_DEL = 5
         const val ID_TRASH = 6
+        const val ROWS_PER_SCREEN = 10f
+        const val PREVIEW_CHARS = 400   // 两行最多放得下的字数远小于这个
     }
 }
