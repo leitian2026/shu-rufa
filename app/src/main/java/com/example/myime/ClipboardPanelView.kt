@@ -255,6 +255,8 @@ class ClipboardPanelView(
         return -1
     }
 
+    override val coversCandidateBar: Boolean get() = true
+
     override fun onBlankTap() {
         if (!selecting) listener.onBack()   // 多选中:没有返回键,空白处也不返回,免得误触丢掉已选的
     }
