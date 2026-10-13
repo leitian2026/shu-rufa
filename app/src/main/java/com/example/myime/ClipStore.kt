@@ -12,11 +12,12 @@ import java.io.File
  */
 object ClipStore {
     private const val NAME = "clips.txt"
+    const val TRASH = "trash.txt"   // 回收箱(最多 10 条),存法和剪贴板一样
 
-    private fun file(ctx: Context): File {
+    private fun file(ctx: Context, name: String = NAME): File {
         val d = File(ctx.applicationContext.filesDir, "user")
         if (!d.isDirectory) d.mkdirs()
-        return File(d, NAME)
+        return File(d, name)
     }
 
     private fun encode(s: String): String {
@@ -57,8 +58,8 @@ object ClipStore {
 
     /** 读出全部记录(新的在前)。文件不存在或读不了就返回空。 */
     @Synchronized
-    fun load(ctx: Context): List<String> {
-        val f = file(ctx)
+    fun load(ctx: Context, name: String = NAME): List<String> {
+        val f = file(ctx, name)
         val out = ArrayList<String>()
         try {
             if (!f.isFile) return out
@@ -71,7 +72,7 @@ object ClipStore {
         } catch (e: Exception) {
             // 读到一半出错:已读到的照样用;原文件另存一份,免得之后的写入把它盖掉
             try {
-                f.copyTo(File(f.parentFile, "clips.bak"), overwrite = true)
+                f.copyTo(File(f.parentFile, "$name.bak"), overwrite = true)
             } catch (e2: Exception) {
             }
         }
@@ -80,10 +81,10 @@ object ClipStore {
 
     /** 整体写入。先写临时文件,成功后再替换,旧文件在新文件写完之前一直保留。 */
     @Synchronized
-    fun save(ctx: Context, list: List<String>) {
+    fun save(ctx: Context, list: List<String>, name: String = NAME) {
         try {
-            val f = file(ctx)
-            val tmp = File(f.parentFile, "$NAME.tmp")
+            val f = file(ctx, name)
+            val tmp = File(f.parentFile, "$name.tmp")
             tmp.bufferedWriter(Charsets.UTF_8).use { w ->
                 for (t in list) {
                     w.write(encode(t))
