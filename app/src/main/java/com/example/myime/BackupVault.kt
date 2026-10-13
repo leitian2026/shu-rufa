@@ -40,6 +40,9 @@ object BackupConfig {
 
     fun davConfigured(ctx: Context): Boolean = davUser(ctx).isNotBlank() && davPassword(ctx) != null
 
+    /** 只看设置里有没有账号和密码,不碰 Keystore(键盘收起时的自动备份判断用,省电)。 */
+    fun hasDav(ctx: Context): Boolean = davUser(ctx).isNotBlank() && prefs(ctx).contains("dav_pw")
+
     /** password 为 null 表示不改密码。 */
     fun setDav(ctx: Context, url: String, user: String, folder: String, password: String?) {
         val e = prefs(ctx).edit()
@@ -93,6 +96,29 @@ object BackupConfig {
 object BackupVault {
     private const val ALIAS = "myime_backup_wrap"
 
+    /**
+     * 内置的备份密码:不用用户设置、不用记。备份文件仍然是 AES-256-GCM 加密的,别人随手打开看不到内容。
+     * 密码不以明文字符串写在代码里,而是拆成两段、运行时才异或拼出来(再加上 R8 混淆),反编译直接搜不到;
+     * 但程序运行时必须能还原出它才能解密,所以决心够大的人仍然能提取出来,这只是提高门槛,不是绝对安全。
+     * 好处是任何手机上还原都不用输密码,也不会因为忘记密码而丢数据。
+     * 注意:这个值一旦发布就不能改,改了旧备份就解不开了。
+     */
+    private val PA = intArrayOf(187, 88, 4, 194, 51, 84, 160, 88, 212, 55, 10, 239, 171, 241, 227, 235, 145, 134, 100, 39, 11, 71, 23, 249, 9, 15, 78, 184, 15, 32, 146, 12, 32)
+    private val PB = intArrayOf(214, 33, 109, 175, 86, 121, 194, 57, 183, 92, 127, 159, 134, 147, 150, 130, 253, 242, 73, 78, 101, 106, 103, 152, 122, 124, 57, 215, 125, 68, 191, 122, 17)
+
+    fun defaultPassword(): CharArray = CharArray(PA.size) { (PA[it] xor PB[it]).toChar() }
+
+    /** 还没生成备份密钥(或系统安全存储里的包装丢了)就用内置密码生成一次。要几秒钟,放后台线程。成功返回 true,失败返回 null。 */
+    fun ensure(ctx: Context): Boolean? {
+        if (master(ctx) != null && salt(ctx) != null) return true
+        return try {
+            setPassword(ctx, defaultPassword(), BackupCrypto.MIN_ITERATIONS)   // 密码是内置的,加大迭代次数没有意义,用最低值省电
+            true
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     fun isSet(ctx: Context): Boolean = BackupConfig.prefs(ctx).getString("wrapped", null) != null
 
     fun salt(ctx: Context): ByteArray? =
@@ -101,9 +127,8 @@ object BackupVault {
     fun iterations(ctx: Context): Int = BackupConfig.prefs(ctx).getInt("iter", BackupCrypto.ITERATIONS)
 
     /** 设置(或更换)备份密码。要算几秒钟,放后台线程调用。失败抛异常。更换后,旧备份仍要用旧密码才能解开。 */
-    fun setPassword(ctx: Context, password: CharArray) {
+    fun setPassword(ctx: Context, password: CharArray, iter: Int = BackupCrypto.ITERATIONS) {
         val salt = BackupCrypto.newSalt()
-        val iter = BackupCrypto.ITERATIONS
         val master = BackupCrypto.deriveMaster(password, salt, iter)
         val wrapped = wrap(master)
         val ok = BackupConfig.prefs(ctx).edit()
