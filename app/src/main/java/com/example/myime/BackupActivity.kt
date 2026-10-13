@@ -7,7 +7,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.provider.OpenableColumns
 import android.text.InputType
 import android.view.WindowManager
 import android.widget.CheckBox
@@ -25,8 +24,7 @@ import java.util.Locale
  * 备份与还原页(应用首页的「备份与还原」进入)。
  * 备份只有两个去处:本地(存成一个加密压缩包到手机上任意位置)、坚果云(WebDAV 上传同样的加密压缩包)。
  * 还原也是两个:选本地压缩包,或点一下从坚果云下载最新的一份;都会自动解压还原。
- * 加密用内置密码,不用设置、不用记、不会忘(见 BackupVault.defaultPassword())。
- * 签名密钥当作普通数据:选一次保存进应用数据目录,以后随每次备份一起走。
+ * 加密用的备份密码在构建时从环境变量 BACKUP_PASSWORD 读入(见 BackupVault.defaultPassword()),App 里不用设置、不用记。
  * 页面打开了防截屏。
  */
 class BackupActivity : Activity() {
@@ -40,8 +38,6 @@ class BackupActivity : Activity() {
     private companion object {
         const val REQ_EXPORT = 1
         const val REQ_RESTORE_PICK = 2
-        const val REQ_KEY_PICK = 3
-        const val REQ_KEY_EXPORT = 4
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,7 +54,7 @@ class BackupActivity : Activity() {
         root.addView(label("备份与还原", 22f, bold = true))
         root.addView(
             label(
-                "把学习数据、固定词、各项设置、签名密钥打成一个加密压缩包(.mybk),可以备份到手机本地,也可以备份到坚果云。" +
+                "把学习数据、固定词、各项设置打成一个加密压缩包(.mybk),可以备份到手机本地,也可以备份到坚果云。" +
                     "自动加密(AES-256-GCM),不用设密码、不用记。每次备份完会马上读回来解密校验,确认真的能还原。剪贴板不备份(它只在内存里)。",
                 13f, alpha = 0.7f,
             ).apply { setPadding(0, pad / 2, 0, pad / 2) },
@@ -111,17 +107,6 @@ class BackupActivity : Activity() {
             ),
         )
 
-        root.addView(section("4. 签名密钥(随数据一起备份)"))
-        root.addView(
-            label(
-                "安装包的签名密钥(.jks)丢了,以后就不能覆盖安装新版本,只能卸载重装,而卸载会清掉所有数据。" +
-                    "在这里选一次密钥文件,它就保存进应用数据里,以后每次备份都会一起带上。还原数据后,点「导出签名密钥」就能取回这个文件。",
-                13f, alpha = 0.7f,
-            ),
-        )
-        root.addView(smallButton("选择签名密钥文件…").apply { setOnClickListener { pickFile(REQ_KEY_PICK) } }, smallButtonParams())
-        root.addView(smallButton("导出签名密钥…").apply { setOnClickListener { startKeyExport() } }, smallButtonParams())
-
         result = label("", 14f).apply { setPadding(0, pad, 0, 0) }
         root.addView(result)
         refresh()
@@ -145,7 +130,6 @@ class BackupActivity : Activity() {
     private fun refresh() {
         val sb = StringBuilder()
         sb.append("备份内容:").append(BackupManager.scopeSummary(this)).append("(不含词库包和缓存)\n")
-        sb.append("签名密钥:").append(BackupManager.keyFile(this)?.name?.let { "已保存($it)" } ?: "还没有保存").append('\n')
         sb.append("\n坚果云:")
         if (BackupConfig.davConfigured(this)) {
             sb.append(BackupConfig.davUser(this)).append(" · 文件夹 ").append(BackupConfig.davFolder(this))
@@ -196,17 +180,6 @@ class BackupActivity : Activity() {
         }
     }
 
-    private fun displayName(uri: Uri): String {
-        try {
-            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
-                if (c.moveToFirst()) return c.getString(0) ?: "myime.jks"
-            }
-        } catch (e: Exception) {
-            // 取不到名字就用默认的
-        }
-        return "myime.jks"
-    }
-
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
@@ -223,25 +196,6 @@ class BackupActivity : Activity() {
             REQ_RESTORE_PICK -> runBg("正在解密并校验备份(要几秒钟)…") {
                 val r = BackupManager.restore(this) { contentResolver.openInputStream(uri) }
                 ui.post { finishRestore(r) }
-            }
-            REQ_KEY_PICK -> {
-                val name = displayName(uri)
-                runBg("正在保存签名密钥…") {
-                    try {
-                        BackupManager.saveKeyFile(this, uri, name)
-                        ui.post { say("签名密钥已保存($name),以后每次备份都会带上它。") }
-                    } catch (e: Exception) {
-                        ui.post { say("保存失败:" + (e.message ?: e.javaClass.simpleName)) }
-                    }
-                }
-            }
-            REQ_KEY_EXPORT -> runBg("正在导出签名密钥…") {
-                try {
-                    BackupManager.exportKeyFile(this, uri)
-                    ui.post { say("签名密钥已导出。") }
-                } catch (e: Exception) {
-                    ui.post { say("导出失败:" + (e.message ?: e.javaClass.simpleName)) }
-                }
             }
         }
     }
@@ -333,21 +287,6 @@ class BackupActivity : Activity() {
         runBg("正在备份并上传到坚果云(第一次要多等几秒)…") {
             val r = BackupManager.backupToCloud(this, withDicts)
             ui.post { showResults("备份结果:", listOf(r)) }
-        }
-    }
-
-    private fun startKeyExport() {
-        val name = BackupManager.keyFile(this)?.name
-        if (name == null) {
-            toast("还没有保存过签名密钥(先「选择签名密钥文件」,或先还原数据)")
-            return
-        }
-        val i = Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-            .setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE, name)
-        try {
-            startActivityForResult(i, REQ_KEY_EXPORT)
-        } catch (e: Exception) {
-            toast("这台手机没有文件选择器")
         }
     }
 
