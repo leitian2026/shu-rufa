@@ -18,15 +18,24 @@ val verMinor = versionProps.getProperty("MINOR").trim().toInt()
 val verPatch = versionProps.getProperty("PATCH").trim().toInt()
 val buildNumber = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0).coerceIn(0, 999)
 
-// ---------------------------------------------------------------- 签名
-// 覆盖安装要求每次构建用同一把密钥。优先级:
-//   1) 环境变量 KEYSTORE_PATH(+ KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD),来自 GitHub Secrets
-//   2) 仓库里的 signing/myime.jks(自用,密码见下)
-//   3) 都没有才退回 debug 密钥(此时无法覆盖安装)
+// ---------------------------------------------------------------- 签名 & 备份密码(都从环境变量读取)
+// 覆盖安装要求每次构建用同一把密钥。以下环境变量由 GitHub Secrets 提供(见 .github/workflows/build-release.yml):
+//   KEYSTORE_PATH(工作流用 KEYSTORE_BASE64 解出的 .jks 路径) / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD
+//   BACKUP_PASSWORD  备份文件的加密密码(编进 BuildConfig,不写在源码里)
+// 打 release 包时任何一项缺失都会直接报错,避免悄悄用 debug 密钥打出无法覆盖安装的包。
 val envKeystore: String? = System.getenv("KEYSTORE_PATH")?.takeIf { file(it).exists() }
-val repoKeystore: File? = rootProject.file("signing/myime.jks").takeIf { it.exists() }
-val repoKeystorePassword = "myime-self-use"
-val hasReleaseKey: Boolean = envKeystore != null || repoKeystore != null
+val backupPassword: String = System.getenv("BACKUP_PASSWORD") ?: ""
+val hasReleaseKey: Boolean = envKeystore != null &&
+    !System.getenv("KEYSTORE_PASSWORD").isNullOrEmpty() &&
+    !System.getenv("KEY_ALIAS").isNullOrEmpty() &&
+    !System.getenv("KEY_PASSWORD").isNullOrEmpty()
+
+gradle.taskGraph.whenReady {
+    if (allTasks.any { it.path == ":app:assembleRelease" || it.path == ":app:packageRelease" }) {
+        if (!hasReleaseKey) throw GradleException("缺少签名环境变量:KEYSTORE_PATH(指向存在的 .jks)、KEYSTORE_PASSWORD、KEY_ALIAS、KEY_PASSWORD")
+        if (backupPassword.isEmpty()) throw GradleException("缺少环境变量 BACKUP_PASSWORD(备份密码)")
+    }
+}
 
 android {
     namespace = "com.example.myime"
@@ -38,22 +47,21 @@ android {
         targetSdk = 34
         versionCode = verMajor * 10_000_000 + verMinor * 100_000 + verPatch * 1_000 + buildNumber
         versionName = "$verMajor.$verMinor.$verPatch"
+        val esc = backupPassword.replace("\\", "\\\\").replace("\"", "\\\"")
+        buildConfigField("String", "BACKUP_PASSWORD", "\"$esc\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     signingConfigs {
         if (hasReleaseKey) {
             create("release") {
-                if (envKeystore != null) {
-                    storeFile = file(envKeystore)
-                    storePassword = System.getenv("KEYSTORE_PASSWORD")
-                    keyAlias = System.getenv("KEY_ALIAS")
-                    keyPassword = System.getenv("KEY_PASSWORD")
-                } else {
-                    storeFile = repoKeystore
-                    storePassword = repoKeystorePassword
-                    keyAlias = "myime"
-                    keyPassword = repoKeystorePassword
-                }
+                storeFile = file(envKeystore!!)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
             }
         }
     }
