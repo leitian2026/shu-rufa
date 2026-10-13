@@ -235,5 +235,6 @@ object UserData {
         stroke(ctx).clear()
         english(ctx).clear()
         chain(ctx).clear()
+        LearnSync.noteCleared(ctx)   // 多机同步:清除只清本机,清除之前的记录也不会被别的手机再同步回来
     }
 }
