@@ -10,9 +10,15 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.view.GestureDetector
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.widget.LinearLayout
 import android.widget.OverScroller
+import android.widget.PopupWindow
+import android.widget.TextView
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 
 /**
  * 键盘上方的两条白色区域(高度固定,不会跳动):
@@ -35,7 +41,19 @@ class CandidateBarView(
     private var contentWidth = 0f
     private var offset = 0f
 
+    /** 长按候选词的"固定 / 取消固定"(目前只有英文用)。 */
+    interface PinHandler {
+        fun canPin(index: Int): Boolean
+        fun isPinned(index: Int): Boolean
+        fun onPin(index: Int, pin: Boolean)
+    }
+
+    var pinHandler: PinHandler? = null
+    private var pinPopup: PopupWindow? = null
+    private val pinAutoDismiss = Runnable { dismissPinPopup() }
+
     private var composing = ""
+    private var hint: String? = null   // 出错原因(小红字,显示在预览行右边)
     private var activeTool = -1
 
     private var contentAlpha = 0f
@@ -53,6 +71,11 @@ class CandidateBarView(
 
     private val candPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private val composePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
+    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.RIGHT
+        color = 0xFFE5484D.toInt()
+    }
+    private var hintBase = 0f
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
@@ -99,6 +122,17 @@ class CandidateBarView(
             return true
         }
 
+        override fun onLongPress(e: MotionEvent) {
+            if (!targetVisible || e.y < stripH || e.x >= width - closeW) return
+            val x = e.x - inset + offset
+            for (i in items.indices) {
+                if (x >= xs[i] && x < xs[i + 1]) {
+                    if (pinHandler?.canPin(i) == true) showPinPopup(i)
+                    return
+                }
+            }
+        }
+
         override fun onSingleTapUp(e: MotionEvent): Boolean {
             if (!targetVisible || e.y < stripH) return false
             if (e.x >= width - closeW) {   // 右边的关闭按钮
@@ -141,6 +175,8 @@ class CandidateBarView(
         iconPaint.pathEffect = CornerPathEffect(context.dpf(2.5f))
         candBase = baseline(candPaint)
         composeBase = baseline(composePaint)
+        hintPaint.textSize = context.spf(if (wide) 14f else 12f)
+        hintBase = baseline(hintPaint)
     }
 
     private fun maxOffset(): Float = (contentWidth + inset + closeW - width).coerceAtLeast(0f)
@@ -159,6 +195,12 @@ class CandidateBarView(
         invalidate()
     }
 
+    fun setHint(text: String?) {
+        if (text == hint) return
+        hint = text
+        if (composing.isNotEmpty()) invalidate()
+    }
+
     fun setComposing(text: String) {
         if (text == composing) return
         composing = text
@@ -173,6 +215,7 @@ class CandidateBarView(
     }
 
     fun setCandidates(list: List<String>, animate: Boolean = true) {
+        if (pinPopup != null && list != items) dismissPinPopup()   // 候选变了,弹出的菜单对应的词已经不对了
         if (list.isEmpty()) {
             if (!targetVisible && items.isEmpty()) return
             targetVisible = false
@@ -243,6 +286,16 @@ class CandidateBarView(
         if (composing.isNotEmpty()) {
             composePaint.color = palette.text
             canvas.drawText(composing, inset + itemPad * 1.5f, stripH / 2f + composeBase, composePaint)
+            val h = hint
+            if (h != null) {
+                val left = inset + itemPad * 1.5f + composePaint.measureText(composing) + itemPad
+                val avail = width - inset - left
+                if (avail > hintPaint.textSize * 4) {
+                    val n = hintPaint.breakText(h, true, avail, null)
+                    val shown = if (n < h.length) h.substring(0, n) + "…" else h
+                    canvas.drawText(shown, width - inset, stripH / 2f + hintBase, hintPaint)
+                }
+            }
         }
 
         // 下条:工具栏 ⇄ 候选
@@ -392,7 +445,80 @@ class CandidateBarView(
         return if (x >= inset && idx in 0 until TOOLS) idx else -1
     }
 
+    private fun pinButton(label: String, enabled: Boolean, onClick: () -> Unit): TextView {
+        val tv = TextView(context)
+        tv.text = label
+        tv.textSize = 15f
+        tv.gravity = Gravity.CENTER
+        tv.setPadding(context.dpi(14f), context.dpi(9f), context.dpi(14f), context.dpi(9f))
+        tv.setTextColor(if (enabled) palette.accent else palette.textFaint)
+        tv.alpha = if (enabled) 1f else 0.45f
+        if (enabled) tv.setOnClickListener { onClick() }
+        return tv
+    }
+
+    /** 长按候选词:在候选栏上方弹出一个小菜单,两个选项:固定 / 取消固定(不适用的那个变灰)。 */
+    private fun showPinPopup(index: Int) {
+        val h = pinHandler ?: return
+        dismissPinPopup()
+        val pinned = h.isPinned(index)
+        val row = LinearLayout(context)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.background = GradientDrawable().apply {
+            setColor(palette.topBar)
+            cornerRadius = context.dpf(12f)
+            setStroke(context.dpi(1f), palette.textFaint)
+        }
+        row.addView(pinButton("\uD83D\uDCCC 固定", !pinned) {
+            dismissPinPopup()
+            h.onPin(index, true)
+        })
+        row.addView(pinButton("\u2715 取消固定", pinned) {
+            dismissPinPopup()
+            h.onPin(index, false)
+        })
+        row.measure(
+            MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
+            MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
+        )
+        val w = row.measuredWidth
+        val ph = row.measuredHeight
+        val pw = PopupWindow(row, w, ph, false)
+        pw.isOutsideTouchable = true
+        pw.setBackgroundDrawable(ColorDrawable(0))
+        pw.inputMethodMode = PopupWindow.INPUT_METHOD_NOT_NEEDED
+        pw.elevation = context.dpf(6f)
+        pw.setOnDismissListener {
+            pinPopup = null
+            removeCallbacks(pinAutoDismiss)
+        }
+        val loc = IntArray(2)
+        getLocationOnScreen(loc)
+        val center = loc[0] + inset + (xs[index] + xs[index + 1]) / 2f - offset
+        val screenW = context.resources.displayMetrics.widthPixels
+        val x = (center - w / 2f).toInt().coerceIn(0, maxOf(0, screenW - w))
+        val y = (loc[1] + stripH - ph - context.dpf(4f)).toInt().coerceAtLeast(0)
+        try {
+            pw.showAtLocation(this, Gravity.NO_GRAVITY, x, y)
+            pinPopup = pw
+            postDelayed(pinAutoDismiss, 5000)
+        } catch (e: Exception) {
+            pinPopup = null
+        }
+    }
+
+    fun dismissPinPopup() {
+        val pw = pinPopup ?: return
+        pinPopup = null
+        removeCallbacks(pinAutoDismiss)
+        try {
+            pw.dismiss()
+        } catch (e: Exception) {
+        }
+    }
+
     override fun onDetachedFromWindow() {
+        dismissPinPopup()
         animator?.cancel()
         removeCallbacks(flingRunnable)
         super.onDetachedFromWindow()
