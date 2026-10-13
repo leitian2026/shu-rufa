@@ -31,18 +31,16 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      # 可选:配置了 KEYSTORE_BASE64 等 Secrets 就改用 Secrets 里的密钥
-      - name: Prepare signing key (optional)
+      # 签名密钥来自 Secrets(必须配置 KEYSTORE_BASE64)
+      - name: Prepare signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
-            echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-            echo "Using keystore from Secrets."
-          else
-            echo "No keystore secret, using signing/myime.jks from the repo."
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::缺少 Secret KEYSTORE_BASE64"; exit 1
           fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
 
       - name: Read version
         run: |
@@ -54,6 +52,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
         run: gradle :app:assembleRelease --no-daemon
 
       - uses: actions/upload-artifact@v4
