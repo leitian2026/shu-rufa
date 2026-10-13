@@ -65,7 +65,7 @@ class EmojiPanelView(
                 }
             }
         } catch (e: Exception) {
-            // 读取失败时只剩"常用"一类,面板仍可用
+            ErrorHint.set("emoji", ErrorHint.of("表情面板读取失败", e))  // 只剩"常用"一类,面板仍可用
         }
     }
 
