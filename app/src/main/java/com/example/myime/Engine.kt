@@ -29,10 +29,25 @@ internal fun logQ(f: Int): Int {
     return o * 4 + frac
 }
 
-private val BOOST = IntArray(257) { Math.round(6.0 * Math.log(1.0 + it)).toInt() }
+/** 学习系数的默认值、可填范围(上限 20:保证排序键里的\"词频档数 + 加分\"不超过 255)。 */
+internal const val LEARN_COEF_DEFAULT = 6.0
+internal const val LEARN_COEF_MAX = 20.0
+
+@Volatile
+private var BOOST = buildBoost(LEARN_COEF_DEFAULT)
+
+private fun buildBoost(coef: Double) = IntArray(257) { Math.round(coef * Math.log(1.0 + it)).toInt() }
 
 /**
- * 我的选择折算成"相当于词频多少档":选 1 次约抵 1 倍词频,选很多次最多抵 2 的 6~7 次方倍。
+ * 设置「学习系数」(词库管理页里填写):加分 = 系数 × ln(1 + 选择次数),四舍五入。
+ * 数值越大,选过的词越容易排到前面;0 = 排序只看词频。输入法服务启动和保存设置时调用。
+ */
+internal fun setLearnCoef(coef: Double) {
+    BOOST = buildBoost(coef.coerceIn(0.0, LEARN_COEF_MAX))
+}
+
+/**
+ * 我的选择折算成"相当于词频多少档"(系数默认 6.0,可在词库管理页改):选 1 次约抵 1 倍词频,选很多次最多抵 2 的 6~7 次方倍。
  * 对数增长,所以早期的几次选择影响明显,后面边际递减;偶然选一次不会把生僻词顶到最前。
  */
 internal fun learnBoost(score: Int): Int = BOOST[score.coerceIn(0, 256)]
@@ -455,6 +470,7 @@ object DictLoader {
 
     fun loadPinyin(context: Context): Engine? = try {
         val src = userFile(context, DictStore.PINYIN_FILE)
+        if (src == null) ErrorHint.set("pinyin", "没装拼音词库,现在只有内置小样本(词库管理里下载)") else ErrorHint.clear("pinyin")
         val user = UserData.pinyin(context)
         val cached = if (src != null) DictCache.loadPinyin(context, src, user) else null
         if (cached != null) {
@@ -527,11 +543,13 @@ object DictLoader {
         }
     } catch (e: Throwable) {
         Log.w(TAG, "load pinyin failed", e)
+        ErrorHint.set("pinyin", ErrorHint.of("拼音词库加载失败", e))
         null
     }
 
     fun loadStroke(context: Context): Engine? = try {
         val src = userFile(context, DictStore.STROKE_FILE)
+        if (src == null) ErrorHint.set("stroke", "没装笔画词库,现在只有内置小样本(词库管理里下载)") else ErrorHint.clear("stroke")
         val user = UserData.stroke(context)
         val cached = if (src != null) DictCache.loadStroke(context, src, user) else null
         if (cached != null) {
@@ -560,6 +578,7 @@ object DictLoader {
         }
     } catch (e: Throwable) {
         Log.w(TAG, "load stroke failed", e)
+        ErrorHint.set("stroke", ErrorHint.of("笔画词库加载失败", e))
         null
     }
 
@@ -617,6 +636,7 @@ object DictLoader {
         }
     } catch (e: Throwable) {
         Log.w(TAG, "load english failed", e)
+        ErrorHint.set("english", ErrorHint.of("英文词库加载失败", e))
         null
     }
 }
