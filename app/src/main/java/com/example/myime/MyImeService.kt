@@ -367,6 +367,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 commitTo(ic, text)
                 prevWord = null      // 打了符号:英文联想 / 中文联想都断开
                 breakAssoc()
+                leavePage()          // 点一个符号就输入并回到键盘
             }
 
             override fun onBack() {
@@ -833,6 +834,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        // 对方声明「这不是输入框」(inputType 为 0,比如浏览器首页点按钮、网页里的非输入元素被误当成输入框):
+        // 不弹键盘,后面刷新布局、联想这些也都不做,省电。真正的输入框一定会带 TYPE_CLASS_xxx。
+        if (info.inputType == InputType.TYPE_NULL) {
+            requestHideSelf(0)
+            return
+        }
         curSelS = minOf(info.initialSelStart, info.initialSelEnd)
         curSelE = maxOf(info.initialSelStart, info.initialSelEnd)
         selAnchor = -1
