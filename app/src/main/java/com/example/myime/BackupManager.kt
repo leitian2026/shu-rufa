@@ -41,8 +41,8 @@ import java.util.zip.ZipOutputStream
  * 只有解不开(换手机、重装、改过密码)才让输入密码。
  *
  * 备份范围由 BackupScope 决定:默认应用数据目录和所有设置文件全部备份,只排除登记过的"可重建 / 可下载 / 设备专属"数据。
- * 以后加新功能,数据放在这两处就自动进备份、自动能还原;不进备份的只有:剪贴板(只在内存)、备份密码和坚果云账号设置、
- * 词库缓存。翻译接口的密钥在 dictcfg 里,会随设置一起加密保存。
+ * 以后加新功能,数据放在这两处就自动进备份、自动能还原;不进备份的只有:备份密码、坚果云账号和剪贴板数据密钥(都在 backupcfg)、
+ * 词库缓存。剪贴板历史(user/clips.txt、trash.txt)会进备份:本机是 Keystore 加密的,备份时解成明文放进已加密的备份包,见 ClipStore.plainBytes。翻译接口的密钥在 dictcfg 里,会随设置一起加密保存。
  *
  * 省电:没有定时器、没有后台常驻;自动备份(只传坚果云)只在键盘收起时做几个便宜的判断(开关、时间、省电模式、电量、文件修改时间),
  * 满足全部条件才另开低优先级线程备份一次;压缩用最快档;备份密钥已缓存,不再做耗时的密码运算。
@@ -189,7 +189,13 @@ object BackupManager {
             putText(z, "meta.txt", "myime-backup 1\ntime=${System.currentTimeMillis()}\napp=${versionName(ctx)}\ndicts=${if (includeDicts) 1 else 0}\n")
             for (rel in BackupScope.listFiles(fd)) {
                 val f = pick(File(fd, rel))
-                if (f.isFile) putFile(z, "files/$rel", f)
+                if (!f.isFile) continue
+                if (ClipStore.isClipFile(rel)) {
+                    // 剪贴板文件在本机是用 Keystore 密钥加密的,换手机就解不开:解成明文再放进(已加密的)备份包
+                    ClipStore.plainBytes(ctx, f, rel)?.let { putBytes(z, "files/$rel", it) }
+                } else {
+                    putFile(z, "files/$rel", f)
+                }
             }
             for (name in BackupScope.listPrefNames(prefsDir(ctx))) {
                 putText(z, "prefs/$name.txt", dumpPrefs(ctx, name, name == "dictcfg" && !includeDicts))
