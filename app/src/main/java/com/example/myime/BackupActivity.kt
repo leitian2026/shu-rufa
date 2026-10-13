@@ -33,6 +33,7 @@ class BackupActivity : Activity() {
     private lateinit var result: TextView
     private lateinit var autoBox: CheckBox
     private lateinit var dictsBox: CheckBox
+    private lateinit var syncBox: CheckBox
     private var busy = false
 
     private companion object {
@@ -107,6 +108,34 @@ class BackupActivity : Activity() {
             ),
         )
 
+        root.addView(section("4. 多台手机同步学习数据"))
+        root.addView(
+            label(
+                "几台都是你自己的手机,可以共享选词记录(拼音、笔画)和联想词,打得越多越准。只同步这些;剪贴板、回收箱、设置、英文用词都不会同步。" +
+                    "用上面的坚果云账号,每台手机只写自己的一个加密文件(自动加密,不用设密码)。要求几台手机装的是同一个构建,并且都设好了坚果云账号。" +
+                    "键盘收起时检查:新学了 300 次以上且距上次上传满 1 天(或有新学的、超过 7 天)就上传;键盘弹出时每天拉取一次别的手机的更新。没有定时器,Wi-Fi 和流量都可以。" +
+                    "在一台手机上清除学习数据只清这一台,不会清掉别的手机。",
+                13f, alpha = 0.7f,
+            ),
+        )
+        syncBox = CheckBox(this).apply {
+            text = "自动同步学习数据"
+            isChecked = LearnSync.enabled(this@BackupActivity)
+            setOnCheckedChangeListener { _, v -> LearnSync.setEnabled(this@BackupActivity, v) }
+        }
+        root.addView(syncBox)
+        root.addView(
+            smallButton("立即同步学习数据").apply {
+                setOnClickListener {
+                    runBg("正在同步学习数据(第一次要多等几秒)…") {
+                        val r = LearnSync.syncNow(this@BackupActivity)
+                        ui.post { say(r.msg) }
+                    }
+                }
+            },
+            smallButtonParams(),
+        )
+
         result = label("", 14f).apply { setPadding(0, pad, 0, 0) }
         root.addView(result)
         refresh()
@@ -140,6 +169,16 @@ class BackupActivity : Activity() {
         val m = BackupConfig.lastMsg(this, BackupConfig.CLOUD)
         if (m.startsWith("失败")) sb.append("\n    最近一次").append(m)
         sb.append("\n本地:上次成功:").append(fmt(BackupConfig.lastOk(this, BackupConfig.LOCAL)))
+        sb.append("\n学习数据同步:")
+        if (!LearnSync.available()) {
+            sb.append("不可用(这个构建没有内置备份密码)")
+        } else {
+            sb.append(if (LearnSync.enabled(this)) "已开启" else "已关闭")
+            sb.append("\n    上次成功:").append(fmt(LearnSync.lastOk(this)))
+            sb.append("\n    自上次上传新学:").append(LearnSync.pendingNew(this)).append(" 次")
+            val lm = LearnSync.lastMsg(this)
+            if (lm.startsWith("失败")) sb.append("\n    最近一次").append(lm)
+        }
         status.text = sb.toString()
     }
 
