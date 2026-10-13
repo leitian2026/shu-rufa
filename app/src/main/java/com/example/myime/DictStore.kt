@@ -98,6 +98,14 @@ object DictConfig {
         p(ctx).edit().putBoolean("learn", v).apply()
     }
 
+    /** 学习系数:越大,选过的词越容易排到前面(0 = 只按词频)。默认 6,范围 0~20。 */
+    fun learnCoef(ctx: Context): Double =
+        p(ctx).getFloat("learn_coef", LEARN_COEF_DEFAULT.toFloat()).toDouble().coerceIn(0.0, LEARN_COEF_MAX)
+
+    fun setLearnCoef(ctx: Context, v: Double) {
+        p(ctx).edit().putFloat("learn_coef", v.coerceIn(0.0, LEARN_COEF_MAX).toFloat()).apply()
+    }
+
     /** 打开输入法时默认的输入方式:pinyin / stroke / english;last = 沿用上次用的。 */
     fun defaultMode(ctx: Context): String = p(ctx).getString("default_mode", "last") ?: "last"
 
