@@ -297,11 +297,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         ioPool.execute {
             UserData.saveAll()                          // 学习数据只在键盘隐藏时落盘,打字过程中不写文件
             BackupManager.maybeAuto(applicationContext) // 开着自动备份、数据有变化、距上次够久时,另开线程备份一次
+            LearnSync.maybe(applicationContext, true)   // 多机同步:新学的攒够了、距上次上传够久,先拉取合并再上传(另开线程;不满足条件几步判断就返回)
         }
     }
 
     override fun onWindowShown() {
         super.onWindowShown()
+        ioPool.execute { LearnSync.maybe(applicationContext, false) }   // 多机同步:距上次拉取够久就拉一次别的手机的更新(没变化只列一次目录)
         // 收起前翻译框里还有没翻完的字:现在补翻一次
         if (transActive && transBuf.isNotBlank() && transBuf.toString() != transSrc) {
             transStatus = TranslateBarView.STATUS_NONE
