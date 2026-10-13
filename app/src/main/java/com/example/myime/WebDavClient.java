@@ -160,9 +160,11 @@ public final class WebDavClient {
      * 确认账号密码可用,并保证文件夹存在(不存在就逐级创建)。失败抛 DavException / IOException,消息可以直接给用户看。
      */
     public void ensureFolder(List<String> segs) throws IOException {
-        Response r = request("PROPFIND", folderPath(new ArrayList<String>()), propfindHeaders("0"), null, null, PROPFIND_BODY);
+        // 常见情况(文件夹已存在)只要一次请求;只有 404 才逐级创建
+        Response r = request("PROPFIND", folderPath(segs), propfindHeaders("0"), null, null, PROPFIND_BODY);
         failIfAuth(r);
-        if (r.status != 207 && r.status != 200) throw fail(r, "连接坚果云失败");
+        if (r.status == 207 || r.status == 200) return;
+        if (r.status != 404 || segs.isEmpty()) throw fail(r, "连接坚果云失败");
         List<String> cur = new ArrayList<>();
         for (String s : segs) {
             cur.add(s);
