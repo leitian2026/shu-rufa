@@ -127,6 +127,14 @@ object DictDownloader {
                         }
                     }
                     if (part.length() == 0L) throw IOException("下载到的文件是空的")
+                    // 开头是网页 = 镜像/代理/网络认证页返回的错误页(状态码仍是 200)
+                    val head = part.inputStream().use { ins ->
+                        val b = ByteArray(512)
+                        String(b, 0, maxOf(0, ins.read(b)), Charsets.UTF_8)
+                    }.trimStart('\uFEFF', ' ', '\n', '\r', '\t').lowercase()
+                    if (head.startsWith("<!doctype") || head.startsWith("<html") || head.startsWith("<?xml")) {
+                        throw IOException("返回的是网页而不是词库,请检查镜像前缀或网络")
+                    }
                     if (dest.exists()) dest.delete()
                     if (!part.renameTo(dest)) {
                         part.copyTo(dest, overwrite = true)
@@ -238,6 +246,7 @@ object DictInstaller {
                 DictConvert.buildPinyin(
                     main, supplement, DictStore.file(ctx, DictStore.PINYIN_FILE),
                     DictConfig.pinyinCap(ctx), cancel, conv,
+                    minMainSingles = if (custom) 0 else 3000,
                 )
             }
             DictPacks.ENGLISH -> {
