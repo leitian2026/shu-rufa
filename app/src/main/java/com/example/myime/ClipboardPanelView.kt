@@ -72,10 +72,10 @@ class ClipboardPanelView(
 
     private fun normalBar() =
         if (inTrash) {
-            listOf(BarKey(ID_BACK, "返回", 1.2f, BarKind.PRIMARY))
+            listOf(BarKey(ID_BACK, "返回", 1.2f, BarKind.BACK))
         } else {
             listOf(
-                BarKey(ID_BACK, "返回", 1.2f, BarKind.PRIMARY),
+                BarKey(ID_BACK, "返回", 1.2f, BarKind.BACK),
                 BarKey(ID_TRASH, if (trashItems.isEmpty()) "回收箱" else "回收箱(${trashItems.size})", 1.8f, BarKind.FUNCTION),
             )
         }
