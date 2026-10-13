@@ -101,6 +101,7 @@ abstract class PanelView(context: Context) : View(context) {
     private var barIsDown = BooleanArray(0)
     private var barReleasedAt = LongArray(0)
     private var barDown = -1
+    private var barTouch = false   // 这一次触摸是按在按键上的(按键按下就执行,执行完面板可能重排按键条,所以单独记一个标记)
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private var repeatId = -1
@@ -407,6 +408,7 @@ abstract class PanelView(context: Context) : View(context) {
             MotionEvent.ACTION_DOWN -> {
                 val i = barHit(e.x, e.y)
                 if (i >= 0) {
+                    barTouch = true
                     barDown = i
                     barIsDown[i] = true
                     barReleasedAt[i] = -1L
@@ -421,14 +423,18 @@ abstract class PanelView(context: Context) : View(context) {
                     invalidate()
                     return true
                 }
+                barTouch = false
                 barDown = -1
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (barDown >= 0) {
-                    if (barDown < barIsDown.size) {
+                if (barTouch) {
+                    // 按键执行后可能已重排按键条(barDown 被清成 -1):这里仍然把这次抬手吃掉,
+                    // 不能交给手势检测,否则会被当成「点了空白处」
+                    if (barDown >= 0 && barDown < barIsDown.size) {
                         barIsDown[barDown] = false
                         barReleasedAt[barDown] = SystemClock.uptimeMillis()
                     }
+                    barTouch = false
                     barDown = -1
                     stopRepeat()
                     postInvalidateOnAnimation()
@@ -436,7 +442,7 @@ abstract class PanelView(context: Context) : View(context) {
                 }
             }
         }
-        if (barDown >= 0) return true // 手指按在按键条上,忽略滑动
+        if (barTouch) return true // 手指按在按键条上,忽略滑动
         return gestures.onTouchEvent(e)
     }
 
