@@ -9,7 +9,7 @@ import android.graphics.RectF
  * 剪贴板面板:按时间倒序列出最近复制过的文字。
  *  - 点一条 = 粘贴到输入框并返回键盘
  *  - 长按一条 = 进入多选:每条前面出现圆圈,点哪条选哪条;标题右边的按键变成「取消 / 全选 / 删除」
- *  - 「清空」删除全部;离开面板或点「取消」都会退出多选
+ *  - 没有「清空」键(免得手滑);要删全部就长按进多选再「全选」「删除」。离开面板或点「取消」都会退出多选
  *  - 「回收箱」:剪贴板里删掉的内容先放这里(最多 10 条,最新删的在最上面,满了挤掉最下面最旧的)。
  *    回收箱里也能点一条粘贴、长按多选、全选、删除(这里的删除是真删)。回收箱里「返回」/点空白回到剪贴板。
  */
@@ -21,7 +21,6 @@ class ClipboardPanelView(
     interface Listener {
         fun onPaste(text: String)
         fun onDeleteMany(texts: List<String>)
-        fun onClear()
         fun onBack()
         fun onPasteTrash(text: String)
         fun onTrashDelete(texts: List<String>)
@@ -75,7 +74,6 @@ class ClipboardPanelView(
             listOf(
                 BarKey(ID_BACK, "", 0.7f, BarKind.PRIMARY, icon = Icon.BACK),
                 BarKey(ID_TRASH, if (trashItems.isEmpty()) "回收箱" else "回收箱(${trashItems.size})", 1.8f, BarKind.FUNCTION),
-                BarKey(ID_CLEAR, "清空", 1.6f, BarKind.FUNCTION),
             )
         }
 
@@ -330,7 +328,6 @@ class ClipboardPanelView(
         when (id) {
             ID_BACK -> if (inTrash) setTrashView(false) else listener.onBack()
             ID_TRASH -> setTrashView(true)
-            ID_CLEAR -> listener.onClear()
             ID_CANCEL -> exitSelect()
             ID_ALL -> {
                 if (selected.size == items.size) selected.clear() else selected.addAll(items)
@@ -347,7 +344,6 @@ class ClipboardPanelView(
 
     private companion object {
         const val ID_BACK = 0
-        const val ID_CLEAR = 2
         const val ID_CANCEL = 3
         const val ID_ALL = 4
         const val ID_DEL = 5
