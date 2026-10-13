@@ -436,14 +436,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 clipPanel?.setTrash(trash.toList())
             }
 
-            override fun onClear() {
-                moveToTrash(clips.toList())
-                clips.clear()
-                clipsChanged()
-                clipPanel?.setItems(emptyList())
-                clipPanel?.setTrash(trash.toList())
-            }
-
             override fun onPasteTrash(text: String) {
                 currentInputConnection?.commitText(text, 1)
                 leavePage()
