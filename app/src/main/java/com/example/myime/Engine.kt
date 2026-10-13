@@ -5,7 +5,7 @@ import android.util.Log
 
 /**
  * consumed:这个候选消耗了输入串的前几个字符(拼音分段上屏时,剩余部分继续留在组合区)。
- * kind:只有英文用到。0 = 原样输入或补全,1 = 纠错,2 = 联想(下一个词)。
+ * kind:只有英文用到。0 = 原样输入或补全,1 = 纠错,2 = 联想(下一个词),3 = 跟在中文候选词后面的表情(拼音/笔画用)。
  */
 class Candidate(val text: String, val consumed: Int, val kind: Int = 0)
 
@@ -156,6 +156,11 @@ class PinyinEngine(
     private val textKeys: Array<String> by lazy {
         val o = textOrder
         Array(o.size) { texts[o[it]] }
+    }
+
+    /** 提前把联想要用的排序下标建好(在后台线程调用),第一次联想就不用现场排序。 */
+    fun prepareFollowers() {
+        textKeys.size
     }
 
     /**
