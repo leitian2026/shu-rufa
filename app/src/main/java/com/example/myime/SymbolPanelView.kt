@@ -10,7 +10,7 @@ import kotlin.math.abs
 
 /**
  * 符号面板:顶上左边是可左右拖动的分类条(常用 / 中文 / 英文 / 网址 / 数学 ……),右边是 返回 和 删除;
- * 下面是当前分类的符号网格,可上下滑动,点一个就输入一个,面板不关(连续输入),点「返回」回到键盘。
+ * 下面是当前分类的符号网格,可上下滑动,点一个符号就输入并自动回到键盘,也可以点「返回」或空白处回到键盘。
  *
  * 省电:没有定时器、没有动画;只在触摸时重绘。同一时间只在内存里留当前这一类的符号。
  */
@@ -142,7 +142,7 @@ class SymbolPanelView(
                 fill.color = palette.key
                 canvas.drawRoundRect(tmp, radius, radius, fill)
             }
-            tabPaint.color = if (selected) palette.text else palette.textFaint
+            tabPaint.color = palette.text   // 没选中的也用正文色,免得和背景太接近看不清;选中的靠白底区分
             canvas.drawText(SymbolData.NAMES[i], x0 + w / 2f, centerY + tabBase, tabPaint)
         }
         canvas.restore()
@@ -248,6 +248,7 @@ class SymbolPanelView(
 
     override fun onContentTap(x: Float, y: Float): Boolean {
         if (cellW <= 0f) return false
+        if (x < padX || x >= padX + cols * cellW) return false   // 格子左右两边的空白处不算点中符号(否则负数取整会落到第一列)
         val col = ((x - padX) / cellW).toInt()
         val row = (y / cellH).toInt()
         if (col < 0 || col >= cols || y < 0f) return false
