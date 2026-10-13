@@ -72,10 +72,10 @@ class ClipboardPanelView(
 
     private fun normalBar() =
         if (inTrash) {
-            listOf(BarKey(ID_BACK, "", 0.7f, BarKind.PRIMARY, icon = Icon.BACK))
+            listOf(BarKey(ID_BACK, "返回", 1.2f, BarKind.PRIMARY))
         } else {
             listOf(
-                BarKey(ID_BACK, "", 0.7f, BarKind.PRIMARY, icon = Icon.BACK),
+                BarKey(ID_BACK, "返回", 1.2f, BarKind.PRIMARY),
                 BarKey(ID_TRASH, if (trashItems.isEmpty()) "回收箱" else "回收箱(${trashItems.size})", 1.8f, BarKind.FUNCTION),
             )
         }
@@ -107,6 +107,7 @@ class ClipboardPanelView(
         headerBtnH = h
         padX = context.dpf(8f)   // 左右只留一小条边,长条几乎占满输入法两边(平板上基类默认留得很宽)
         padTop = context.dpf(3f)
+        padBottom = context.dpf(4f)   // 底下只留一点点,9 条才能铺满
         barH = h + context.dpf(4f)
         barGap = context.dpf(3f)
     }
@@ -198,16 +199,15 @@ class ClipboardPanelView(
         if (width == 0) return
         val maxTextW = width - 2 * padX - 2 * cardPad - (if (selecting) checkW else 0f)
         // 一屏正好放 9 条单行的:字体不动,只调卡片上下的内边距和间距,让 9 条刚好占满。屏幕太矮就收紧,太高也只撑到一个上限
-        val slot = viewportHeight() / ROWS_PER_SCREEN
-        if (slot <= 0f) {
+        // 9 条单行的刚好铺满内容区(第 1 条顶到第 9 条底,不留空):间距固定,卡片高度按比例拉高,字体不动
+        val vh = viewportHeight()
+        if (vh <= 0f) {
             curPad = cardPad
             curGap = cardGap
-        } else if (2 * cardPad + lineH + cardGap <= slot) {
-            curGap = cardGap
-            curPad = ((slot - curGap - lineH) / 2f).coerceAtMost(cardPad * 2f)
         } else {
-            curGap = minOf(cardGap, context.dpf(3f))
-            curPad = ((slot - curGap - lineH) / 2f).coerceIn(context.dpf(2f), cardPad)
+            curGap = if (2 * cardPad + lineH + cardGap <= vh / ROWS_PER_SCREEN) cardGap else minOf(cardGap, context.dpf(3f))
+            val h = (vh - curGap * (ROWS_PER_SCREEN - 1f)) / ROWS_PER_SCREEN
+            curPad = ((h - lineH) / 2f).coerceAtLeast(context.dpf(2f))
         }
         lines = items.map { wrap(it, maxTextW) }
         tops = FloatArray(items.size + 1)
