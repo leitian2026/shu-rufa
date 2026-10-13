@@ -178,8 +178,10 @@ object DictConvert {
         cap: Int,
         cancel: AtomicBoolean,
         progress: Progress,
+        minMainSingles: Int = 0,
     ): Int {
         val hist = LongArray(64)
+        var mainSingles = 0L // 主词库里的单字数(8105 字表应有 8000 多个)
         var kept = 0L // 一定会保留的条数(单字 + 补充词库)
         val total = main.size + supplement.size
         var step = 0
@@ -190,9 +192,18 @@ object DictConvert {
             forEachRime(f, cancel) { text, code, w ->
                 if (!isPinyin(code)) return@forEachRime
                 if (!seen1.add(hash64(text, code))) return@forEachRime
-                if (isSingleChar(text)) kept++ else hist[bucket(w)]++
+                if (isSingleChar(text)) {
+                    kept++
+                    mainSingles++
+                } else {
+                    hist[bucket(w)]++
+                }
             }
             step++
+        }
+        // 常用单字表(8105)没下好时,什、爱这类字会掉出候选前 30 名,看起来像"词库没出来";宁可报错也不装一个残缺的词库
+        if (mainSingles < minMainSingles) {
+            throw IllegalStateException("拼音词库里的常用单字只有 $mainSingles 个,8105 字表可能没下载成功,请重新下载")
         }
         for (f in supplement) {
             progress("统计 ${f.name}", 0.5f * step / total)
