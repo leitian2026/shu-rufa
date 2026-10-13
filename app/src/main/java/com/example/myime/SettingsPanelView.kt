@@ -97,6 +97,14 @@ class SettingsPanelView(
         canvas.drawText(title, left, centerY + titleBase, titlePaint)
     }
 
+    /** 开着的开关(悬浮键盘):整格蓝底白字,一眼看出现在是开的,-1 表示没有。 */
+    var accentId = -1
+        set(v) {
+            if (field == v) return
+            field = v
+            invalidate()
+        }
+
     init {
         applySettingsMetrics()
     }
@@ -149,12 +157,13 @@ class SettingsPanelView(
 
             val sel = items[i].id == selectedId
             // 「翻译微软 / 翻译谷歌」哪个正在用,哪一格整格变绿底白字(只有这一格变,键盘配色不变)
-            val filled = items[i].id == filledId
+            val on = items[i].id == accentId
+            val filled = items[i].id == filledId || on
             tmp.set(x, y + shadowH, x + cellW, y + cellH + shadowH)
-            fill.color = if (filled) palette.transShadow else palette.keyShadow
+            fill.color = if (on) palette.accentShadow else if (filled) palette.transShadow else palette.keyShadow
             canvas.drawRoundRect(tmp, radius, radius, fill)
             tmp.set(x, y, x + cellW, y + cellH)
-            fill.color = if (filled) palette.transAccent else palette.key
+            fill.color = if (on) palette.accent else if (filled) palette.transAccent else palette.key
             canvas.drawRoundRect(tmp, radius, radius, fill)
 
             val cx = x + cellW / 2f
