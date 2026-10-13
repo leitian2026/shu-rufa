@@ -81,7 +81,7 @@ class SettingsPanelView(
 
     private fun buildBar(): List<BarKey> {
         val l = ArrayList<BarKey>()
-        l.add(BarKey(ID_BACK_KEY, "", 1f, BarKind.PRIMARY, icon = Icon.BACK))
+        l.add(BarKey(ID_BACK_KEY, "返回", 1.4f, BarKind.BACK))
         extraLabel?.let { l.add(BarKey(ID_EXTRA_KEY, it, 1f, BarKind.FUNCTION)) }
         return l
     }
