@@ -49,6 +49,7 @@ object DictCache {
             if (out.exists()) out.delete()
             if (!tmp.renameTo(out)) tmp.delete()
         } catch (e: Exception) {
+            ErrorHint.set("cache", ErrorHint.of("词库缓存写入失败(只会让启动变慢)", e))
             tmp.delete()
         }
     }
@@ -123,6 +124,7 @@ object DictCache {
                 PinyinEngine(texts, compact, buildInitials(compact, sylLens, sylStart), sylLens, sylStart, freqs, user, co, io)
             }
         } catch (e: Exception) {
+            ErrorHint.set("cache", ErrorHint.of("词库缓存读取失败,已重建", e))
             file(ctx, "pinyin.bin").delete()
             null
         }
@@ -160,6 +162,7 @@ object DictCache {
                 StrokeEngine(texts, codes, freqs, user, order)
             }
         } catch (e: Exception) {
+            ErrorHint.set("cache", ErrorHint.of("词库缓存读取失败,已重建", e))
             file(ctx, "stroke.bin").delete()
             null
         }
@@ -197,6 +200,7 @@ object DictCache {
                 EnglishEngine(words, freqs, succ, user, order)
             }
         } catch (e: Exception) {
+            ErrorHint.set("cache", ErrorHint.of("词库缓存读取失败,已重建", e))
             file(ctx, "english.bin").delete()
             null
         }
