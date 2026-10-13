@@ -43,7 +43,7 @@ class ClipboardPanelView(
     private var lineH = 0f
     private var cardPad = 0f
     private var cardGap = 0f
-    private var curPad = 0f      // 实际用的卡片上下内边距、间距:短内容一屏要放 10 条时会收紧(字体不变)
+    private var curPad = 0f      // 实际用的卡片上下内边距、间距:短内容一屏放 9 条,按屏高调整(字体不变)
     private var curGap = 0f
     private var checkW = 0f      // 多选时每条左边圆圈占的宽度
 
@@ -91,6 +91,22 @@ class ClipboardPanelView(
 
     init {
         applyClipMetrics()
+    }
+
+    /**
+     * 标题行压紧:按键和左边的标题文字一样高,上下留白收小,把空间让给下面的列表。
+     * (基类构造时调用,所以只用 context,不碰本类的字段。)
+     */
+    override fun adjustMetrics() {
+        val wide = context.isWide()
+        val h = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = context.spf(if (wide) 18f else 16f)
+            isFakeBoldText = true
+        }.fontSpacing
+        headerBtnH = h
+        padTop = context.dpf(3f)
+        barH = h + context.dpf(4f)
+        barGap = context.dpf(3f)
     }
 
     private fun baseline(p: Paint): Float {
@@ -179,11 +195,14 @@ class ClipboardPanelView(
     private fun relayout() {
         if (width == 0) return
         val maxTextW = width - 2 * padX - 2 * cardPad - (if (selecting) checkW else 0f)
-        // 一屏要能放下 10 条单行的:字体不动,只收紧卡片上下的内边距和间距。屏幕本来就够高时保持原样
+        // 一屏正好放 9 条单行的:字体不动,只调卡片上下的内边距和间距,让 9 条刚好占满。屏幕太矮就收紧,太高也只撑到一个上限
         val slot = viewportHeight() / ROWS_PER_SCREEN
-        if (slot <= 0f || 2 * cardPad + lineH + cardGap <= slot) {
+        if (slot <= 0f) {
             curPad = cardPad
             curGap = cardGap
+        } else if (2 * cardPad + lineH + cardGap <= slot) {
+            curGap = cardGap
+            curPad = ((slot - curGap - lineH) / 2f).coerceAtMost(cardPad * 2f)
         } else {
             curGap = minOf(cardGap, context.dpf(3f))
             curPad = ((slot - curGap - lineH) / 2f).coerceIn(context.dpf(2f), cardPad)
@@ -361,7 +380,7 @@ class ClipboardPanelView(
         const val ID_ALL = 4
         const val ID_DEL = 5
         const val ID_TRASH = 6
-        const val ROWS_PER_SCREEN = 10f
+        const val ROWS_PER_SCREEN = 9f
         const val PREVIEW_CHARS = 400   // 两行最多放得下的字数远小于这个
     }
 }
