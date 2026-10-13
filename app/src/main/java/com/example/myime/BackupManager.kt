@@ -50,9 +50,7 @@ import java.util.zip.ZipOutputStream
 object BackupManager {
     const val PREFIX = "myime-backup-"
     const val EXT = ".mybk"
-    private const val KEEP = 7                   // 坚果云上只留最近 7 份数据备份(签名密钥备份很小,从不自动删)
-    private const val MAX_KEY_BYTES = 1_000_000
-    private const val KEY_DIR = "signing"           // 签名密钥放在应用数据目录里,随数据一起备份
+    private const val KEEP = 7                   // 坚果云上只留最近 7 份数据备份
     private const val RETRY_OK_MS = 24L * 3600 * 1000
     private const val RETRY_FAIL_MS = 6L * 3600 * 1000
 
@@ -587,34 +585,5 @@ object BackupManager {
         } finally {
             running.set(false)
         }
-    }
-
-    // ------------------------------------------------------------ 签名密钥(当作普通数据,放在 files/signing/ 里随备份走)
-
-    /** 当前保存的签名密钥文件,没有返回 null。 */
-    fun keyFile(ctx: Context): File? =
-        File(filesDir(ctx), KEY_DIR).listFiles()?.filter { it.isFile && !BackupScope.isTemp(it.name) }?.maxByOrNull { it.lastModified() }
-
-    /** 把用户选的签名密钥文件(.jks 等)复制进应用数据目录,以后每次备份都会带上它。失败抛异常,消息可直接给用户看。 */
-    fun saveKeyFile(ctx: Context, src: Uri, fileName: String) {
-        val app = ctx.applicationContext
-        val data = (app.contentResolver.openInputStream(src) ?: throw IOException("无法打开这个文件")).use { it.readBytes() }
-        if (data.isEmpty()) throw IOException("这个文件是空的")
-        if (data.size > MAX_KEY_BYTES) throw IOException("文件太大,不像是签名密钥文件")
-        val dir = File(filesDir(app), KEY_DIR)
-        dir.mkdirs()
-        val safe = fileName.replace('/', '_').replace('\\', '_').ifBlank { "myime.jks" }
-        val target = File(dir, safe)
-        val tmp = File(dir, "$safe.tmp")
-        tmp.writeBytes(data)
-        Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        dir.listFiles()?.forEach { if (it.isFile && it.name != safe) it.delete() }   // 只留最新选的这一个
-    }
-
-    /** 把保存的签名密钥导出到用户用系统选择器新建的文件(还原数据后,用它取回 .jks)。 */
-    fun exportKeyFile(ctx: Context, out: Uri) {
-        val app = ctx.applicationContext
-        val f = keyFile(app) ?: throw IOException("还没有保存过签名密钥")
-        (app.contentResolver.openOutputStream(out, "w") ?: throw IOException("无法写入这个文件")).use { o -> f.inputStream().use { it.copyTo(o) } }
     }
 }
