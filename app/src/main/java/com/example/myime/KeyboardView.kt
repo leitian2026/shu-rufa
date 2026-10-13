@@ -291,6 +291,13 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         }
         val label = k.label
         if (label.isEmpty()) return
+        if (label == "符") {
+            // 和旁边「中/英」一样大
+            richPaint.isFakeBoldText = false
+            richPaint.color = color
+            canvas.drawText(label, cx - richPaint.measureText(label) / 2f, cy + richBase, richPaint)
+            return
+        }
 
         val paint: Paint
         val base: Float
