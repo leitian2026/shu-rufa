@@ -18,40 +18,6 @@ interface Engine {
 
 private const val TAG = "MyIme"
 
-/**
- * 词频的对数(每 2 倍 = 4 档,四分之一个八度),整数运算,不用浮点。
- * 排序时把"词频"和"我的选择"放到同一把尺子上比,而不是让"选过一次"直接压过所有高频词。
- */
-internal fun logQ(f: Int): Int {
-    if (f <= 0) return 0
-    val o = 31 - Integer.numberOfLeadingZeros(f)
-    val frac = if (o >= 2) (f shr (o - 2)) and 3 else (f shl (2 - o)) and 3
-    return o * 4 + frac
-}
-
-/** 学习系数的默认值、可填范围(上限 20:保证排序键里的\"词频档数 + 加分\"不超过 255)。 */
-internal const val LEARN_COEF_DEFAULT = 6.0
-internal const val LEARN_COEF_MAX = 20.0
-
-@Volatile
-private var BOOST = buildBoost(LEARN_COEF_DEFAULT)
-
-private fun buildBoost(coef: Double) = IntArray(257) { Math.round(coef * Math.log(1.0 + it)).toInt() }
-
-/**
- * 设置「学习系数」(词库管理页里填写):加分 = 系数 × ln(1 + 选择次数),四舍五入。
- * 数值越大,选过的词越容易排到前面;0 = 排序只看词频。输入法服务启动和保存设置时调用。
- */
-internal fun setLearnCoef(coef: Double) {
-    BOOST = buildBoost(coef.coerceIn(0.0, LEARN_COEF_MAX))
-}
-
-/**
- * 我的选择折算成"相当于词频多少档"(系数默认 6.0,可在词库管理页改):选 1 次约抵 1 倍词频,选很多次最多抵 2 的 6~7 次方倍。
- * 对数增长,所以早期的几次选择影响明显,后面边际递减;偶然选一次不会把生僻词顶到最前。
- */
-internal fun learnBoost(score: Int): Int = BOOST[score.coerceIn(0, 256)]
-
 /** 第一个 >= target 的位置(keys 必须已排序)。 */
 internal fun lowerBound(keys: Array<String>, target: String): Int {
     var lo = 0
@@ -179,7 +145,7 @@ class PinyinEngine(
     }
 
     /**
-     * 词库里以 prefix 开头的词,去掉 prefix 后剩下的部分,按词频从高到低(最多 max 个,去重)。
+     * 词库里以 prefix 开头的词,去掉 prefix 后剩下的部分:我打过的在前(最近打的最靠前),其余按词频从高到低(最多 max 个,去重)。
      * 比如 prefix = "吃" → 饭、惊、力…… 只取剩余 1 到 4 个字的。
      */
     fun followers(prefix: String, max: Int): List<String> {
@@ -191,16 +157,16 @@ class PinyinEngine(
         if (hi <= lo) return emptyList()
         val pool = 48
         val bestId = IntArray(pool)
-        val bestFreq = IntArray(pool)
+        val bestFreq = LongArray(pool)
         var size = 0
         val u = user?.takeIf { it.hasLearned() }
         for (j in lo until hi) {
             val id = ord[j]
             val rest = texts[id].length - prefix.length
             if (rest < 1 || rest > 4) continue
-            // 词频和"我打过这个词"放在同一把尺子上比
-            val f = if (u == null) freqs[id]
-            else minOf(logQ(freqs[id]) + learnBoost(u.score(texts[id], "")), 255) * 1_000_000 + minOf(freqs[id], 999_999)
+            // 我打过的词排在前面(最近打的最靠前),其余按词频;键 >= 2^45 的是我打过的,一定比词频大
+            val mine = UserFreq.textRank(u, texts[id])
+            val f = if (mine != 0L) mine else freqs[id].toLong()
             if (size == pool && f <= bestFreq[pool - 1]) continue
             var pos = if (size < pool) size else pool - 1
             while (pos > 0 && bestFreq[pos - 1] < f) {
@@ -285,27 +251,27 @@ class PinyinEngine(
      */
     private fun top(
         keys: Array<String>, ids: IntArray, from: String, to: String, cuts: List<Int>,
-        ctx: Map<String, Int>? = null,
+        ctx: Map<String, Long>? = null,
     ): List<Int> {
         val lo = lowerBound(keys, from)
         val hi = lowerBound(keys, to)
         if (hi <= lo) return emptyList()
         val u = user?.takeIf { it.hasLearned() }   // 没学过任何词就完全不查表
         val boosted = u != null || ctx != null
+        val win = u?.recent(from)   // 这个编码最近几次的选择,整次查询取一次
         val bestId = IntArray(MAX)
         val bestKey = LongArray(MAX)
         var size = 0
         for (j in lo until hi) {
             val id = ids[j]
             if (cuts.isNotEmpty() && !boundariesOk(id, cuts)) continue
-            // 词频(取对数)+ 我的选择(取对数)+ 我常接在上一个词后面的加分,放在同一把尺子上比;
-            // 没有任何学习记录时,顺序和纯词频完全一样
+            // 我选过的排在没选过的前面,最近选的最靠前(同音高频字再看最近几次里出现几次,见 UserFreq.rank);
+            // 没有任何学习记录的词按词频。没有学习记录时,顺序和纯词频完全一样
             val key = if (!boosted) {
                 freqs[id].toLong()
             } else {
-                val learned = if (u != null) u.score(texts[id], from) else 0
-                val c = ctx?.get(texts[id]) ?: 0
-                ((logQ(freqs[id]) + learnBoost(learned + c * 4)).toLong() shl 32) or freqs[id].toLong()
+                val r = UserFreq.rank(u, from, texts[id], win, ctx?.get(texts[id]) ?: 0L)
+                if (r != 0L) r else freqs[id].toLong()
             }
             if (size == MAX && key <= bestKey[MAX - 1]) continue
             var pos = if (size < MAX) size else MAX - 1
@@ -370,29 +336,31 @@ class StrokeEngine(
         val u = user?.takeIf { it.hasLearned() }
 
         // 只挑最靠前的 SLOTS 个。排序从高到低:
-        //   有字频的常用字 > 没字频的生僻字;同一组里笔画数刚好等于输入的(或我选过的) > 还没打完的;再按字频(2 倍一档 + 我的选择折算的加分);精确字频;笔画短的
+        //   我选过的(最近选的最靠前;同音字再看最近几次里出现几次,见 UserFreq.rank) >
+        //   有字频的常用字 > 没字频的生僻字;同一组里笔画数刚好等于输入的 > 还没打完的;再按字频(2 倍一档);精确字频;笔画短的
         val bestId = IntArray(SLOTS)
         val bestKey = LongArray(SLOTS)
         var size = 0
+        val win = u?.recent(code)   // 这个输入最近几次的选择,整次查询取一次
         fun offer(id: Int) {
             val len = codeOf[id].length
-            val learned = if (u != null) u.score(texts[id], code) else 0
             val f = freqs[id]
-            val tier = if (f > 1) 1L shl 62 else 0L
-            val octave = (32 - Integer.numberOfLeadingZeros(maxOf(f, 0))).toLong()   // 0..31
-            // 字频按 2 倍一档(每档 4 点),我的选择折算成同一单位的加分,一起比;
-            // 以前"选过一次"会直接压过所有没选过的常用字
-            val combined = octave * 4 + learnBoost(learned)   // < 256
-            // 笔画数刚好等于输入的(用户已经打完了整个字)排在还没打完的前面,再按字频;
-            // 我选过的也算在前一组,学习不会被挤掉。
-            // 以前字频排在"笔画数刚好"前面:前缀(如撇折点)后面接着的常用字有几百个,只留前 80 个,
-            // 刚好 3 笔的字(么)字频不够高就被挤出去了,往后翻也没有
-            val exact = len == code.length || learned > 0
-            val key = tier or
-                (if (exact) 1L shl 61 else 0L) or
-                (combined shl 53) or
-                (f.toLong() shl 18) or
-                (255 - minOf(len, 255)).toLong()
+            val r = if (u != null) UserFreq.rank(u, code, texts[id], win, 0L) else 0L
+            val key = if (r != 0L) {
+                (1L shl 62) or r
+            } else {
+                val tier = if (f > 1) 1L shl 61 else 0L
+                val octave = (32 - Integer.numberOfLeadingZeros(maxOf(f, 0))).toLong()   // 0..32,字频按 2 倍一档
+                // 笔画数刚好等于输入的(用户已经打完了整个字)排在还没打完的前面,再按字频。
+                // 以前字频排在"笔画数刚好"前面:前缀(如撇折点)后面接着的常用字有几百个,只留前 80 个,
+                // 刚好 3 笔的字(么)字频不够高就被挤出去了,往后翻也没有
+                val exact = len == code.length
+                tier or
+                    (if (exact) 1L shl 60 else 0L) or
+                    (octave shl 53) or
+                    (f.toLong() shl 18) or
+                    (255 - minOf(len, 255)).toLong()
+            }
             if (size == SLOTS && key <= bestKey[SLOTS - 1]) return
             var pos = if (size < SLOTS) size else SLOTS - 1
             while (pos > 0 && bestKey[pos - 1] < key) {
