@@ -48,11 +48,16 @@ public final class WebDavClient {
         public final String name;
         public final long size;
         public final boolean dir;
+        /** 服务器给的最后修改时间 / 版本标记(取不到是空串);多机同步用它判断远端文件有没有变。 */
+        public final String modified;
+        public final String etag;
 
-        Entry(String name, long size, boolean dir) {
+        Entry(String name, long size, boolean dir, String modified, String etag) {
             this.name = name;
             this.size = size;
             this.dir = dir;
+            this.modified = modified;
+            this.etag = etag;
         }
     }
 
@@ -216,7 +221,7 @@ public final class WebDavClient {
     // ------------------------------------------------------------------ 内部
 
     private static final byte[] PROPFIND_BODY = ("<?xml version=\"1.0\" encoding=\"utf-8\"?>"
-            + "<d:propfind xmlns:d=\"DAV:\"><d:prop><d:getcontentlength/><d:resourcetype/></d:prop></d:propfind>")
+            + "<d:propfind xmlns:d=\"DAV:\"><d:prop><d:getcontentlength/><d:resourcetype/><d:getlastmodified/><d:getetag/></d:prop></d:propfind>")
             .getBytes(StandardCharsets.UTF_8);
 
     private static Map<String, String> propfindHeaders(String depth) {
@@ -248,6 +253,8 @@ public final class WebDavClient {
     private static final Pattern RESPONSE = Pattern.compile("<(?:[\\w.-]+:)?response[\\s>].*?</(?:[\\w.-]+:)?response>", Pattern.DOTALL);
     private static final Pattern HREF = Pattern.compile("<(?:[\\w.-]+:)?href>\\s*(.*?)\\s*</(?:[\\w.-]+:)?href>", Pattern.DOTALL);
     private static final Pattern LEN = Pattern.compile("<(?:[\\w.-]+:)?getcontentlength>\\s*(\\d+)\\s*</", Pattern.DOTALL);
+    private static final Pattern MODIFIED = Pattern.compile("<(?:[\\w.-]+:)?getlastmodified>\\s*(.*?)\\s*</", Pattern.DOTALL);
+    private static final Pattern ETAG = Pattern.compile("<(?:[\\w.-]+:)?getetag>\\s*(.*?)\\s*</", Pattern.DOTALL);
     private static final Pattern COLLECTION = Pattern.compile("<(?:[\\w.-]+:)?collection\\s*/?>");
 
     static List<Entry> parseListing(String xml) {
@@ -288,7 +295,9 @@ public final class WebDavClient {
                     // 长度取不到就当 0
                 }
             }
-            out.add(new Entry(last, size, dir));
+            Matcher mo = MODIFIED.matcher(block);
+            Matcher et = ETAG.matcher(block);
+            out.add(new Entry(last, size, dir, mo.find() ? mo.group(1) : "", et.find() ? et.group(1) : ""));
         }
         return out;
     }
