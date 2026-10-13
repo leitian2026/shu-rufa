@@ -38,5 +38,11 @@
         <activity
             android:name=".DictManagerActivity"
             android:exported="false" />
+
+        <!-- 备份与还原:选文件夹 / 选文件时会切到系统界面再回来,屏幕旋转时不重建页面,免得丢掉正在输入的内容 -->
+        <activity
+            android:name=".BackupActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false" />
     </application>
 </manifest>
