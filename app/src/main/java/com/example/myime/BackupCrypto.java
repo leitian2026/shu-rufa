@@ -33,7 +33,8 @@ import javax.crypto.spec.SecretKeySpec;
  */
 public final class BackupCrypto {
     public static final int ITERATIONS = 600_000;
-    private static final int MIN_ITER = 100_000;
+    public static final int MIN_ITERATIONS = 100_000;
+    private static final int MIN_ITER = MIN_ITERATIONS;
     private static final int MAX_ITER = 5_000_000;   // 防止被构造的文件拖死手机
     private static final byte[] MAGIC = {'M', 'Y', 'B', 'K'};
     private static final int VERSION = 1;
