@@ -11,6 +11,7 @@ import android.provider.DocumentsContract
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
@@ -29,15 +30,19 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 /**
- * 加密备份:把学习数据、固定词、各项设置(可选再加词库包)打成一个压缩包,用 BackupCrypto 加密,
- * 同时写到两个位置(本地任意文件夹、网盘文件夹),写完再读回来解密校验一遍,确认真的能还原。
- * 两个位置都通过系统的文件夹选择器(SAF)访问:不需要存储权限,也不需要联网权限,网盘 App 自己负责上传。
+ * 加密备份:把学习数据、固定词、各项设置(可选再加词库包)打成一个压缩包,用 BackupCrypto 加密成单个 .mybk 文件。
+ * 只有两种去处:
+ *   1) 本地:用系统的「新建文件」选择器存到手机上任意位置(exportToUri);
+ *   2) 坚果云:通过 WebDAV 上传(backupToCloud,联网权限本来就有;WebDAV 客户端见 WebDavClient)。
+ * 两种都是写完马上读回来解密校验,确认真的能还原;上传后还核对云端文件大小。
+ * 还原也是两种:选一个本地的 .mybk,或者从坚果云下载最新的一份;都会先尝试用本机保存的备份密钥自动解开,
+ * 只有解不开(换手机、重装、改过密码)才让输入密码。
  *
  * 备份范围由 BackupScope 决定:默认应用数据目录和所有设置文件全部备份,只排除登记过的"可重建 / 可下载 / 设备专属"数据。
- * 以后加新功能,数据放在这两处就自动进备份、自动能还原;不进备份的只有:剪贴板(只在内存)、备份密码和备份位置设置、
+ * 以后加新功能,数据放在这两处就自动进备份、自动能还原;不进备份的只有:剪贴板(只在内存)、备份密码和坚果云账号设置、
  * 词库缓存。翻译接口的密钥在 dictcfg 里,会随设置一起加密保存。
  *
- * 省电:没有定时器、没有后台常驻;自动备份只在键盘收起时做几个便宜的判断(开关、时间、省电模式、电量、文件修改时间),
+ * 省电:没有定时器、没有后台常驻;自动备份(只传坚果云)只在键盘收起时做几个便宜的判断(开关、时间、省电模式、电量、文件修改时间),
  * 满足全部条件才另开低优先级线程备份一次;压缩用最快档;备份密钥已缓存,不再做耗时的密码运算。
  */
 object BackupManager {
@@ -45,7 +50,7 @@ object BackupManager {
     const val EXT = ".mybk"
     const val KEY_PREFIX = "myime-signing-"
     const val KEY_EXT = ".mykey"
-    private const val KEEP = 7                   // 每个位置只留最近 7 份数据备份(签名密钥备份很小,从不自动删)
+    private const val KEEP = 7                   // 坚果云上只留最近 7 份数据备份(签名密钥备份很小,从不自动删)
     private const val MAX_KEY_BYTES = 1_000_000
     private const val RETRY_OK_MS = 24L * 3600 * 1000
     private const val RETRY_FAIL_MS = 6L * 3600 * 1000
@@ -81,11 +86,12 @@ object BackupManager {
 
     class DestResult(val which: String, val ok: Boolean, val msg: String)
 
-    class RestoreResult(val ok: Boolean, val msg: String)
+    /** needPassword:本机保存的密钥解不开这个文件,需要让用户输入当初的备份密码再来一次。 */
+    class RestoreResult(val ok: Boolean, val msg: String, val needPassword: Boolean = false)
 
     class SigningKey(val fileName: String, val data: ByteArray, val note: String)
 
-    fun label(which: String): String = if (which == BackupConfig.LOCAL) "本地文件夹" else "网盘文件夹"
+    fun label(which: String): String = if (which == BackupConfig.LOCAL) "本地" else "坚果云"
 
     private fun stamp(): String = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
 
@@ -200,50 +206,6 @@ object BackupManager {
         }
     }
 
-    // ------------------------------------------------------------ 备份位置(系统文件夹选择器给的 URI)
-
-    private class Dest(ctx: Context, val tree: Uri) {
-        private val resolver = ctx.applicationContext.contentResolver
-        private val rootId: String = DocumentsContract.getTreeDocumentId(tree)
-        private val rootDoc: Uri = DocumentsContract.buildDocumentUriUsingTree(tree, rootId)
-
-        fun create(name: String): Uri =
-            DocumentsContract.createDocument(resolver, rootDoc, "application/octet-stream", name)
-                ?: throw IOException("无法在这个文件夹里创建文件(可能没有写入权限,请重新选择文件夹)")
-
-        fun openOut(doc: Uri): OutputStream =
-            resolver.openOutputStream(doc, "w") ?: throw IOException("无法写入备份文件")
-
-        fun openIn(doc: Uri): InputStream =
-            resolver.openInputStream(doc) ?: throw IOException("无法读回备份文件")
-
-        fun delete(doc: Uri) {
-            try {
-                DocumentsContract.deleteDocument(resolver, doc)
-            } catch (e: Exception) {
-                // 删不掉就留着
-            }
-        }
-
-        /** 名字以 prefix 开头、含 ext 的文件,新的在前(名字里带时间)。 */
-        fun list(prefix: String, ext: String): List<Pair<String, Uri>> {
-            val out = ArrayList<Pair<String, Uri>>()
-            val kids = DocumentsContract.buildChildDocumentsUriUsingTree(tree, rootId)
-            val cols = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-            resolver.query(kids, cols, null, null, null)?.use { c ->
-                while (c.moveToNext()) {
-                    val id = c.getString(0) ?: continue
-                    val name = c.getString(1) ?: continue
-                    if (name.startsWith(prefix) && name.contains(ext)) {
-                        out.add(Pair(name, DocumentsContract.buildDocumentUriUsingTree(tree, id)))
-                    }
-                }
-            }
-            out.sortByDescending { it.first }
-            return out
-        }
-    }
-
     /** 读回来完整解密一遍(每一块都通过认证),返回压缩包里每个条目的 SHA-256。 */
     private fun verify(open: () -> InputStream, master: ByteArray): Map<String, ByteArray> {
         val digests = HashMap<String, ByteArray>()
@@ -270,59 +232,107 @@ object BackupManager {
 
     private fun why(e: Exception): String {
         val m = e.message
-        return (if (m.isNullOrBlank()) e.javaClass.simpleName else m.lineSequence().first()).take(80)
+        return (if (m.isNullOrBlank()) e.javaClass.simpleName else m.lineSequence().first()).take(120)
     }
 
-    private fun store(
-        ctx: Context, which: String, fileName: String, master: ByteArray, prefix: String, ext: String, prune: Boolean,
+    // ------------------------------------------------------------ 坚果云(WebDAV)
+
+    private fun dav(ctx: Context): WebDavClient {
+        val user = BackupConfig.davUser(ctx)
+        val pw = BackupConfig.davPassword(ctx)
+        if (user.isBlank() || pw == null) throw IOException("还没有设置坚果云账号(点「设置坚果云账号」)")
+        try {
+            return WebDavClient(BackupConfig.davUrl(ctx), user, pw)
+        } catch (e: IllegalArgumentException) {
+            throw IOException(e.message ?: "坚果云服务器地址不对")
+        }
+    }
+
+    private fun davFolder(ctx: Context): List<String> {
+        val f = WebDavClient.splitFolder(BackupConfig.davFolder(ctx))
+        return if (f.isEmpty()) WebDavClient.splitFolder(BackupConfig.DEFAULT_FOLDER) else f
+    }
+
+    private fun tmpFile(ctx: Context, name: String): File = File(ctx.applicationContext.cacheDir, name)
+
+    /** 删掉下载 / 上传时留在缓存里的临时文件。 */
+    fun clearTemp(ctx: Context) {
+        tmpFile(ctx, "cloud_upload.tmp").delete()
+        tmpFile(ctx, "cloud_download.tmp").delete()
+    }
+
+    /** 测试坚果云账号和文件夹:账号密码对不对、文件夹在不在(不在就创建)。要后台线程调用。 */
+    fun testCloud(ctx: Context): DestResult {
+        val app = ctx.applicationContext
+        return try {
+            dav(app).ensureFolder(davFolder(app))
+            DestResult(BackupConfig.CLOUD, true, "连接成功,备份会放在坚果云的「${BackupConfig.davFolder(app)}」文件夹里")
+        } catch (e: Exception) {
+            DestResult(BackupConfig.CLOUD, false, "失败:" + why(e))
+        }
+    }
+
+    /**
+     * 先写到本机临时文件并读回校验,再上传,上传后核对云端文件大小。任何一步失败都不留残缺文件。
+     * 临时文件(加密后的,和云端一样)用完就删。
+     */
+    private fun cloudStore(
+        ctx: Context, fileName: String, master: ByteArray, prefix: String, ext: String, prune: Boolean,
         write: (OutputStream) -> Unit, check: (Map<String, ByteArray>) -> Unit,
     ): DestResult {
-        val tree = BackupConfig.treeUri(ctx, which) ?: return DestResult(which, false, "还没有选择${label(which)}")
+        val tmp = tmpFile(ctx, "cloud_upload.tmp")
         return try {
-            val dest = Dest(ctx, tree)
-            val doc = dest.create(fileName)
-            try {
-                BufferedOutputStream(dest.openOut(doc), 1 shl 16).use { o -> write(o) }
-                check(verify({ dest.openIn(doc) }, master))
-            } catch (e: Exception) {
-                dest.delete(doc)   // 没写成功或校验不过的残缺文件不留
-                throw e
+            val client = dav(ctx)
+            val folder = davFolder(ctx)
+            tmp.delete()
+            BufferedOutputStream(FileOutputStream(tmp), 1 shl 16).use { o -> write(o) }
+            check(verify({ FileInputStream(tmp) }, master))
+            client.ensureFolder(folder)
+            client.put(folder, fileName, tmp)
+            val remote = client.list(folder).firstOrNull { it.name == fileName }
+            if (remote == null || remote.size != tmp.length()) {
+                try {
+                    client.delete(folder, fileName)   // 云端文件大小对不上,不留残缺文件
+                } catch (e: Exception) {
+                    // 删不掉就留着
+                }
+                throw IOException("上传后核对失败:云端文件和本地不一致")
             }
             if (prune) {
-                val all = dest.list(prefix, ext)
-                for (i in KEEP until all.size) dest.delete(all[i].second)
+                try {
+                    val all = client.list(folder).filter { it.name.startsWith(prefix) && it.name.endsWith(ext) }.sortedByDescending { it.name }
+                    for (i in KEEP until all.size) client.delete(folder, all[i].name)
+                } catch (e: Exception) {
+                    // 清理旧备份失败不算备份失败
+                }
             }
-            DestResult(which, true, "已备份并校验通过:$fileName")
+            DestResult(BackupConfig.CLOUD, true, "已上传并校验通过:$fileName")
         } catch (e: Exception) {
-            DestResult(which, false, "失败:" + why(e))
+            DestResult(BackupConfig.CLOUD, false, "失败:" + why(e))
+        } finally {
+            tmp.delete()
         }
     }
 
     // ------------------------------------------------------------ 备份
 
-    /** 立刻备份到所有已选择的位置。要后台线程调用。 */
-    fun backupNow(ctx: Context, includeDicts: Boolean): List<DestResult> {
+    /** 备份到坚果云。要后台线程调用。 */
+    fun backupToCloud(ctx: Context, includeDicts: Boolean): DestResult {
         val app = ctx.applicationContext
         val master = BackupVault.master(app)
         val salt = BackupVault.salt(app)
-        if (master == null || salt == null) return listOf(DestResult("", false, "还没有设置备份密码(或这台手机的安全存储里取不出密钥,请重新设置密码)"))
-        if (!running.compareAndSet(false, true)) return listOf(DestResult("", false, "另一项备份 / 还原正在进行,请稍后再试"))
+        if (master == null || salt == null) return DestResult("", false, "还没有设置备份密码(或这台手机的安全存储里取不出密钥,请重新设置密码)")
+        if (!BackupConfig.davConfigured(app)) return DestResult(BackupConfig.CLOUD, false, "还没有设置坚果云账号")
+        if (!running.compareAndSet(false, true)) return DestResult("", false, "另一项备份 / 还原正在进行,请稍后再试")
         try {
             val iter = BackupVault.iterations(app)
-            val name = PREFIX + stamp() + EXT
-            val results = ArrayList<DestResult>()
-            for (which in listOf(BackupConfig.LOCAL, BackupConfig.CLOUD)) {
-                if (BackupConfig.treeUri(app, which) == null) continue
-                val r = store(
-                    app, which, name, master, PREFIX, EXT, true,
-                    { o -> writeBackup(app, master, salt, iter, includeDicts, o) },
-                    { m -> if (!m.containsKey("meta.txt")) throw IOException("读回校验失败:缺少内容") },
-                )
-                BackupConfig.setResult(app, which, r.ok, r.msg)
-                results.add(r)
-            }
-            if (results.isEmpty()) results.add(DestResult("", false, "还没有选择备份位置"))
-            return results
+            val r = cloudStore(
+                app, PREFIX + stamp() + EXT, master, PREFIX, EXT, true,
+                { o -> writeBackup(app, master, salt, iter, includeDicts, o) },
+                { m -> if (!m.containsKey("meta.txt")) throw IOException("读回校验失败:缺少内容") },
+            )
+            BackupConfig.setResult(app, BackupConfig.CLOUD, r.ok, r.msg)
+            return r
         } finally {
             running.set(false)
         }
@@ -342,7 +352,7 @@ object BackupManager {
 
     /**
      * 键盘收起时调用。按"从便宜到贵"的顺序判断,任何一步不满足就立刻返回:
-     * 开着自动备份、设过密码 → 到了下次时间 → 选了位置 → 没有别的备份在跑 → 不在省电模式 / 电量够 →
+     * 开着自动备份、设过密码 → 到了下次时间 → 设了坚果云账号 → 没有别的备份在跑 → 不在省电模式 / 电量够 →
      * 数据有变化(只看文件修改时间,不读内容)。全部满足才另开低优先级线程备份一次(不含词库包)。
      * 成功后 24 小时内不再备份;失败 6 小时后再试;没有变化 6 小时后再看一眼。没有定时器,只在键盘收起时检查。
      */
@@ -352,19 +362,17 @@ object BackupManager {
             if (!BackupConfig.auto(app) || !BackupVault.isSet(app)) return
             val now = System.currentTimeMillis()
             if (now < BackupConfig.nextAutoAt(app)) return
-            val dests = listOf(BackupConfig.LOCAL, BackupConfig.CLOUD).filter { BackupConfig.treeUri(app, it) != null }
-            if (dests.isEmpty()) return
+            if (!BackupConfig.davConfigured(app)) return
             if (running.get()) return
             if (lowPower(app)) return
             val sig = BackupScope.signature(filesDir(app), prefsDir(app))
-            if (sig == 0L || dests.none { BackupConfig.lastOk(app, it) < sig }) {
+            if (sig == 0L || BackupConfig.lastOk(app, BackupConfig.CLOUD) >= sig) {
                 BackupConfig.setNextAutoAt(app, now + RECHECK_MS)
                 return
             }
             Thread {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
-                val rs = backupNow(app, false)
-                val ok = rs.isNotEmpty() && rs.all { it.ok }
+                val ok = backupToCloud(app, false).ok
                 BackupConfig.setNextAutoAt(app, System.currentTimeMillis() + if (ok) RETRY_OK_MS else RETRY_FAIL_MS)
             }.start()
         } catch (e: Exception) {
@@ -372,7 +380,7 @@ object BackupManager {
         }
     }
 
-    /** 导出到用户用系统选择器新建的单个文件(不依赖备份位置设置)。要后台线程调用。 */
+    /** 备份到本地:存成用户用系统选择器新建的单个加密文件(手机上任意位置)。要后台线程调用。 */
     fun exportToUri(ctx: Context, out: Uri, includeDicts: Boolean): DestResult {
         val app = ctx.applicationContext
         val master = BackupVault.master(app)
@@ -394,9 +402,10 @@ object BackupManager {
                 }
                 throw e
             }
-            return DestResult("", true, "已导出并校验通过")
+            BackupConfig.setResult(app, BackupConfig.LOCAL, true, "已备份到本地")
+            return DestResult(BackupConfig.LOCAL, true, "已备份并校验通过")
         } catch (e: Exception) {
-            return DestResult("", false, "失败:" + why(e))
+            return DestResult(BackupConfig.LOCAL, false, "失败:" + why(e))
         } finally {
             running.set(false)
         }
@@ -433,8 +442,9 @@ object BackupManager {
      * (密码错、文件被改、下载不完整,都会在这一步失败,现有数据原封不动)。
      * 条目路径要通过 BackupScope.resolve 的安全检查(不能跑出应用数据目录)。
      * 动之前把会被替换的文件和设置复制一份到 files/user_before_restore/。成功后要重启输入法进程。
+     * password 为 null:用本机保存的备份密钥自动解;解不开(换手机、重装、改过密码)返回 needPassword,由调用方让用户输入密码后再调一次。
      */
-    fun restore(ctx: Context, src: Uri, password: CharArray): RestoreResult {
+    fun restore(ctx: Context, open: () -> InputStream?, password: CharArray?): RestoreResult {
         val app = ctx.applicationContext
         if (!running.compareAndSet(false, true)) return RestoreResult(false, "另一项备份 / 还原正在进行,请稍后再试")
         val fd = filesDir(app)
@@ -445,9 +455,15 @@ object BackupManager {
             staging.deleteRecursively()
             staging.mkdirs()
             val got = HashMap<String, File>()
-            val raw = app.contentResolver.openInputStream(src) ?: return RestoreResult(false, "无法打开这个文件")
+            val raw = open() ?: return RestoreResult(false, "无法打开这个文件")
             raw.use {
-                val dec = BackupCrypto.decrypt(BufferedInputStream(raw, 1 shl 16), password)
+                val buffered = BufferedInputStream(raw, 1 shl 16)
+                val dec = if (password != null) {
+                    BackupCrypto.decrypt(buffered, password)
+                } else {
+                    val m = BackupVault.master(app) ?: return RestoreResult(false, "", true)
+                    BackupCrypto.decryptWithMaster(buffered, m)
+                }
                 val z = ZipInputStream(dec)
                 var i = 0
                 while (true) {
@@ -525,6 +541,7 @@ object BackupManager {
             success = true
             return RestoreResult(true, "已还原:$fileCount 个数据文件、$prefCount 组设置$dictNote。\n还原前的数据留了一份在应用内的 user_before_restore 文件夹。")
         } catch (e: BackupCrypto.BadPasswordException) {
+            if (password == null) return RestoreResult(false, "", true)
             return RestoreResult(false, "密码不对,或者备份文件已损坏。现有数据没有改动。")
         } catch (e: Exception) {
             return RestoreResult(false, "还原失败:" + why(e))
@@ -536,62 +553,125 @@ object BackupManager {
         }
     }
 
-    // ------------------------------------------------------------ 签名密钥
+    // ------------------------------------------------------------ 从坚果云下载
 
-    /** 把签名密钥文件(.jks / .keystore 等)加密备份到所有已选择的位置。note:别名、密码等备注,会和密钥一起加密。 */
-    fun backupSigningKey(ctx: Context, src: Uri, fileName: String, note: String): List<DestResult> {
+    /**
+     * 把坚果云上最新的一份(名字带时间,按名字排最大的)下载到本机临时文件,返回文件和云端文件名。
+     * 临时文件由调用方用完后 clearTemp 删掉。要后台线程调用。云端没有备份时抛异常。
+     */
+    fun downloadLatest(ctx: Context, prefix: String, ext: String): Pair<String, File> {
         val app = ctx.applicationContext
-        val master = BackupVault.master(app)
-        val salt = BackupVault.salt(app)
-        if (master == null || salt == null) return listOf(DestResult("", false, "还没有设置备份密码"))
-        val data: ByteArray = try {
-            (app.contentResolver.openInputStream(src) ?: throw IOException("无法打开这个文件")).use { it.readBytes() }
-        } catch (e: Exception) {
-            return listOf(DestResult("", false, "读取密钥文件失败:" + why(e)))
-        }
-        if (data.isEmpty()) return listOf(DestResult("", false, "这个文件是空的"))
-        if (data.size > MAX_KEY_BYTES) return listOf(DestResult("", false, "文件太大,不像是签名密钥文件"))
-        if (!running.compareAndSet(false, true)) return listOf(DestResult("", false, "另一项备份 / 还原正在进行,请稍后再试"))
+        if (!running.compareAndSet(false, true)) throw IOException("另一项备份 / 还原正在进行,请稍后再试")
         try {
-            val iter = BackupVault.iterations(app)
-            val sha = MessageDigest.getInstance("SHA-256").digest(data)
-            val name = KEY_PREFIX + stamp() + KEY_EXT
-            val results = ArrayList<DestResult>()
-            for (which in listOf(BackupConfig.LOCAL, BackupConfig.CLOUD)) {
-                if (BackupConfig.treeUri(app, which) == null) continue
-                results.add(
-                    store(
-                        app, which, name, master, KEY_PREFIX, KEY_EXT, false,
-                        { o ->
-                            val enc = BackupCrypto.encrypt(o, master, salt, iter)
-                            ZipOutputStream(enc).use { z ->
-                                putText(z, "meta.txt", "myime-signing 1\ntime=${System.currentTimeMillis()}\nname=$fileName\n")
-                                putBytes(z, "signing/key", data)
-                                putText(z, "signing/note.txt", note)
-                            }
-                        },
-                        { m ->
-                            if (m["signing/key"]?.contentEquals(sha) != true) throw IOException("读回校验失败:内容和原文件不一致")
-                        },
-                    ),
-                )
+            val client = dav(app)
+            val folder = davFolder(app)
+            val latest = client.list(folder).filter { !it.dir && it.name.startsWith(prefix) && it.name.endsWith(ext) }.maxByOrNull { it.name }
+                ?: throw IOException("坚果云的「${BackupConfig.davFolder(app)}」文件夹里还没有找到备份")
+            val tmp = tmpFile(app, "cloud_download.tmp")
+            tmp.delete()
+            try {
+                client.get(folder, latest.name, tmp)
+                if (tmp.length() != latest.size) throw IOException("下载不完整,请重试")
+            } catch (e: Exception) {
+                tmp.delete()
+                throw e
             }
-            if (results.isEmpty()) results.add(DestResult("", false, "还没有选择备份位置"))
-            return results
+            return Pair(latest.name, tmp)
         } finally {
             running.set(false)
         }
     }
 
-    /** 解开签名密钥备份(.mykey),密钥内容只放在内存里返回,由调用方让用户选地方保存。失败抛异常。 */
-    fun readSigningKey(ctx: Context, src: Uri, password: CharArray): SigningKey {
+    // ------------------------------------------------------------ 签名密钥
+
+    /** 读签名密钥文件(.jks / .keystore 等)的内容,做大小检查。失败抛异常,消息可直接给用户看。 */
+    fun readKeyFile(ctx: Context, src: Uri): ByteArray {
+        val data = (ctx.applicationContext.contentResolver.openInputStream(src) ?: throw IOException("无法打开这个文件")).use { it.readBytes() }
+        if (data.isEmpty()) throw IOException("这个文件是空的")
+        if (data.size > MAX_KEY_BYTES) throw IOException("文件太大,不像是签名密钥文件")
+        return data
+    }
+
+    private fun writeKeyPack(app: Context, master: ByteArray, salt: ByteArray, data: ByteArray, fileName: String, note: String, o: OutputStream) {
+        val enc = BackupCrypto.encrypt(o, master, salt, BackupVault.iterations(app))
+        ZipOutputStream(enc).use { z ->
+            putText(z, "meta.txt", "myime-signing 1\ntime=${System.currentTimeMillis()}\nname=$fileName\n")
+            putBytes(z, "signing/key", data)
+            putText(z, "signing/note.txt", note)
+        }
+    }
+
+    private fun keyCheck(sha: ByteArray): (Map<String, ByteArray>) -> Unit = { m ->
+        if (m["signing/key"]?.contentEquals(sha) != true) throw IOException("读回校验失败:内容和原文件不一致")
+    }
+
+    /** 把签名密钥加密备份到坚果云。note:别名、密码等备注,会和密钥一起加密。要后台线程调用。 */
+    fun backupSigningKeyToCloud(ctx: Context, data: ByteArray, fileName: String, note: String): DestResult {
         val app = ctx.applicationContext
-        val raw = app.contentResolver.openInputStream(src) ?: throw IOException("无法打开这个文件")
+        val master = BackupVault.master(app)
+        val salt = BackupVault.salt(app)
+        if (master == null || salt == null) return DestResult("", false, "还没有设置备份密码")
+        if (!BackupConfig.davConfigured(app)) return DestResult(BackupConfig.CLOUD, false, "还没有设置坚果云账号")
+        if (!running.compareAndSet(false, true)) return DestResult("", false, "另一项备份 / 还原正在进行,请稍后再试")
+        try {
+            val sha = MessageDigest.getInstance("SHA-256").digest(data)
+            return cloudStore(
+                app, KEY_PREFIX + stamp() + KEY_EXT, master, KEY_PREFIX, KEY_EXT, false,
+                { o -> writeKeyPack(app, master, salt, data, fileName, note, o) },
+                keyCheck(sha),
+            )
+        } finally {
+            running.set(false)
+        }
+    }
+
+    /** 把签名密钥加密备份到用户用系统选择器新建的本地文件。要后台线程调用。 */
+    fun backupSigningKeyToUri(ctx: Context, data: ByteArray, fileName: String, note: String, out: Uri): DestResult {
+        val app = ctx.applicationContext
+        val master = BackupVault.master(app)
+        val salt = BackupVault.salt(app)
+        if (master == null || salt == null) return DestResult("", false, "还没有设置备份密码")
+        if (!running.compareAndSet(false, true)) return DestResult("", false, "另一项备份 / 还原正在进行,请稍后再试")
+        val resolver = app.contentResolver
+        try {
+            try {
+                val sha = MessageDigest.getInstance("SHA-256").digest(data)
+                val os = resolver.openOutputStream(out, "w") ?: throw IOException("无法写入这个文件")
+                BufferedOutputStream(os, 1 shl 16).use { o -> writeKeyPack(app, master, salt, data, fileName, note, o) }
+                keyCheck(sha)(verify({ resolver.openInputStream(out) ?: throw IOException("无法读回这个文件") }, master))
+            } catch (e: Exception) {
+                try {
+                    DocumentsContract.deleteDocument(resolver, out)   // 残缺的文件不留
+                } catch (e2: Exception) {
+                    // 删不掉就留着
+                }
+                throw e
+            }
+            return DestResult(BackupConfig.LOCAL, true, "已备份并校验通过")
+        } catch (e: Exception) {
+            return DestResult(BackupConfig.LOCAL, false, "失败:" + why(e))
+        } finally {
+            running.set(false)
+        }
+    }
+
+    /**
+     * 解开签名密钥备份(.mykey),密钥内容只放在内存里返回,由调用方让用户选地方保存。失败抛异常。
+     * password 为 null:用本机保存的备份密钥自动解;解不开抛 BadPasswordException,由调用方让用户输入密码再来一次。
+     */
+    fun readSigningKey(ctx: Context, open: () -> InputStream?, password: CharArray?): SigningKey {
+        val app = ctx.applicationContext
+        val raw = open() ?: throw IOException("无法打开这个文件")
         var key: ByteArray? = null
         var note = ""
         var name = "myime.jks"
         raw.use {
-            val dec = BackupCrypto.decrypt(BufferedInputStream(raw), password)
+            val buffered = BufferedInputStream(raw)
+            val dec = if (password != null) {
+                BackupCrypto.decrypt(buffered, password)
+            } else {
+                BackupCrypto.decryptWithMaster(buffered, BackupVault.master(app) ?: throw BackupCrypto.BadPasswordException())
+            }
             val z = ZipInputStream(dec)
             while (true) {
                 val e = z.nextEntry ?: break
