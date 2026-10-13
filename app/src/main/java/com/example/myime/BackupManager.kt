@@ -3,6 +3,8 @@ package com.example.myime
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.PowerManager
@@ -48,14 +50,14 @@ import java.util.zip.ZipOutputStream
 object BackupManager {
     const val PREFIX = "myime-backup-"
     const val EXT = ".mybk"
-    const val KEY_PREFIX = "myime-signing-"
-    const val KEY_EXT = ".mykey"
     private const val KEEP = 7                   // 坚果云上只留最近 7 份数据备份(签名密钥备份很小,从不自动删)
     private const val MAX_KEY_BYTES = 1_000_000
+    private const val KEY_DIR = "signing"           // 签名密钥放在应用数据目录里,随数据一起备份
     private const val RETRY_OK_MS = 24L * 3600 * 1000
     private const val RETRY_FAIL_MS = 6L * 3600 * 1000
 
     private const val RECHECK_MS = 6L * 3600 * 1000     // 没有变化时,6 小时后再看一眼
+    private const val RECHECK_NET_MS = 3600L * 1000       // 当前不是 Wi-Fi,1 小时后再看
     private const val LOW_BATTERY_PERCENT = 20
 
     /**
@@ -86,10 +88,7 @@ object BackupManager {
 
     class DestResult(val which: String, val ok: Boolean, val msg: String)
 
-    /** needPassword:本机保存的密钥解不开这个文件,需要让用户输入当初的备份密码再来一次。 */
-    class RestoreResult(val ok: Boolean, val msg: String, val needPassword: Boolean = false)
-
-    class SigningKey(val fileName: String, val data: ByteArray, val note: String)
+    class RestoreResult(val ok: Boolean, val msg: String)
 
     fun label(which: String): String = if (which == BackupConfig.LOCAL) "本地" else "坚果云"
 
@@ -289,7 +288,8 @@ object BackupManager {
             check(verify({ FileInputStream(tmp) }, master))
             client.ensureFolder(folder)
             client.put(folder, fileName, tmp)
-            val remote = client.list(folder).firstOrNull { it.name == fileName }
+            val entries = client.list(folder)   // 一次列目录同时用来核对大小和清理旧备份
+            val remote = entries.firstOrNull { it.name == fileName }
             if (remote == null || remote.size != tmp.length()) {
                 try {
                     client.delete(folder, fileName)   // 云端文件大小对不上,不留残缺文件
@@ -300,7 +300,7 @@ object BackupManager {
             }
             if (prune) {
                 try {
-                    val all = client.list(folder).filter { it.name.startsWith(prefix) && it.name.endsWith(ext) }.sortedByDescending { it.name }
+                    val all = entries.filter { it.name.startsWith(prefix) && it.name.endsWith(ext) }.sortedByDescending { it.name }
                     for (i in KEEP until all.size) client.delete(folder, all[i].name)
                 } catch (e: Exception) {
                     // 清理旧备份失败不算备份失败
@@ -319,10 +319,10 @@ object BackupManager {
     /** 备份到坚果云。要后台线程调用。 */
     fun backupToCloud(ctx: Context, includeDicts: Boolean): DestResult {
         val app = ctx.applicationContext
-        val master = BackupVault.master(app)
-        val salt = BackupVault.salt(app)
-        if (master == null || salt == null) return DestResult("", false, "还没有设置备份密码(或这台手机的安全存储里取不出密钥,请重新设置密码)")
         if (!BackupConfig.davConfigured(app)) return DestResult(BackupConfig.CLOUD, false, "还没有设置坚果云账号")
+        val master = BackupVault.ensure(app)?.let { BackupVault.master(app) }
+        val salt = BackupVault.salt(app)
+        if (master == null || salt == null) return DestResult("", false, "这台手机的安全存储不可用,无法加密备份")
         if (!running.compareAndSet(false, true)) return DestResult("", false, "另一项备份 / 还原正在进行,请稍后再试")
         try {
             val iter = BackupVault.iterations(app)
@@ -336,6 +336,15 @@ object BackupManager {
         } finally {
             running.set(false)
         }
+    }
+
+    /** 当前有网络、且是不计流量的(Wi-Fi 等)。 */
+    private fun onUnmeteredNetwork(ctx: Context): Boolean {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+        val net = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(net) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
     }
 
     /** 电池低(且没在充电)或系统开着省电模式:自动备份先不做,等条件好了再说。 */
@@ -359,15 +368,19 @@ object BackupManager {
     fun maybeAuto(ctx: Context) {
         val app = ctx.applicationContext
         try {
-            if (!BackupConfig.auto(app) || !BackupVault.isSet(app)) return
+            if (!BackupConfig.auto(app)) return
             val now = System.currentTimeMillis()
             if (now < BackupConfig.nextAutoAt(app)) return
-            if (!BackupConfig.davConfigured(app)) return
+            if (!BackupConfig.hasDav(app)) return
             if (running.get()) return
             if (lowPower(app)) return
             val sig = BackupScope.signature(filesDir(app), prefsDir(app))
             if (sig == 0L || BackupConfig.lastOk(app, BackupConfig.CLOUD) >= sig) {
                 BackupConfig.setNextAutoAt(app, now + RECHECK_MS)
+                return
+            }
+            if (!onUnmeteredNetwork(app)) {   // 只在 Wi-Fi 等不计流量的网络上自动传,不为备份唤醒移动数据
+                BackupConfig.setNextAutoAt(app, now + RECHECK_NET_MS)
                 return
             }
             Thread {
@@ -383,9 +396,9 @@ object BackupManager {
     /** 备份到本地:存成用户用系统选择器新建的单个加密文件(手机上任意位置)。要后台线程调用。 */
     fun exportToUri(ctx: Context, out: Uri, includeDicts: Boolean): DestResult {
         val app = ctx.applicationContext
-        val master = BackupVault.master(app)
+        val master = BackupVault.ensure(app)?.let { BackupVault.master(app) }
         val salt = BackupVault.salt(app)
-        if (master == null || salt == null) return DestResult("", false, "还没有设置备份密码")
+        if (master == null || salt == null) return DestResult("", false, "这台手机的安全存储不可用,无法加密备份")
         if (!running.compareAndSet(false, true)) return DestResult("", false, "另一项备份 / 还原正在进行,请稍后再试")
         val resolver = app.contentResolver
         try {
@@ -442,9 +455,9 @@ object BackupManager {
      * (密码错、文件被改、下载不完整,都会在这一步失败,现有数据原封不动)。
      * 条目路径要通过 BackupScope.resolve 的安全检查(不能跑出应用数据目录)。
      * 动之前把会被替换的文件和设置复制一份到 files/user_before_restore/。成功后要重启输入法进程。
-     * password 为 null:用本机保存的备份密钥自动解;解不开(换手机、重装、改过密码)返回 needPassword,由调用方让用户输入密码后再调一次。
+     * 不需要输密码:备份用的是内置密码(BackupVault.defaultPassword),任何手机上都能直接解开。
      */
-    fun restore(ctx: Context, open: () -> InputStream?, password: CharArray?): RestoreResult {
+    fun restore(ctx: Context, open: () -> InputStream?): RestoreResult {
         val app = ctx.applicationContext
         if (!running.compareAndSet(false, true)) return RestoreResult(false, "另一项备份 / 还原正在进行,请稍后再试")
         val fd = filesDir(app)
@@ -458,12 +471,7 @@ object BackupManager {
             val raw = open() ?: return RestoreResult(false, "无法打开这个文件")
             raw.use {
                 val buffered = BufferedInputStream(raw, 1 shl 16)
-                val dec = if (password != null) {
-                    BackupCrypto.decrypt(buffered, password)
-                } else {
-                    val m = BackupVault.master(app) ?: return RestoreResult(false, "", true)
-                    BackupCrypto.decryptWithMaster(buffered, m)
-                }
+                val dec = BackupCrypto.decrypt(buffered, BackupVault.defaultPassword())
                 val z = ZipInputStream(dec)
                 var i = 0
                 while (true) {
@@ -541,8 +549,7 @@ object BackupManager {
             success = true
             return RestoreResult(true, "已还原:$fileCount 个数据文件、$prefCount 组设置$dictNote。\n还原前的数据留了一份在应用内的 user_before_restore 文件夹。")
         } catch (e: BackupCrypto.BadPasswordException) {
-            if (password == null) return RestoreResult(false, "", true)
-            return RestoreResult(false, "密码不对,或者备份文件已损坏。现有数据没有改动。")
+            return RestoreResult(false, "这个文件解不开:可能是旧版用自己的密码做的备份,或者文件已损坏。现有数据没有改动。")
         } catch (e: Exception) {
             return RestoreResult(false, "还原失败:" + why(e))
         } finally {
@@ -582,117 +589,32 @@ object BackupManager {
         }
     }
 
-    // ------------------------------------------------------------ 签名密钥
+    // ------------------------------------------------------------ 签名密钥(当作普通数据,放在 files/signing/ 里随备份走)
 
-    /** 读签名密钥文件(.jks / .keystore 等)的内容,做大小检查。失败抛异常,消息可直接给用户看。 */
-    fun readKeyFile(ctx: Context, src: Uri): ByteArray {
-        val data = (ctx.applicationContext.contentResolver.openInputStream(src) ?: throw IOException("无法打开这个文件")).use { it.readBytes() }
+    /** 当前保存的签名密钥文件,没有返回 null。 */
+    fun keyFile(ctx: Context): File? =
+        File(filesDir(ctx), KEY_DIR).listFiles()?.filter { it.isFile && !BackupScope.isTemp(it.name) }?.maxByOrNull { it.lastModified() }
+
+    /** 把用户选的签名密钥文件(.jks 等)复制进应用数据目录,以后每次备份都会带上它。失败抛异常,消息可直接给用户看。 */
+    fun saveKeyFile(ctx: Context, src: Uri, fileName: String) {
+        val app = ctx.applicationContext
+        val data = (app.contentResolver.openInputStream(src) ?: throw IOException("无法打开这个文件")).use { it.readBytes() }
         if (data.isEmpty()) throw IOException("这个文件是空的")
         if (data.size > MAX_KEY_BYTES) throw IOException("文件太大,不像是签名密钥文件")
-        return data
+        val dir = File(filesDir(app), KEY_DIR)
+        dir.mkdirs()
+        val safe = fileName.replace('/', '_').replace('\\', '_').ifBlank { "myime.jks" }
+        val target = File(dir, safe)
+        val tmp = File(dir, "$safe.tmp")
+        tmp.writeBytes(data)
+        Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        dir.listFiles()?.forEach { if (it.isFile && it.name != safe) it.delete() }   // 只留最新选的这一个
     }
 
-    private fun writeKeyPack(app: Context, master: ByteArray, salt: ByteArray, data: ByteArray, fileName: String, note: String, o: OutputStream) {
-        val enc = BackupCrypto.encrypt(o, master, salt, BackupVault.iterations(app))
-        ZipOutputStream(enc).use { z ->
-            putText(z, "meta.txt", "myime-signing 1\ntime=${System.currentTimeMillis()}\nname=$fileName\n")
-            putBytes(z, "signing/key", data)
-            putText(z, "signing/note.txt", note)
-        }
-    }
-
-    private fun keyCheck(sha: ByteArray): (Map<String, ByteArray>) -> Unit = { m ->
-        if (m["signing/key"]?.contentEquals(sha) != true) throw IOException("读回校验失败:内容和原文件不一致")
-    }
-
-    /** 把签名密钥加密备份到坚果云。note:别名、密码等备注,会和密钥一起加密。要后台线程调用。 */
-    fun backupSigningKeyToCloud(ctx: Context, data: ByteArray, fileName: String, note: String): DestResult {
+    /** 把保存的签名密钥导出到用户用系统选择器新建的文件(还原数据后,用它取回 .jks)。 */
+    fun exportKeyFile(ctx: Context, out: Uri) {
         val app = ctx.applicationContext
-        val master = BackupVault.master(app)
-        val salt = BackupVault.salt(app)
-        if (master == null || salt == null) return DestResult("", false, "还没有设置备份密码")
-        if (!BackupConfig.davConfigured(app)) return DestResult(BackupConfig.CLOUD, false, "还没有设置坚果云账号")
-        if (!running.compareAndSet(false, true)) return DestResult("", false, "另一项备份 / 还原正在进行,请稍后再试")
-        try {
-            val sha = MessageDigest.getInstance("SHA-256").digest(data)
-            return cloudStore(
-                app, KEY_PREFIX + stamp() + KEY_EXT, master, KEY_PREFIX, KEY_EXT, false,
-                { o -> writeKeyPack(app, master, salt, data, fileName, note, o) },
-                keyCheck(sha),
-            )
-        } finally {
-            running.set(false)
-        }
-    }
-
-    /** 把签名密钥加密备份到用户用系统选择器新建的本地文件。要后台线程调用。 */
-    fun backupSigningKeyToUri(ctx: Context, data: ByteArray, fileName: String, note: String, out: Uri): DestResult {
-        val app = ctx.applicationContext
-        val master = BackupVault.master(app)
-        val salt = BackupVault.salt(app)
-        if (master == null || salt == null) return DestResult("", false, "还没有设置备份密码")
-        if (!running.compareAndSet(false, true)) return DestResult("", false, "另一项备份 / 还原正在进行,请稍后再试")
-        val resolver = app.contentResolver
-        try {
-            try {
-                val sha = MessageDigest.getInstance("SHA-256").digest(data)
-                val os = resolver.openOutputStream(out, "w") ?: throw IOException("无法写入这个文件")
-                BufferedOutputStream(os, 1 shl 16).use { o -> writeKeyPack(app, master, salt, data, fileName, note, o) }
-                keyCheck(sha)(verify({ resolver.openInputStream(out) ?: throw IOException("无法读回这个文件") }, master))
-            } catch (e: Exception) {
-                try {
-                    DocumentsContract.deleteDocument(resolver, out)   // 残缺的文件不留
-                } catch (e2: Exception) {
-                    // 删不掉就留着
-                }
-                throw e
-            }
-            return DestResult(BackupConfig.LOCAL, true, "已备份并校验通过")
-        } catch (e: Exception) {
-            return DestResult(BackupConfig.LOCAL, false, "失败:" + why(e))
-        } finally {
-            running.set(false)
-        }
-    }
-
-    /**
-     * 解开签名密钥备份(.mykey),密钥内容只放在内存里返回,由调用方让用户选地方保存。失败抛异常。
-     * password 为 null:用本机保存的备份密钥自动解;解不开抛 BadPasswordException,由调用方让用户输入密码再来一次。
-     */
-    fun readSigningKey(ctx: Context, open: () -> InputStream?, password: CharArray?): SigningKey {
-        val app = ctx.applicationContext
-        val raw = open() ?: throw IOException("无法打开这个文件")
-        var key: ByteArray? = null
-        var note = ""
-        var name = "myime.jks"
-        raw.use {
-            val buffered = BufferedInputStream(raw)
-            val dec = if (password != null) {
-                BackupCrypto.decrypt(buffered, password)
-            } else {
-                BackupCrypto.decryptWithMaster(buffered, BackupVault.master(app) ?: throw BackupCrypto.BadPasswordException())
-            }
-            val z = ZipInputStream(dec)
-            while (true) {
-                val e = z.nextEntry ?: break
-                val bytes = z.readBytes()
-                if (bytes.size > 2 * MAX_KEY_BYTES) throw IOException("备份文件内容不正常")
-                when (e.name) {
-                    "signing/key" -> key = bytes
-                    "signing/note.txt" -> note = String(bytes, Charsets.UTF_8)
-                    "meta.txt" -> {
-                        for (line in String(bytes, Charsets.UTF_8).lines()) {
-                            if (line.startsWith("name=") && line.length > 5) name = line.substring(5)
-                        }
-                    }
-                }
-            }
-            val buf = ByteArray(8192)
-            while (dec.read(buf) >= 0) {
-                // 读到末尾,最后一块也要通过认证
-            }
-        }
-        val k = key ?: throw IOException("这个备份里没有签名密钥")
-        return SigningKey(name.replace('/', '_').replace('\\', '_'), k, note)
+        val f = keyFile(app) ?: throw IOException("还没有保存过签名密钥")
+        (app.contentResolver.openOutputStream(out, "w") ?: throw IOException("无法写入这个文件")).use { o -> f.inputStream().use { it.copyTo(o) } }
     }
 }
