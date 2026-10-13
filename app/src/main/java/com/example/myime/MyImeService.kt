@@ -82,6 +82,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private val trash = ArrayList<String>()
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClipboardNow() }
 
+    // 总开关「清空系统剪贴板」:开(默认)= 收进历史后清空系统剪贴板,别的 app 读不到;关 = 只收进历史,系统剪贴板照常可用。
+    // 存在 clipcfg 设置里(会随备份还原)。进程里只有这一份,切换时同步更新。
+    private var clipWipe = true
+    private var lastSysClip: String? = null   // 开关关着时:上次从系统剪贴板收进来的文字,键盘再次弹出时同样的内容不重复顶到最前
+
     private var textMode = Mode.PINYIN      // 最近使用的文字模式(拼音/笔画/英文)
     private var chineseMode = Mode.PINYIN   // 最近使用的中文方式(拼音/笔画)
     private var mode = Mode.PINYIN          // 当前显示的页面(也可能是符号/数字/编辑)
@@ -142,6 +147,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             // 注册失败只是没有剪贴板历史,不影响输入
         }
         loadedStamp = DictStore.stamp(applicationContext)
+        clipWipe = getSharedPreferences("clipcfg", MODE_PRIVATE).getBoolean("wipe", true)
         loadClips()
         if (diag) android.util.Log.d("MyIme", "service created (进程新启动或服务重建;之后若还要重新加载词库就是冷启动)")
     }
@@ -380,7 +386,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         })
         val clip = ClipboardPanelView(this, object : ClipboardPanelView.Listener {
             override fun onPaste(text: String) {
-                currentInputConnection?.commitText(text, 1)
+                if (!pasteFromHistory(text)) return   // 粘贴失败:留在剪贴板页,已弹提示
                 // 点过的这一条挪到剪贴板最前面(已经在最前面就什么都不动)
                 if (clips.firstOrNull() != text && clips.remove(text)) {
                     clips.add(0, text)
@@ -400,7 +406,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
 
             override fun onPasteTrash(text: String) {
-                currentInputConnection?.commitText(text, 1)
+                if (!pasteFromHistory(text)) return
                 leavePage()
             }
 
@@ -408,6 +414,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 trash.removeAll(texts.toSet())
                 markClips(clipsChanged = false, trashChanged = true, urgent = true)
                 clipPanel?.setTrash(trash.toList())
+            }
+
+            override fun onToggleWipe(on: Boolean) {
+                clipWipe = on
+                lastSysClip = null
+                getSharedPreferences("clipcfg", MODE_PRIVATE).edit().putBoolean("wipe", on).apply()
             }
 
             override fun onBack() {
@@ -511,6 +523,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         keyboardView = kb
         emojiPanel = emoji
         symbolPanel = symbol
+        clip.setWipe(clipWipe)
         clipPanel = clip
         settingsPanel = settings
         choicePanel = choice
@@ -866,7 +879,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 s0 != KbSize.scale || h0 != KbSize.heightDp || w0 != KbSize.widthFrac
         }
         if (diag) android.util.Log.d("MyIme", "show restarting=$restarting pinyin=${pinyinEngine != null} stroke=${strokeEngine != null}")
-        if (!restarting) captureClipboardNow()   // 切到别的输入法期间复制的内容,回来时补进历史
+        if (!restarting) captureClipboardNow(fromListener = false)   // 切到别的输入法期间复制的内容,回来时补进历史
 
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastStampCheck > 5000) {   // 连续切换输入框时不必每次都去查文件
@@ -1313,9 +1326,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val meta = if (selecting) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0
         when (v) {
             "tab" -> docStart(ic)   // 原来的 Tab 键:现在是「页首」,跳到整段文字的开头(选择状态下 = 一路选到开头)
-            "copy" -> ic.performContextMenuAction(android.R.id.copy)
-            "paste" -> clips.firstOrNull()?.let { ic.commitText(it, 1) }   // 系统剪贴板是空的:粘贴输入法历史里最新的一条
-            "cut" -> ic.performContextMenuAction(android.R.id.cut)
+            "copy" -> copySelection(ic, cut = false)
+            "paste" -> clips.firstOrNull()?.let { pasteFromHistory(it) }   // 系统剪贴板是空的:粘贴输入法历史里最新的一条
+            "cut" -> copySelection(ic, cut = true)
             "all" -> ic.performContextMenuAction(android.R.id.selectAll)
             "up" -> if (!(selecting && extendSelection(ic, "up"))) sendKey(KeyEvent.KEYCODE_DPAD_UP, meta)
             "down" -> if (!(selecting && extendSelection(ic, "down"))) sendKey(KeyEvent.KEYCODE_DPAD_DOWN, meta)
@@ -1335,6 +1348,45 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
             "back" -> leavePage()
         }
+    }
+
+    /**
+     * 编辑页的复制 / 剪切。
+     *  - 开关开:用 getSelectedText 读出选中的文字,直接存进输入法历史,不碰系统剪贴板;剪切再删掉选区。
+     *  - 开关关,或者读不到文字(密码框、部分网页和自绘编辑器)、超过长度上限:让 app 自己复制 / 剪切,
+     *    系统剪贴板里有这段内容(开关开时随后会被收进历史并清空)。
+     */
+    private fun copySelection(ic: InputConnection, cut: Boolean) {
+        if (clipWipe && !secureField) {
+            val text = try {
+                ic.getSelectedText(0)?.toString()
+            } catch (e: Exception) {
+                null
+            }
+            if (text != null && text.isNotBlank() && text.length <= MAX_CLIP_CHARS) {
+                addClip(text)
+                if (cut) sendKey(KeyEvent.KEYCODE_DEL)
+                return
+            }
+        }
+        ic.performContextMenuAction(if (cut) android.R.id.cut else android.R.id.copy)
+    }
+
+    /** 把输入法历史里的一条输出到输入框。失败(没有输入连接,或 commitText 返回失败)弹提示,返回 false。 */
+    private fun pasteFromHistory(text: String): Boolean {
+        val ok = try {
+            currentInputConnection?.commitText(text, 1) == true
+        } catch (e: Exception) {
+            false
+        }
+        if (!ok) {
+            android.widget.Toast.makeText(
+                this,
+                "这里无法用输入法粘贴。可以在剪贴板页顶部关掉「清空系统剪贴板」,再重新复制。",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+        }
+        return ok
     }
 
     private fun setSel(ic: InputConnection, anchor: Int, focus: Int) {
@@ -2319,6 +2371,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             Mode.EMOJI -> showPanel(emojiPanel, animate)
             Mode.SYMBOL -> showPanel(symbolPanel, animate)
             Mode.CLIPBOARD -> {
+                clipPanel?.setWipe(clipWipe)
                 clipPanel?.setItems(clips.toList())
                 clipPanel?.setTrash(trash.toList())
                 showPanel(clipPanel, animate)
@@ -2377,21 +2430,27 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     /**
-     * 读取系统剪贴板,收进输入法自己的历史,然后立刻把系统剪贴板清空:
+     * 读取系统剪贴板,收进输入法自己的历史;开关「清空系统剪贴板」开着(默认)时,立刻把系统剪贴板清空:
      * 别的 app(含系统自带的)再去读系统剪贴板,读到的是空白;内容只存在输入法私有目录里,
      * 只有你在剪贴板页点那一条,才会输入到当前输入框。
      * 只清空确实收进来的文字;密码管理器标记为敏感的、超长的、非文字的内容不动(我们没存,清掉就丢了)。
      */
-    private fun captureClipboardNow() {
+    private fun captureClipboardNow(fromListener: Boolean = true) {
         val text = readClipText() ?: return
-        if (clips.firstOrNull() != text) {   // 已经在最前面就什么都不用动
-            clips.remove(text)
-            clips.add(0, text)
-            while (clips.size > 500) clips.removeAt(clips.size - 1)
-            markClips(clipsChanged = true, trashChanged = false, urgent = true)
-            if (mode == Mode.CLIPBOARD) clipPanel?.setItems(clips.toList())
-        }
-        wipeSystemClip()
+        if (!clipWipe && !fromListener && text == lastSysClip) return   // 开关关着:系统剪贴板里还是上次收过的,别又顶到最前
+        lastSysClip = if (clipWipe) null else text
+        addClip(text)
+        if (clipWipe) wipeSystemClip()
+    }
+
+    /** 收进历史最前面(已经在最前面就什么都不动),超过 500 条挤掉最旧的。 */
+    private fun addClip(text: String) {
+        if (clips.firstOrNull() == text) return
+        clips.remove(text)
+        clips.add(0, text)
+        while (clips.size > 500) clips.removeAt(clips.size - 1)
+        markClips(clipsChanged = true, trashChanged = false, urgent = true)
+        if (mode == Mode.CLIPBOARD) clipPanel?.setItems(clips.toList())
     }
 
     private fun wipeSystemClip() {
