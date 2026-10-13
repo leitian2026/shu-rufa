@@ -1,7 +1,6 @@
 package com.example.myime
 
 import android.content.ClipboardManager
-import android.content.ComponentCallbacks2
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
@@ -36,7 +35,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private var lastStampCheck = 0L
     private val dictState = IntArray(3)          // 0 没加载 1 加载中 2 已试过
     private var dictGen = 0                      // 词库被换/释放一次就加一,过期的加载结果直接丢掉
-    private val releaseLater = Runnable { releaseDicts() }
 
     private var keyboardView: KeyboardView? = null
     private var candidateBar: CandidateBarView? = null
@@ -135,13 +133,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private val composing = StringBuilder()
     private var candidates: List<Candidate> = emptyList()
     private var candidatesFor = ""
-    private var queryGen = 0
+    @Volatile private var queryGen = 0   // 后台线程也要读:排队的旧查询靠它判断自己是否已过期
 
     // ------------------------------------------------------------ 生命周期
 
     override fun onCreate() {
         super.onCreate()
         KbSize.load(this)
+        setLearnCoef(DictConfig.learnCoef(applicationContext))
         try {
             (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).addPrimaryClipChangedListener(clipListener)
         } catch (e: Exception) {
@@ -258,11 +257,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             if (gen != dictGen) return@execute   // 排队期间词库已被换/释放:不用再读了
             val ctx = applicationContext
             EmojiWords.ensure(ctx)               // 候选旁边的表情对照表(很小),先于词库读好
+            val t0 = android.os.SystemClock.elapsedRealtime()
             val engine: Any? = when (kind) {
                 KIND_PINYIN -> DictLoader.loadPinyin(ctx)
                 KIND_STROKE -> DictLoader.loadStroke(ctx)
                 else -> DictLoader.loadEnglish(ctx)
             }
+            // 只在 adb logcat 里看得到(标签 MyIme):每次加载词库花了多少毫秒
+            android.util.Log.d("MyIme", "load dict kind=$kind ${android.os.SystemClock.elapsedRealtime() - t0}ms ok=${engine != null}")
             main.post {
                 if (gen == dictGen) {
                     when (kind) {
@@ -278,6 +280,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                         else -> {
                             val en = engine as EnglishEngine?
                             en?.prev = prevWord
+                            en?.pins = UserData.pins(applicationContext)
                             englishEngine = en
                         }
                     }
@@ -306,6 +309,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         super.onWindowHidden()
         // 键盘收起了:没发出的翻译、没回来的请求、挂着的网络回调都放掉,不在后台耗电耗流量
         transBar?.dismissPopup()
+        candidateBar?.dismissPinPopup()
         main.removeCallbacks(transRun)
         transGen++
         transInflight = null
@@ -314,23 +318,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         main.removeCallbacks(assocClear)
         worker.execute { UserData.saveAll() }          // 学习数据只在键盘隐藏时落盘,打字过程中不写文件
         saveClipsNow()
-        main.removeCallbacks(releaseLater)
-        main.postDelayed(releaseLater, 600_000)        // 隐藏 10 分钟还没回来,就把词库内存还给系统(太短的话,每次回来都要重读词库,既慢又费电)
     }
 
     override fun onWindowShown() {
         super.onWindowShown()
-        main.removeCallbacks(releaseLater)
         // 收起前翻译框里还有没翻完的字:现在补翻一次
         if (transActive && transBuf.isNotBlank() && transBuf.toString() != transSrc) {
             transStatus = TranslateBarView.STATUS_NONE
             startTranslate()
         }
-    }
-
-    override fun onTrimMemory(level: Int) {
-        super.onTrimMemory(level)
-        if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND && !isInputViewShown) releaseDicts()
     }
 
     override fun onDestroy() {
@@ -519,6 +515,31 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         settings.visibility = View.GONE
         choice.visibility = View.GONE
         overlay.visibility = View.GONE
+        bar.pinHandler = object : CandidateBarView.PinHandler {
+            private fun wordAt(index: Int): String? {
+                if (mode != Mode.ENGLISH || englishEngine == null) return null
+                if (candidatesFor != composing.toString()) return null   // 过期的候选
+                val c = candidates.getOrNull(index) ?: return null
+                if (c.kind == 3 || c.text.isEmpty()) return null
+                for (ch in c.text) if (!(ch in 'a'..'z' || ch in 'A'..'Z' || ch == '\'')) return null
+                return c.text
+            }
+
+            override fun canPin(index: Int) = wordAt(index) != null
+
+            override fun isPinned(index: Int): Boolean {
+                val w = wordAt(index) ?: return false
+                return (englishEngine as? EnglishEngine)?.isPinned(w.lowercase()) == true
+            }
+
+            override fun onPin(index: Int, pin: Boolean) {
+                val w = wordAt(index) ?: return
+                val eng = englishEngine as? EnglishEngine ?: return
+                if (pin) eng.pin(w) else eng.unpin(w)
+                worker.execute { UserData.pins(applicationContext).saveIfDirty() }
+                if (composing.isNotEmpty()) requery() else showNextWords()   // 立刻按新的固定重排候选
+            }
+        }
         candidateBar = bar
         keyboardView = kb
         emojiPanel = emoji
@@ -861,7 +882,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         prevChinese = null
         assocKey = null
         main.removeCallbacks(assocClear)
-        main.removeCallbacks(releaseLater)
 
         // 悬浮键盘按应用记忆:这个应用 / 游戏上次开了悬浮,这次还是悬浮、还在上次的位置
         var sizeChanged = false
@@ -1589,9 +1609,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         onComposingChanged()
         worker.execute {
+            if (gen != queryGen) return@execute   // 排队期间已有更新的输入:这个旧查询不用算了(最新一次的任务一定会跑)
             val result = try {
                 engine.query(code)
+                    .also { ErrorHint.clear("query") }
             } catch (t: Throwable) {
+                ErrorHint.set("query", ErrorHint.of("查询出错", t))
                 emptyList()
             }
             main.post { if (gen == queryGen) applyCandidates(code, result) }
@@ -1603,6 +1626,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         candidatesFor = code
         candidates = shown
         candidateBar?.setCandidates(shown.map { it.text })
+        candidateBar?.setHint(
+            ErrorHint.get("query") ?: when (mode) {
+                Mode.PINYIN -> ErrorHint.get("pinyin")
+                Mode.STROKE -> ErrorHint.get("stroke")
+                Mode.ENGLISH -> ErrorHint.get("english")
+                else -> null
+            } ?: ErrorHint.get("learn") ?: ErrorHint.get("pins") ?: ErrorHint.get("clip") ?: ErrorHint.get("emoji"),
+        )
         onComposingChanged()
     }
 
