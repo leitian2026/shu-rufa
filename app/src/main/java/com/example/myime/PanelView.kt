@@ -20,6 +20,7 @@ object BarKind {
     const val PRIMARY = 2
     const val TAB = 3
     const val SPACER = 4
+    const val BACK = 5      // 返回键:灰白浅色
 }
 
 /** 面板底部按键条里的一个键。 */
@@ -333,7 +334,11 @@ abstract class PanelView(context: Context) : View(context) {
             val face: Int
             val shadow: Int
             var onFace: Int
-            if (k.kind == BarKind.PRIMARY) {
+            if (k.kind == BarKind.BACK) {
+                face = palette.backKey
+                shadow = palette.backShadow
+                onFace = palette.text
+            } else if (k.kind == BarKind.PRIMARY) {
                 face = palette.accent
                 shadow = palette.accentShadow
                 onFace = palette.onAccent
