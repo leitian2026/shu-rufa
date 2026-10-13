@@ -102,7 +102,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     private fun applyMetrics() {
         val wide = context.isWide()
-        padX = context.dpf(if (wide) 42f else 4f)
+        padX = context.dpf(4f)   // 平板也只留 4dp,左右占满
         padTop = context.dpf(5f)
         padBottom = context.dpf(if (wide) 12f else 6f)
         radius = context.dpf(if (wide) 10f else 8f)
