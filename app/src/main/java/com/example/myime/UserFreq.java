@@ -61,6 +61,7 @@ public final class UserFreq {
     private boolean dirty = false;
     private long last = 0L;
     private volatile boolean loaded = false;
+    private volatile long learned = 0L;   // 本进程里学了多少次(多机同步判断"攒够没有"用;合并进来的不算)
 
     public UserFreq(File file) {
         this.file = file;
@@ -277,7 +278,13 @@ public final class UserFreq {
         }
         byCode.put(code, new Win(t, s));
         dirty = true;
+        learned++;
         if (byText.size() > MAX_ENTRIES || byPair.size() > MAX_PAIRS) prune();
+    }
+
+    /** 本进程里自己学了多少次(不含从别的手机合并进来的)。 */
+    public long learnedCount() {
+        return learned;
     }
 
     /** 超过上限:删最久没用的,留 3/4。 */
@@ -318,6 +325,135 @@ public final class UserFreq {
                 e.setValue(new Win(t, s));
             }
         }
+    }
+
+
+    // ------------------------------------------------------------------ 多机同步(见 LearnShare / LearnSync)
+
+    /**
+     * 导出要共享给别的手机的行(T / P / W,格式和存盘文件一样)。词不合格的(含数字、长串字母等)不导出。
+     * 不加锁:ConcurrentHashMap 遍历是弱一致的,窗口对象不可变;导出期间有新学的词,多一条少一条都没关系。
+     */
+    public void exportShared(java.io.Writer w) throws java.io.IOException {
+        ensureLoaded();
+        for (Map.Entry<String, Long> e : byText.entrySet()) {
+            if (LearnShare.okWord(e.getKey())) w.write("T\t" + e.getKey() + "\t" + e.getValue() + "\n");
+        }
+        for (Map.Entry<String, Long> e : byPair.entrySet()) {
+            String k = e.getKey();
+            int i = k.indexOf('\t');
+            if (i > 0 && LearnShare.okWord(k.substring(i + 1))) w.write("P\t" + k + "\t" + e.getValue() + "\n");
+        }
+        for (Map.Entry<String, Win> e : byCode.entrySet()) {
+            Win x = e.getValue();
+            for (int i = 0; i < x.texts.length; i++) {
+                if (LearnShare.okWord(x.texts[i])) w.write("W\t" + e.getKey() + "\t" + x.texts[i] + "\t" + x.stamps[i] + "\n");
+            }
+        }
+    }
+
+    private static final int MERGE_CHUNK = 2000;
+
+    /**
+     * 合并别的手机导出的行:同一个词 / (编码, 词)取较大的时间戳;每个编码的最近选择窗口把两边合在一起取最新的 WINDOW 个。
+     * 合并只取较大值,所以顺序无关、重复合并结果不变。时间戳超过 now 的截成 now(别的手机时钟偏快不会一直排在最前面)。
+     * 分批加锁(每批 2000 条),不会让正在打字的 learn() 等很久。返回有多少条发生了变化。
+     */
+    public int mergeRows(List<String> lines, long now) {
+        return mergeRows(lines, now, 0L);
+    }
+
+    /** minTs:时间戳早于它的行不收(这台手机清除过学习数据,清除之前的记录不能被别的手机再同步回来)。 */
+    public int mergeRows(List<String> lines, long now, long minTs) {
+        ensureLoaded();
+        int changed = 0;
+        List<String[]> batch = new ArrayList<>(MERGE_CHUNK);
+        List<String[]> win = new ArrayList<>();
+        for (String line : lines) {
+            String[] p = line.split("\t", -1);
+            if (p.length == 3 && p[0].equals("T")) {
+                long ts = parseTs(p[2]);
+                if (ts >= Math.max(minTs, 1) && LearnShare.okWord(p[1])) batch.add(new String[] {"T", p[1], null, Long.toString(Math.min(ts, now))});
+            } else if (p.length == 4 && p[0].equals("P")) {
+                long ts = parseTs(p[3]);
+                if (ts >= Math.max(minTs, 1) && !p[1].isEmpty() && LearnShare.okWord(p[2])) batch.add(new String[] {"P", p[1], p[2], Long.toString(Math.min(ts, now))});
+            } else if (p.length == 4 && p[0].equals("W")) {
+                long ts = parseTs(p[3]);
+                if (ts >= Math.max(minTs, 1) && !p[1].isEmpty() && LearnShare.okWord(p[2])) win.add(new String[] {"W", p[1], p[2], Long.toString(Math.min(ts, now))});
+            }
+            if (batch.size() >= MERGE_CHUNK) {
+                changed += applyBatch(batch);
+                batch.clear();
+            }
+        }
+        changed += applyBatch(batch);
+        changed += mergeWindows(win);
+        return changed;
+    }
+
+    private synchronized int applyBatch(List<String[]> batch) {
+        int changed = 0;
+        for (String[] r : batch) {
+            long ts = Long.parseLong(r[3]);
+            ConcurrentHashMap<String, Long> m = r[0].equals("T") ? byText : byPair;
+            String key = r[0].equals("T") ? r[1] : r[1] + "\t" + r[2];
+            Long old = m.get(key);
+            if (old == null || old < ts) {
+                m.put(key, ts);
+                changed++;
+            }
+            if (ts > last) last = ts;
+        }
+        if (changed > 0) {
+            dirty = true;
+            if (byText.size() > MAX_ENTRIES || byPair.size() > MAX_PAIRS) prune();
+        }
+        return changed;
+    }
+
+    private int mergeWindows(List<String[]> rows) {
+        if (rows.isEmpty()) return 0;
+        Map<String, List<String[]>> by = new java.util.HashMap<>();
+        for (String[] p : rows) by.computeIfAbsent(p[1], k -> new ArrayList<>()).add(p);
+        int changed = 0;
+        for (Map.Entry<String, List<String[]>> e : by.entrySet()) {
+            changed += mergeWindow(e.getKey(), e.getValue());
+        }
+        return changed;
+    }
+
+    /** 一个编码:本机窗口 + 别的手机的窗口,按时间从新到旧,同一(词, 时间)只算一次,留最新的 WINDOW 个。 */
+    private synchronized int mergeWindow(String code, List<String[]> incoming) {
+        Win old = byCode.get(code);
+        List<Object[]> all = new ArrayList<>();
+        if (old != null) {
+            for (int i = 0; i < old.texts.length; i++) all.add(new Object[] {old.texts[i], old.stamps[i]});
+        }
+        for (String[] p : incoming) all.add(new Object[] {p[2], Long.parseLong(p[3])});
+        all.sort((a, b) -> {
+            int c = Long.compare((Long) b[1], (Long) a[1]);
+            return c != 0 ? c : ((String) a[0]).compareTo((String) b[0]);
+        });
+        List<Object[]> keep = new ArrayList<>();
+        for (Object[] x : all) {
+            if (!keep.isEmpty()) {
+                Object[] y = keep.get(keep.size() - 1);
+                if (y[0].equals(x[0]) && ((Long) y[1]).equals(x[1])) continue;
+            }
+            keep.add(x);
+            if (keep.size() >= WINDOW) break;
+        }
+        String[] t = new String[keep.size()];
+        long[] s = new long[keep.size()];
+        for (int i = 0; i < t.length; i++) {
+            t[i] = (String) keep.get(i)[0];
+            s[i] = (Long) keep.get(i)[1];
+            if (s[i] > last) last = s[i];
+        }
+        if (old != null && java.util.Arrays.equals(old.texts, t) && java.util.Arrays.equals(old.stamps, s)) return 0;
+        byCode.put(code, new Win(t, s));
+        dirty = true;
+        return 1;
     }
 
     public synchronized int count() {
