@@ -57,7 +57,7 @@ class SymbolPanelView(
     private var stripLastX = 0f
 
     override val barKeys: List<BarKey> = listOf(
-        BarKey(ID_BACK, "", 1f, BarKind.PRIMARY, icon = Icon.BACK),
+        BarKey(ID_BACK, "返回", 1.4f, BarKind.BACK),
         BarKey(ID_DEL, "", 1f, BarKind.FUNCTION, repeatable = true, icon = Icon.BACKSPACE),
     )
     override val titledHeader: Boolean get() = true
