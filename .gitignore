@@ -5,5 +5,3 @@ local.properties
 *.iml
 *.jks
 *.keystore
-# 自用固定签名密钥需要随仓库保存,覆盖安装才能成功(见 README「签名」)
-!signing/myime.jks
