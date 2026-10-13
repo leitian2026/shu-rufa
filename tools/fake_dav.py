@@ -37,7 +37,7 @@ class H(BaseHTTPRequestHandler):
         def one(p, u):
             if os.path.isdir(p):
                 return f"<d:response><d:href>{urllib.parse.quote(u.rstrip('/'))}/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"
-            return f"<d:response><d:href>{urllib.parse.quote(u)}</d:href><d:propstat><d:prop><d:getcontentlength>{os.path.getsize(p)}</d:getcontentlength><d:resourcetype/></d:prop></d:propstat></d:response>"
+            return f"<d:response><d:href>{urllib.parse.quote(u)}</d:href><d:propstat><d:prop><d:getcontentlength>{os.path.getsize(p)}</d:getcontentlength><d:resourcetype/><d:getlastmodified>{os.path.getmtime(p)}</d:getlastmodified><d:getetag>&quot;{os.path.getsize(p)}-{os.stat(p).st_mtime_ns}&quot;</d:getetag></d:prop></d:propstat></d:response>"
         x = '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">' + one(path, url)
         if depth == "1" and os.path.isdir(path):
             for n in sorted(os.listdir(path)):
