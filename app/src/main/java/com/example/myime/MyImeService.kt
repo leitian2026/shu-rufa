@@ -25,7 +25,10 @@ import java.util.concurrent.Executors
 class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     private val main = Handler(Looper.getMainLooper())
-    private val worker = Executors.newSingleThreadExecutor()
+    private val worker = Executors.newSingleThreadExecutor()   // 候选查询:只做计算,不碰磁盘
+    // 诊断日志默认关闭(不取时间、不拼字符串、不写日志)。要排查卡顿时:adb shell setprop log.tag.MyIme DEBUG,再重启输入法
+    private val diag = android.util.Log.isLoggable("MyIme", android.util.Log.DEBUG)
+    private val ioPool = Executors.newSingleThreadExecutor()    // 所有写文件(带 fsync,可能几十毫秒)都放这里,不会排在候选查询前面
 
     @Volatile private var pinyinEngine: Engine? = null
     @Volatile private var strokeEngine: Engine? = null
@@ -72,19 +75,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private var transNetCb: ConnectivityManager.NetworkCallback? = null   // 没网时临时挂上,网络回来重试一次就摘掉
     private val transRun = Runnable { startTranslate() }
 
-    // 剪贴板历史:最多 500 条,落盘保存(ClipStore),更新版本 / 切换输入法 / 进程被回收都不会丢。
-    // 写盘有 2 秒的合并延迟:连续复制只写一次,不为每次复制都唤醒磁盘(省电)。
+    // 剪贴板历史:最多 500 条。内存里一份,变了就落盘(ClipStore),切换输入法、进程被回收、重启手机后还在。
     private val clips = ArrayList<String>()
-    private var clipsLoaded = false         // 磁盘上的历史读回来之前,不写盘,免得用不完整的列表覆盖旧文件
-    private var clipsVersion = 0            // 每改一次加一
-    @Volatile private var clipsSavedVersion = 0
-    private val saveClipsLater = Runnable { saveClipsNow() }
 
-    // 回收箱:剪贴板里删掉的内容先放这里,最多 10 条;最新删的在最前(界面最上面),满了挤掉最后一条(最旧的)。
-    // 和剪贴板共用同一套延迟合并写盘,不额外唤醒磁盘。
+    // 回收箱:剪贴板里删掉的内容先放这里,最多 10 条;最新删的在最前(界面最上面),满了挤掉最后一条(最旧的)。同样会落盘。
     private val trash = ArrayList<String>()
-    private var trashVersion = 0
-    @Volatile private var trashSavedVersion = 0
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClipboardNow() }
 
     private var textMode = Mode.PINYIN      // 最近使用的文字模式(拼音/笔画/英文)
@@ -126,6 +121,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         const val KIND_STROKE = 1
         const val KIND_ENGLISH = 2
         const val TRASH_MAX = 10          // 回收箱最多放几条
+        const val CLIP_SAVE_DELAY_MS = 2000L   // 新复制/删除之后多久写一次盘(期间的改动合并)
         const val MAX_CLIP_CHARS = 5000   // 单条剪贴板最多保存的字数,更长的不收
         const val TRANS_DEBOUNCE_MS = 600L   // 翻译框停多久才去翻:越长请求越少越省电,越短译文越跟手
     }
@@ -148,55 +144,60 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         loadedStamp = DictStore.stamp(applicationContext)
         loadClips()
+        if (diag) android.util.Log.d("MyIme", "service created (进程新启动或服务重建;之后若还要重新加载词库就是冷启动)")
     }
 
-    // ------------------------------------------------------------ 剪贴板历史落盘
+    // ------------------------------------------------------------ 剪贴板历史(内存 + 落盘)
 
-    /** 后台读回上次保存的历史,和这期间新复制的合并(新的在前、去重、最多 500 条)。 */
+    /** 服务创建时读一次(文件很小);之后只在内容变了时写,没有定时任务。 */
     private fun loadClips() {
-        val ctx = applicationContext
-        worker.execute {
-            val saved = ClipStore.load(ctx)
-            val savedTrash = ClipStore.load(ctx, ClipStore.TRASH)
-            main.post {
-                if (clipsLoaded) return@post
-                clipsLoaded = true
-                if (savedTrash.isNotEmpty()) {
-                    val seenT = HashSet<String>(trash)
-                    for (t in savedTrash) {
-                        if (trash.size >= TRASH_MAX) break
-                        if (seenT.add(t)) trash.add(t)
-                    }
-                    if (mode == Mode.CLIPBOARD) clipPanel?.setTrash(trash.toList())
-                }
-                if (trash != savedTrash) trashChanged()
-                if (saved.isNotEmpty()) {
-                    val seen = HashSet<String>(clips)
-                    for (t in saved) {
-                        if (clips.size >= 500) break
-                        if (seen.add(t)) clips.add(t)
-                    }
-                    if (mode == Mode.CLIPBOARD) clipPanel?.setItems(clips.toList())
-                }
-                if (clips != saved) clipsChanged()   // 加载期间有新复制的,补写一次
-            }
+        try {
+            val d = ClipStore.load(applicationContext, 500, TRASH_MAX)
+            clips.clear(); clips.addAll(d.clips)
+            trash.clear(); trash.addAll(d.trash)
+        } catch (e: Exception) {
+            // 读不出来就当空的
         }
     }
 
-    /** 历史改了:2 秒后合并写一次盘。 */
-    private fun clipsChanged() {
-        clipsVersion++
-        if (!clipsLoaded) return
-        main.removeCallbacks(saveClipsLater)
-        main.postDelayed(saveClipsLater, 2000)
+    private var clipsDirty = false
+    private var trashDirty = false
+    private var clipSavePending = false
+    private val clipFlush = Runnable { flushClips() }
+
+    /**
+     * 内容变了,只记下哪个文件脏了(写文件要刷盘,又耗电又磨闪存,不能每改一下写一次)。
+     * urgent(新复制的内容、删除):内容已经从系统剪贴板清掉,只在内存里,所以 2 秒后写一次,这 2 秒里的多次改动合并成一次;
+     * 不紧急的(只是点用后挪到最前、调了顺序):不设定时,等键盘收起时和别的数据一起写。都不是轮询,没有变化就没有任何动作。
+     */
+    private fun markClips(clipsChanged: Boolean, trashChanged: Boolean, urgent: Boolean) {
+        if (clipsChanged) clipsDirty = true
+        if (trashChanged) trashDirty = true
+        if (urgent && !clipSavePending) {
+            clipSavePending = true
+            main.postDelayed(clipFlush, CLIP_SAVE_DELAY_MS)
+        }
     }
 
-    /** 回收箱改了:和剪贴板一样 2 秒后合并写一次盘。 */
-    private fun trashChanged() {
-        trashVersion++
-        if (!clipsLoaded) return
-        main.removeCallbacks(saveClipsLater)
-        main.postDelayed(saveClipsLater, 2000)
+    /** 把脏的文件写出去(只写变了的那个)。主线程拿快照,后台线程写;sync = 服务销毁时直接写。 */
+    private fun flushClips(sync: Boolean = false) {
+        main.removeCallbacks(clipFlush)
+        clipSavePending = false
+        if (!clipsDirty && !trashDirty) return
+        val c = if (clipsDirty) clips.toList() else null
+        val t = if (trashDirty) trash.toList() else null
+        clipsDirty = false
+        trashDirty = false
+        val ctx = applicationContext
+        if (!sync) {
+            try {
+                ioPool.execute { ClipStore.save(ctx, c, t) }
+                return
+            } catch (e: Exception) {
+                // 写线程已关(服务正在销毁):直接写
+            }
+        }
+        ClipStore.save(ctx, c, t)
     }
 
     /** 剪贴板里删掉的内容放进回收箱。texts 要按它们在剪贴板里的顺序给(上面新、下面旧),原样放到回收箱最前面。 */
@@ -206,35 +207,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         trash.removeAll(batch.toSet())   // 回收箱里已经有同样的内容:挪到最前,不重复
         trash.addAll(0, batch)
         while (trash.size > TRASH_MAX) trash.removeAt(trash.size - 1)
-        trashChanged()
-    }
-
-    /** 立刻在后台线程写盘(键盘隐藏时调用)。只写有变化的那一个文件。 */
-    private fun saveClipsNow() {
-        main.removeCallbacks(saveClipsLater)
-        if (!clipsLoaded) return
-        val cv = clipsVersion
-        val tv = trashVersion
-        val saveC = clipsSavedVersion != cv
-        val saveT = trashSavedVersion != tv
-        if (!saveC && !saveT) return
-        val snapshot = if (saveC) ArrayList(clips) else null
-        val trashSnap = if (saveT) ArrayList(trash) else null
-        val ctx = applicationContext
-        try {
-            worker.execute {
-                if (snapshot != null) {
-                    ClipStore.save(ctx, snapshot)
-                    clipsSavedVersion = cv
-                }
-                if (trashSnap != null) {
-                    ClipStore.save(ctx, trashSnap, ClipStore.TRASH)
-                    trashSavedVersion = tv
-                }
-            }
-        } catch (e: Exception) {
-            // 线程池已关闭:onDestroy 里会同步补写
-        }
     }
 
     // ------------------------------------------------------------ 词库:按需加载、闲置释放
@@ -316,8 +288,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         transFinishing = false
         unwatchNetwork()
         main.removeCallbacks(assocClear)
-        worker.execute { UserData.saveAll() }          // 学习数据只在键盘隐藏时落盘,打字过程中不写文件
-        saveClipsNow()
+        flushClips()   // 剪贴板有没写的改动,和下面的学习数据一起落盘
+        ioPool.execute {
+            UserData.saveAll()                          // 学习数据只在键盘隐藏时落盘,打字过程中不写文件
+            BackupManager.maybeAuto(applicationContext) // 开着自动备份、数据有变化、距上次够久时,另开线程备份一次
+        }
     }
 
     override fun onWindowShown() {
@@ -335,21 +310,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         } catch (e: Exception) {
         }
         main.removeCallbacks(assocClear)
-        main.removeCallbacks(saveClipsLater)
         main.removeCallbacks(transRun)
         unwatchNetwork()
         netPool.shutdownNow()
         UserData.saveAll()
-        // 还有没写盘的剪贴板记录:这里同步写完(线程池马上要关,排在里面的写盘任务会被丢掉)
-        if (clipsLoaded && clipsSavedVersion != clipsVersion) {
-            ClipStore.save(applicationContext, ArrayList(clips))
-            clipsSavedVersion = clipsVersion
-        }
-        if (clipsLoaded && trashSavedVersion != trashVersion) {
-            ClipStore.save(applicationContext, ArrayList(trash), ClipStore.TRASH)
-            trashSavedVersion = trashVersion
-        }
+        flushClips(sync = true)   // 还没写的剪贴板改动同步写掉,服务马上要销毁了
         worker.shutdownNow()
+        ioPool.shutdown()   // 不打断正在写的文件,让排队的保存写完
         loader.shutdownNow()
         super.onDestroy()
     }
@@ -414,10 +381,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val clip = ClipboardPanelView(this, object : ClipboardPanelView.Listener {
             override fun onPaste(text: String) {
                 currentInputConnection?.commitText(text, 1)
-                // 点过的这一条挪到剪贴板最前面(已经在最前面就什么都不动,也不写盘)
+                // 点过的这一条挪到剪贴板最前面(已经在最前面就什么都不动)
                 if (clips.firstOrNull() != text && clips.remove(text)) {
                     clips.add(0, text)
-                    clipsChanged()
+                    markClips(clipsChanged = true, trashChanged = false, urgent = false)   // 只是调了顺序,键盘收起时再写
                 }
                 leavePage()
             }
@@ -427,7 +394,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 // 按剪贴板里的顺序放进回收箱(不按点选的先后),这样回收箱最下面那条永远是最旧的
                 moveToTrash(clips.filter { it in gone })
                 clips.removeAll(gone)
-                clipsChanged()
+                markClips(clipsChanged = true, trashChanged = true, urgent = true)
                 clipPanel?.setItems(clips.toList())
                 clipPanel?.setTrash(trash.toList())
             }
@@ -439,7 +406,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
             override fun onTrashDelete(texts: List<String>) {
                 trash.removeAll(texts.toSet())
-                trashChanged()
+                markClips(clipsChanged = false, trashChanged = true, urgent = true)
                 clipPanel?.setTrash(trash.toList())
             }
 
@@ -536,7 +503,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 val w = wordAt(index) ?: return
                 val eng = englishEngine as? EnglishEngine ?: return
                 if (pin) eng.pin(w) else eng.unpin(w)
-                worker.execute { UserData.pins(applicationContext).saveIfDirty() }
+                ioPool.execute { UserData.pins(applicationContext).saveIfDirty() }
                 if (composing.isNotEmpty()) requery() else showNextWords()   // 立刻按新的固定重排候选
             }
         }
@@ -898,6 +865,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             sizeChanged = f0 != KbSize.floating || l0 != KbSize.leftFrac || b0 != KbSize.bottomDp ||
                 s0 != KbSize.scale || h0 != KbSize.heightDp || w0 != KbSize.widthFrac
         }
+        if (diag) android.util.Log.d("MyIme", "show restarting=$restarting pinyin=${pinyinEngine != null} stroke=${strokeEngine != null}")
         if (!restarting) captureClipboardNow()   // 切到别的输入法期间复制的内容,回来时补进历史
 
         val now = android.os.SystemClock.elapsedRealtime()
@@ -995,7 +963,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         prevChinese = null
         assocKey = null
         main.removeCallbacks(assocClear)
-        worker.execute { UserData.saveAll() }
+        ioPool.execute { UserData.saveAll() }
     }
 
     /** 用户在应用里点别处移动了光标:丢弃我们这边的组合状态。 */
@@ -1281,7 +1249,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun gotoPage(target: Mode) {
         flushRawNow()
         selecting = false
-        if (target == Mode.CLIPBOARD) captureClipboardNow()
         mode = target
         refreshLayout(animate = true)
     }
@@ -1347,7 +1314,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         when (v) {
             "tab" -> docStart(ic)   // 原来的 Tab 键:现在是「页首」,跳到整段文字的开头(选择状态下 = 一路选到开头)
             "copy" -> ic.performContextMenuAction(android.R.id.copy)
-            "paste" -> ic.performContextMenuAction(android.R.id.paste)
+            "paste" -> clips.firstOrNull()?.let { ic.commitText(it, 1) }   // 系统剪贴板是空的:粘贴输入法历史里最新的一条
             "cut" -> ic.performContextMenuAction(android.R.id.cut)
             "all" -> ic.performContextMenuAction(android.R.id.selectAll)
             "up" -> if (!(selecting && extendSelection(ic, "up"))) sendKey(KeyEvent.KEYCODE_DPAD_UP, meta)
@@ -1610,12 +1577,17 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         onComposingChanged()
         worker.execute {
             if (gen != queryGen) return@execute   // 排队期间已有更新的输入:这个旧查询不用算了(最新一次的任务一定会跑)
+            val tq = if (diag) android.os.SystemClock.elapsedRealtime() else 0L
             val result = try {
                 engine.query(code)
                     .also { ErrorHint.clear("query") }
             } catch (t: Throwable) {
                 ErrorHint.set("query", ErrorHint.of("查询出错", t))
                 emptyList()
+            }
+            if (diag) {
+                val dt = android.os.SystemClock.elapsedRealtime() - tq
+                if (dt >= 40) android.util.Log.d("MyIme", "slow query len=${code.length} ${dt}ms")   // 单次查询超过 40ms 才记
             }
             main.post { if (gen == queryGen) applyCandidates(code, result) }
         }
@@ -2387,25 +2359,48 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (!wasVisible) panel.onShow(false)   // 不做滑入/淡入动画,直接显示
     }
 
-    /** 读取当前剪贴板并加入历史(跳过被标记为敏感的内容,如密码管理器复制的密码)。 */
-    private fun captureClipboardNow() {
+    /** 系统剪贴板当前的文字(跳过非文字、被标记为敏感的内容如密码管理器复制的密码、空白和超长的);读不到返回 null。 */
+    private fun readClipText(): String? {
         try {
             val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-            val clip = cm.primaryClip ?: return
-            if (clip.itemCount == 0) return
+            val clip = cm.primaryClip ?: return null
+            if (clip.itemCount == 0) return null
             val desc = clip.description
-            if (!desc.hasMimeType("text/*")) return
-            if (desc.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true) return
-            val text = clip.getItemAt(0).coerceToText(this)?.toString() ?: return
-            if (text.isBlank() || text.length > MAX_CLIP_CHARS) return
-            if (clips.firstOrNull() == text) return   // 已经在最前面,什么都不用动(也不用写盘)
+            if (!desc.hasMimeType("text/*")) return null
+            if (desc.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true) return null
+            val text = clip.getItemAt(0).coerceToText(this)?.toString() ?: return null
+            if (text.isBlank() || text.length > MAX_CLIP_CHARS) return null
+            return text
+        } catch (e: Exception) {
+            return null   // 没有读取权限(例如当前不是默认输入法)时直接忽略
+        }
+    }
+
+    /**
+     * 读取系统剪贴板,收进输入法自己的历史,然后立刻把系统剪贴板清空:
+     * 别的 app(含系统自带的)再去读系统剪贴板,读到的是空白;内容只存在输入法私有目录里,
+     * 只有你在剪贴板页点那一条,才会输入到当前输入框。
+     * 只清空确实收进来的文字;密码管理器标记为敏感的、超长的、非文字的内容不动(我们没存,清掉就丢了)。
+     */
+    private fun captureClipboardNow() {
+        val text = readClipText() ?: return
+        if (clips.firstOrNull() != text) {   // 已经在最前面就什么都不用动
             clips.remove(text)
             clips.add(0, text)
             while (clips.size > 500) clips.removeAt(clips.size - 1)
-            clipsChanged()
+            markClips(clipsChanged = true, trashChanged = false, urgent = true)
             if (mode == Mode.CLIPBOARD) clipPanel?.setItems(clips.toList())
+        }
+        wipeSystemClip()
+    }
+
+    private fun wipeSystemClip() {
+        try {
+            val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+            if (android.os.Build.VERSION.SDK_INT >= 28) cm.clearPrimaryClip()
+            else cm.setPrimaryClip(android.content.ClipData.newPlainText("", ""))   // 清空后系统会再通知一次,读到的是空白,不会重复收录
         } catch (e: Exception) {
-            // 没有读取权限(例如当前不是默认输入法)时直接忽略
+            // 清不掉就算了(例如当前不是默认输入法)
         }
     }
 
