@@ -37,7 +37,7 @@ class UserFreq(private val file: File) {
                 }
             }
         } catch (e: Exception) {
-            // 读不了就当没有
+            ErrorHint.set("learn", ErrorHint.of("用词习惯读取失败", e))
         } finally {
             loaded = true   // 读完才标记,别的线程在这之前会等在 ensureLoaded 的锁上
         }
@@ -103,8 +103,9 @@ class UserFreq(private val file: File) {
             if (file.exists()) file.delete()
             tmp.renameTo(file)
             dirty = false
+            ErrorHint.clear("learn")
         } catch (e: Exception) {
-            // 存失败下次再试
+            ErrorHint.set("learn", ErrorHint.of("用词习惯保存失败", e))
         }
     }
 
@@ -152,7 +153,7 @@ class UserEnglish(private val file: File) {
                 }
             }
         } catch (e: Exception) {
-            // 读不了就当没有
+            ErrorHint.set("learn", ErrorHint.of("用词习惯读取失败", e))
         }
     }
 
@@ -277,8 +278,9 @@ class UserEnglish(private val file: File) {
             if (file.exists()) file.delete()
             tmp.renameTo(file)
             dirty = false
+            ErrorHint.clear("learn")
         } catch (e: Exception) {
-            // 存失败下次再试
+            ErrorHint.set("learn", ErrorHint.of("用词习惯保存失败", e))
         }
     }
 
@@ -325,7 +327,7 @@ class UserChain(private val file: File) {
                 }
             }
         } catch (e: Exception) {
-            // 读不了就当没有
+            ErrorHint.set("learn", ErrorHint.of("用词习惯读取失败", e))
         } finally {
             loaded = true
         }
@@ -411,8 +413,9 @@ class UserChain(private val file: File) {
             if (file.exists()) file.delete()
             tmp.renameTo(file)
             dirty = false
+            ErrorHint.clear("learn")
         } catch (e: Exception) {
-            // 存失败下次再试
+            ErrorHint.set("learn", ErrorHint.of("用词习惯保存失败", e))
         }
     }
 
@@ -436,6 +439,7 @@ object UserData {
     private var strokeFreq: UserFreq? = null
     private var englishData: UserEnglish? = null
     private var chainData: UserChain? = null
+    private var pinsData: EnglishPins? = null
 
     private fun dir(ctx: Context): File {
         val d = File(ctx.applicationContext.filesDir, "user")
@@ -460,7 +464,12 @@ object UserData {
         chainData ?: UserChain(File(dir(ctx), "chain.txt")).also { chainData = it }
 
     @Synchronized
+    fun pins(ctx: Context): EnglishPins =
+        pinsData ?: EnglishPins(File(dir(ctx), "english_pins.txt")).also { pinsData = it }
+
+    @Synchronized
     fun saveAll() {
+        pinsData?.saveIfDirty()
         pinyinFreq?.saveIfDirty()
         strokeFreq?.saveIfDirty()
         englishData?.saveIfDirty()
