@@ -222,7 +222,11 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             val face: Int
             val shadow: Int
             val onFace: Int
-            if (k.primary || k.active) {
+            if (k.value == "back") {
+                face = palette.backKey
+                shadow = palette.backShadow
+                onFace = palette.text
+            } else if (k.primary || k.active) {
                 face = palette.accent
                 shadow = palette.accentShadow
                 onFace = palette.onAccent
