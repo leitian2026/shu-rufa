@@ -44,6 +44,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     /** 系统(应用)要求显示键盘时调用,在 onStartInputView 之前。flags 能区分是应用主动要的还是焦点自动弹的。 */
     override fun onShowInputRequested(flags: Int, configChange: Boolean): Boolean {
+        if (edgeAutoShowBlocked()) return false
         val r = super.onShowInputRequested(flags, configChange)
         if (diag) {
             lastShowReqAt = SystemClock.elapsedRealtime()
@@ -51,6 +52,52 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             AppLog.d("MyIme", "showRequested " + showFlagsName(flags) + " configChange=$configChange accepted=$r")
         }
         return r
+    }
+
+    // ---- 压住 Edge 点收藏夹时「弹一下又收起」的键盘(日志实测:所有输入法都会这样,是 Edge 自己的行为)。
+    //      Edge 的序列:历史搜索框(文本、回车键=搜索)拿到焦点并要求弹键盘 → 几毫秒后又要求一次,
+    //      此时焦点已转到不能输入的容器(inputType=0) → 约 1 秒后 Edge 自己收起。
+    //      做法:Edge 里这种搜索框要求弹键盘时先不弹,等 EDGE_WAIT_MS;这段时间里焦点转成「不能输入」就取消(键盘不弹);
+    //      没转走(是你自己点了搜索框)就补弹,只晚 EDGE_WAIT_MS。Edge 里 inputType=0 的弹出请求一律不弹。
+    //      省电:没有定时轮询、没有额外线程;只在 Edge 里这种搜索框要求弹键盘时排一个 120 毫秒的主线程回调,
+    //      别的应用只多一次包名比较;开关关了连这个比较都不做。
+    @Volatile private var edgeAllowUntil = 0L   // 补弹键盘时放行一小段时间,避免补弹的请求又被自己拦下
+
+    private val edgeShowLater = Runnable {
+        val e = currentInputEditorInfo
+        if (e != null && isEdgeSearchField(e) && !isInputViewShown) {
+            edgeAllowUntil = SystemClock.elapsedRealtime() + EDGE_ALLOW_MS
+            if (diag) AppLog.d("MyIme", "edgeFilter: ${EDGE_WAIT_MS}ms 内焦点没转走,补弹键盘")
+            requestShowSelf(0)
+        } else if (diag) {
+            AppLog.d("MyIme", "edgeFilter: 焦点已转走,这次不弹键盘")
+        }
+    }
+
+    private fun isEdgePkg(p: String?): Boolean = p != null && (p == "com.microsoft.emmx" || p.startsWith("com.microsoft.emmx."))
+
+    /** Edge 里的原生搜索框:普通文本、回车键是「搜索」(网页里的输入区域回车键不是搜索,不会命中)。 */
+    private fun isEdgeSearchField(e: EditorInfo): Boolean =
+        isEdgePkg(e.packageName) &&
+            (e.inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT &&
+            (e.imeOptions and EditorInfo.IME_MASK_ACTION) == EditorInfo.IME_ACTION_SEARCH
+
+    /** 返回 true = 这次弹出请求被拦下(onShowInputRequested 直接返回 false)。 */
+    private fun edgeAutoShowBlocked(): Boolean {
+        val e = currentInputEditorInfo ?: return false
+        if (!isEdgePkg(e.packageName)) return false                         // 别的应用:到此为止
+        if (!DictConfig.edgeFilter(applicationContext)) return false        // 开关关了:不拦
+        if (e.inputType == 0) {                                             // 焦点在不能输入的容器上,弹键盘没有意义
+            main.removeCallbacks(edgeShowLater)
+            if (diag) AppLog.d("MyIme", "edgeFilter: 拒绝 inputType=0 的弹出请求")
+            return true
+        }
+        if (SystemClock.elapsedRealtime() < edgeAllowUntil) return false    // 自己补弹的请求,放行
+        if (!isEdgeSearchField(e)) return false
+        main.removeCallbacks(edgeShowLater)
+        main.postDelayed(edgeShowLater, EDGE_WAIT_MS)
+        if (diag) AppLog.d("MyIme", "edgeFilter: Edge 搜索框要求弹键盘,先等 ${EDGE_WAIT_MS}ms")
+        return true
     }
 
     private fun showFlagsName(flags: Int): String = when {
@@ -204,6 +251,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         const val KIND_STROKE = 1
         const val KIND_ENGLISH = 2
         const val TRASH_MAX = 10          // 回收箱最多放几条
+        const val EDGE_WAIT_MS = 120L     // Edge 搜索框要求弹键盘后先等多久(实测焦点转走用了 32~64ms)
+        const val EDGE_ALLOW_MS = 800L    // 补弹键盘时放行多久
         const val CLIP_SAVE_DELAY_MS = 2000L   // 新复制/删除之后多久写一次盘(期间的改动合并)
         const val MAX_CLIP_CHARS = 5000   // 单条剪贴板最多保存的字数,更长的不收
         const val TRANS_DEBOUNCE_MS = 600L   // 翻译框停多久才去翻:越长请求越少越省电,越短译文越跟手
@@ -364,6 +413,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     override fun onWindowHidden() {
         super.onWindowHidden()
+        main.removeCallbacks(edgeShowLater)   // 键盘收起了,还没补弹的就作废
         if (diag && lastShowAt > 0) AppLog.d("MyIme", "hidden after ${SystemClock.elapsedRealtime() - lastShowAt}ms")
         // 键盘收起了:没发出的翻译、没回来的请求、挂着的网络回调都放掉,不在后台耗电耗流量
         transBar?.dismissPopup()
@@ -399,6 +449,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         main.removeCallbacks(assocClear)
         main.removeCallbacks(transRun)
+        main.removeCallbacks(edgeShowLater)
         unwatchNetwork()
         netPool.shutdownNow()
         UserData.saveAll()
