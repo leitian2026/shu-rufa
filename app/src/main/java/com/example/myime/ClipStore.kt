@@ -26,10 +26,12 @@ object ClipStore {
     private const val CLIP_FILE = "clips.txt"
     private const val TRASH_FILE = "trash.txt"
 
+    private const val LOCK_TAG = "k"   // 上锁的条目:和剪贴板在同一个文件里,每条一行 "k<Tab>文本"(老版本读到会直接跳过,不影响)
+
     private const val ENC_TAG = "E1\t"
     private const val DEK_PREF = "clip_dek"
 
-    class Data(val clips: List<String>, val trash: List<String>)
+    class Data(val clips: List<String>, val trash: List<String>, val locked: List<String>)
 
     /** 备份时要换成明文的两个文件(相对 filesDir 的路径)。 */
     fun isClipFile(rel: String): Boolean = rel == "user/$CLIP_FILE" || rel == "user/$TRASH_FILE"
@@ -182,30 +184,36 @@ object ClipStore {
         val app = ctx.applicationContext
         val d = dir(app)
         val c = readList(app, File(d, CLIP_FILE), "c", maxClips)
+        val k = readList(app, File(d, CLIP_FILE), LOCK_TAG, maxClips)
         val t = readList(app, File(d, TRASH_FILE), "t", maxTrash)
         if ((c.plain && c.items.isNotEmpty()) || (t.plain && t.items.isNotEmpty())) {
-            save(app, if (c.plain && c.items.isNotEmpty()) c.items else null, if (t.plain && t.items.isNotEmpty()) t.items else null)
+            save(
+                app,
+                if (c.plain && c.items.isNotEmpty()) c.items else null,
+                if (t.plain && t.items.isNotEmpty()) t.items else null,
+                k.items,
+            )
         }
-        return Data(c.items, t.items)
+        return Data(c.items, t.items, k.items)
     }
 
-    /** 一个文件的内容写成 SafeFile 的行:能加密就写一行密文,不能(Keystore 用不了)就退回明文。空列表什么都不写。 */
-    private fun writeBody(ctx: Context, w: java.io.Writer, name: String, tag: String, items: List<String>) {
-        if (items.isEmpty()) return
+    /** 一个文件的内容写成 SafeFile 的行:能加密就写一行密文,不能(Keystore 用不了)就退回明文。全空什么都不写。parts = (行标记, 内容) 按顺序写。 */
+    private fun writeBody(ctx: Context, w: java.io.Writer, name: String, parts: List<Pair<String, List<String>>>) {
         val sb = StringBuilder()
-        for (t in items) sb.append(tag).append('\t').append(esc(t)).append('\n')
+        for ((tag, items) in parts) for (t in items) sb.append(tag).append('\t').append(esc(t)).append('\n')
+        if (sb.isEmpty()) return
         val enc = encrypt(ctx, name, sb.substring(0, sb.length - 1))   // 去掉最后的换行,读的时候按换行拆
         if (enc != null) w.write(ENC_TAG + enc + "\n") else w.write(sb.toString())
     }
 
-    /** 保存快照(调用方在主线程拿快照,在后台线程调用这里)。传 null 的那个文件没变,不写。 */
+    /** 保存快照(调用方在主线程拿快照,在后台线程调用这里)。传 null 的那个文件没变,不写。locked 跟着 clips 一起写(同一个文件)。 */
     @Synchronized
-    fun save(ctx: Context, clips: List<String>?, trash: List<String>?) {
+    fun save(ctx: Context, clips: List<String>?, trash: List<String>?, locked: List<String> = emptyList()) {
         val app = ctx.applicationContext
         val d = dir(app)
         try {
-            if (clips != null) SafeFile.write(File(d, CLIP_FILE)) { w -> writeBody(app, w, CLIP_FILE, "c", clips) }
-            if (trash != null) SafeFile.write(File(d, TRASH_FILE)) { w -> writeBody(app, w, TRASH_FILE, "t", trash) }
+            if (clips != null) SafeFile.write(File(d, CLIP_FILE)) { w -> writeBody(app, w, CLIP_FILE, listOf("c" to clips, LOCK_TAG to locked)) }
+            if (trash != null) SafeFile.write(File(d, TRASH_FILE)) { w -> writeBody(app, w, TRASH_FILE, listOf("t" to trash)) }
             ErrorHint.clear("clip")
         } catch (e: Exception) {
             ErrorHint.set("clip", ErrorHint.of("剪贴板保存失败", e))
