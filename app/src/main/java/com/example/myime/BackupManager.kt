@@ -7,9 +7,11 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.BatteryManager
+import android.os.Build
 import android.os.PowerManager
 import android.os.Process
 import android.provider.DocumentsContract
+import android.provider.Settings
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -37,7 +39,8 @@ import java.util.zip.ZipOutputStream
  *   1) 本地:用系统的「新建文件」选择器存到手机上任意位置(exportToUri);
  *   2) 坚果云:通过 WebDAV 上传(backupToCloud,联网权限本来就有;WebDAV 客户端见 WebDavClient)。
  * 两种都是写完马上读回来解密校验,确认真的能还原;上传后还核对云端文件大小。
- * 还原也是两种:选一个本地的 .mybk,或者从坚果云下载最新的一份;都会先尝试用本机保存的备份密钥自动解开,
+ * 几台设备(手机、平板)共用一个云端文件夹时,备份文件名里带设备名(见 BackupNames),清理旧备份只清本机的,每台设备各留 7 份。
+ * 还原也是两种:选一个本地的 .mybk,或者从坚果云选一台设备的备份(列出每台设备最新的一份,本机排第一);都会先尝试用本机保存的备份密钥自动解开,
  * 只有解不开(换手机、重装、改过密码)才让输入密码。
  *
  * 备份范围由 BackupScope 决定:默认应用数据目录和所有设置文件全部备份,只排除登记过的"可重建 / 可下载 / 设备专属"数据。
@@ -48,9 +51,9 @@ import java.util.zip.ZipOutputStream
  * 满足全部条件才另开低优先级线程备份一次;压缩用最快档;备份密钥已缓存,不再做耗时的密码运算。
  */
 object BackupManager {
-    const val PREFIX = "myime-backup-"
-    const val EXT = ".mybk"
-    private const val KEEP = 7                   // 坚果云上只留最近 7 份数据备份
+    const val PREFIX = BackupNames.PREFIX
+    const val EXT = BackupNames.EXT
+    private const val KEEP = 7                   // 坚果云上每台设备只留最近 7 份数据备份
     private const val RETRY_OK_MS = 24L * 3600 * 1000
     private const val RETRY_FAIL_MS = 6L * 3600 * 1000
 
@@ -94,6 +97,32 @@ object BackupManager {
     fun label(which: String): String = if (which == BackupConfig.LOCAL) "本地" else "坚果云"
 
     private fun stamp(): String = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+
+    // ------------------------------------------------------------ 设备名(几台设备共用一个云端文件夹时用来区分备份)
+
+    private fun tryGet(f: () -> String?): String? = try {
+        f()
+    } catch (e: Exception) {
+        null
+    }
+
+    /** 系统设置里的「设备名称」(读不到就用蓝牙名,再不行用厂商 + 型号)。不需要权限,只读一个设置项。 */
+    fun systemDeviceName(ctx: Context): String {
+        val cr = ctx.applicationContext.contentResolver
+        val n = tryGet { Settings.Global.getString(cr, "device_name") }?.takeIf { it.isNotBlank() }
+            ?: tryGet { Settings.Secure.getString(cr, "bluetooth_name") }?.takeIf { it.isNotBlank() }
+            ?: listOf(Build.MANUFACTURER, Build.MODEL).filter { !it.isNullOrBlank() }.joinToString(" ")
+        return n.trim()
+    }
+
+    /** 本机设备名:用户改过就用改的,没改就跟着系统的设备名。 */
+    fun deviceName(ctx: Context): String = BackupConfig.deviceNameCustom(ctx).ifBlank { systemDeviceName(ctx) }
+
+    /** 设备标识(设备 ID 前 6 位):判断「是不是本机的备份」只看它,改设备名不影响。 */
+    fun deviceTag(ctx: Context): String = LearnSync.deviceId(ctx.applicationContext).take(6)
+
+    /** 新备份的文件名:myime-backup-<设备名>.<标识>-<时间>.mybk */
+    fun backupFileName(ctx: Context): String = BackupNames.fileName(deviceName(ctx), deviceTag(ctx), stamp())
 
     // ------------------------------------------------------------ 打包
 
@@ -283,7 +312,7 @@ object BackupManager {
      * 临时文件(加密后的,和云端一样)用完就删。
      */
     private fun cloudStore(
-        ctx: Context, fileName: String, master: ByteArray, prefix: String, ext: String, prune: Boolean,
+        ctx: Context, fileName: String, master: ByteArray, prune: Boolean,
         write: (OutputStream) -> Unit, check: (Map<String, ByteArray>) -> Unit,
     ): DestResult {
         val tmp = tmpFile(ctx, "cloud_upload.tmp")
@@ -307,8 +336,9 @@ object BackupManager {
             }
             if (prune) {
                 try {
-                    val all = entries.filter { it.name.startsWith(prefix) && it.name.endsWith(ext) }.sortedByDescending { it.name }
-                    for (i in KEEP until all.size) client.delete(folder, all[i].name)
+                    // 只清本机的旧备份:别的设备的、旧格式的都不动(省电:用上面那次列目录的结果,不多发请求)
+                    val old = BackupNames.toPrune(entries.filter { !it.dir }.map { it.name }, deviceTag(ctx), KEEP)
+                    for (n in old) client.delete(folder, n)
                 } catch (e: Exception) {
                     // 清理旧备份失败不算备份失败
                 }
@@ -334,7 +364,7 @@ object BackupManager {
         try {
             val iter = BackupVault.iterations(app)
             val r = cloudStore(
-                app, PREFIX + stamp() + EXT, master, PREFIX, EXT, true,
+                app, backupFileName(app), master, true,
                 { o -> writeBackup(app, master, salt, iter, includeDicts, o) },
                 { m -> if (!m.containsKey("meta.txt")) throw IOException("读回校验失败:缺少内容") },
             )
@@ -554,6 +584,7 @@ object BackupManager {
             }
             val dictNote = if (hasDicts) "、词库包" else ""
             success = true
+            LearnSync.afterRestore(app)   // 学习数据换成了备份里的内容:让下次同步把别的设备的数据重新合并一遍
             return RestoreResult(true, "已还原:$fileCount 个数据文件、$prefCount 组设置$dictNote。\n还原前的数据留了一份在应用内的 user_before_restore 文件夹。")
         } catch (e: BackupCrypto.BadPasswordException) {
             return RestoreResult(false, "这个文件解不开:可能是旧版用自己的密码做的备份,或者文件已损坏。现有数据没有改动。")
@@ -570,27 +601,37 @@ object BackupManager {
     // ------------------------------------------------------------ 从坚果云下载
 
     /**
-     * 把坚果云上最新的一份(名字带时间,按名字排最大的)下载到本机临时文件,返回文件和云端文件名。
-     * 临时文件由调用方用完后 clearTemp 删掉。要后台线程调用。云端没有备份时抛异常。
+     * 列出坚果云文件夹里每台设备最新的一份备份(本机排第一,见 BackupNames.latestPerDevice)。
+     * 只发一次列目录请求,点「从坚果云还原」时才调用。要后台线程调用。云端没有备份时抛异常。
      */
-    fun downloadLatest(ctx: Context, prefix: String, ext: String): Pair<String, File> {
+    fun listCloudBackups(ctx: Context): List<BackupNames.Group> {
+        val app = ctx.applicationContext
+        val client = dav(app)
+        val items = client.list(davFolder(app)).filter { !it.dir }.map { BackupNames.Item(it.name, it.size) }
+        val groups = BackupNames.latestPerDevice(items, deviceTag(app))
+        if (groups.isEmpty()) throw IOException("坚果云的「${BackupConfig.davFolder(app)}」文件夹里还没有找到备份")
+        return groups
+    }
+
+    /**
+     * 把坚果云上指定的一份备份下载到本机临时文件,返回文件。大小要和云端一致。
+     * 临时文件由调用方用完后 clearTemp 删掉。要后台线程调用。
+     */
+    fun downloadBackup(ctx: Context, g: BackupNames.Group): File {
         val app = ctx.applicationContext
         if (!running.compareAndSet(false, true)) throw IOException("另一项备份 / 还原正在进行,请稍后再试")
         try {
             val client = dav(app)
-            val folder = davFolder(app)
-            val latest = client.list(folder).filter { !it.dir && it.name.startsWith(prefix) && it.name.endsWith(ext) }.maxByOrNull { it.name }
-                ?: throw IOException("坚果云的「${BackupConfig.davFolder(app)}」文件夹里还没有找到备份")
             val tmp = tmpFile(app, "cloud_download.tmp")
             tmp.delete()
             try {
-                client.get(folder, latest.name, tmp)
-                if (tmp.length() != latest.size) throw IOException("下载不完整,请重试")
+                client.get(davFolder(app), g.file, tmp)
+                if (tmp.length() != g.size) throw IOException("下载不完整,请重试")
             } catch (e: Exception) {
                 tmp.delete()
                 throw e
             }
-            return Pair(latest.name, tmp)
+            return tmp
         } finally {
             running.set(false)
         }
