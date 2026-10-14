@@ -465,7 +465,7 @@ class CandidateBarView(
         val row = LinearLayout(context)
         row.orientation = LinearLayout.HORIZONTAL
         row.background = GradientDrawable().apply {
-            setColor(palette.topBar)
+            setColor(palette.background)
             cornerRadius = context.dpf(12f)
             setStroke(context.dpi(1f), palette.textFaint)
         }
