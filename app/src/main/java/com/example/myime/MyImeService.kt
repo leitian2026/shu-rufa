@@ -203,6 +203,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     // 剪贴板历史:最多 500 条。内存里一份,变了就落盘(ClipStore),切换输入法、进程被回收、重启手机后还在。
     private val clips = ArrayList<String>()
 
+    // 上了锁的条目(按文字认):不能被删除,也不会被"超过 500 条挤掉最旧的"挤掉。随剪贴板文件一起落盘。
+    private val locked = LinkedHashSet<String>()
+
     // 回收箱:剪贴板里删掉的内容先放这里,最多 10 条;最新删的在最前(界面最上面),满了挤掉最后一条(最旧的)。同样会落盘。
     private val trash = ArrayList<String>()
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClipboardNow() }
@@ -288,6 +291,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         try {
             val d = ClipStore.load(applicationContext, 500, TRASH_MAX)
             clips.clear(); clips.addAll(d.clips)
+            locked.clear(); locked.addAll(d.locked.filter { it in d.clips })
             trash.clear(); trash.addAll(d.trash)
         } catch (e: Exception) {
             // 读不出来就当空的
@@ -319,19 +323,20 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         clipSavePending = false
         if (!clipsDirty && !trashDirty) return
         val c = if (clipsDirty) clips.toList() else null
+        val k = if (clipsDirty) locked.toList() else emptyList()
         val t = if (trashDirty) trash.toList() else null
         clipsDirty = false
         trashDirty = false
         val ctx = applicationContext
         if (!sync) {
             try {
-                ioPool.execute { ClipStore.save(ctx, c, t) }
+                ioPool.execute { ClipStore.save(ctx, c, t, k) }
                 return
             } catch (e: Exception) {
                 // 写线程已关(服务正在销毁):直接写
             }
         }
-        ClipStore.save(ctx, c, t)
+        ClipStore.save(ctx, c, t, k)
     }
 
     /** 剪贴板里删掉的内容放进回收箱。texts 要按它们在剪贴板里的顺序给(上面新、下面旧),原样放到回收箱最前面。 */
@@ -530,13 +535,20 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
 
             override fun onDeleteMany(texts: List<String>) {
-                val gone = texts.toSet()
+                val gone = texts.toSet() - locked   // 上了锁的不删(界面上本来也选不中,这里再挡一道)
                 // 按剪贴板里的顺序放进回收箱(不按点选的先后),这样回收箱最下面那条永远是最旧的
                 moveToTrash(clips.filter { it in gone })
                 clips.removeAll(gone)
                 markClips(clipsChanged = true, trashChanged = true, urgent = true)
                 clipPanel?.setItems(clips.toList())
                 clipPanel?.setTrash(trash.toList())
+            }
+
+            override fun onToggleLock(text: String) {
+                if (text !in clips) return
+                if (!locked.remove(text)) locked.add(text)
+                markClips(clipsChanged = true, trashChanged = false, urgent = true)
+                clipPanel?.setLocked(locked.toSet())
             }
 
             override fun onPasteTrash(text: String) {
@@ -2508,6 +2520,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             Mode.SYMBOL -> showPanel(symbolPanel, animate)
             Mode.CLIPBOARD -> {
                 clipPanel?.setWipe(clipWipe)
+                clipPanel?.setLocked(locked.toSet())
                 clipPanel?.setItems(clips.toList())
                 clipPanel?.setTrash(trash.toList())
                 showPanel(clipPanel, animate)
@@ -2584,7 +2597,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (clips.firstOrNull() == text) return
         clips.remove(text)
         clips.add(0, text)
-        while (clips.size > 500) clips.removeAt(clips.size - 1)
+        while (clips.size > 500) {
+            // 挤掉最旧的没上锁的;500 条全上了锁就只好不收这一条
+            val i = clips.indexOfLast { it !in locked }
+            clips.removeAt(if (i >= 0) i else 0)
+        }
         markClips(clipsChanged = true, trashChanged = false, urgent = true)
         if (mode == Mode.CLIPBOARD) clipPanel?.setItems(clips.toList())
     }
