@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -53,12 +54,37 @@ class MainActivity : Activity() {
             setOnClickListener { startActivity(Intent(this@MainActivity, BackupActivity::class.java)) }
         }, smallButtonParams())
         addTranslateSettings(root, pad)
+        addDebugSwitch(root, pad)
         root.addView(EditText(this).apply {
             hint = "在这里测试输入"
             minLines = 3
             setPadding(0, pad, 0, 0)
         })
         setContentView(ScrollView(this).apply { addView(root) })
+    }
+
+    /** 调试日志开关:默认关。开了以后键盘往系统日志(logcat,标签 MyIme)写耗时信息,用电脑 adb 才看得到。 */
+    private fun addDebugSwitch(root: LinearLayout, pad: Int) {
+        root.addView(TextView(this).apply {
+            text = "调试日志"
+            textSize = 20f
+            setPadding(0, pad, 0, 0)
+        })
+        root.addView(foldNote(
+            "开启后,键盘会记下:服务启动、键盘弹出、词库加载耗时、超过 40 毫秒的慢查询(同时写进系统日志 logcat,标签 MyIme)。" +
+                "只有耗时和数量,不含你输入的内容;记录存在本机缓存目录的一个小文件里,不上传、不进备份,点「查看日志」就能看。" +
+                "默认关闭,排查卡顿时再开;改了以后,下次键盘弹出时生效。词库加载失败这类出错信息不管开关都会记。",
+        ))
+        root.addView(CheckBox(this).apply {
+            text = "开启调试日志(排查卡顿用)"
+            textSize = 15f
+            minHeight = dpi(48f)
+            isChecked = DictConfig.debugLog(this@MainActivity)
+            setOnCheckedChangeListener { _, v -> DictConfig.setDebugLog(this@MainActivity, v) }
+        })
+        root.addView(smallButton("查看日志").apply {
+            setOnClickListener { startActivity(Intent(this@MainActivity, LogActivity::class.java)) }
+        }, smallButtonParams())
     }
 
     private fun field(root: LinearLayout, label: String, hint: String, name: String, secret: Boolean): EditText {
