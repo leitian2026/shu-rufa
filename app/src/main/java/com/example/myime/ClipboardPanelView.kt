@@ -3,12 +3,15 @@ package com.example.myime
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 
 /**
  * 剪贴板面板:按时间倒序列出最近复制过的文字。
  *  - 点一条 = 粘贴到输入框并返回键盘
  *  - 长按一条 = 进入多选:每条前面出现圆圈,点哪条选哪条;标题右边的按键变成「取消 / 全选 / 删除」
+ *  - 多选时每条右边出现一个小锁:点锁 = 给这条上锁 / 取消上锁。上了锁的条目删不掉(全选、删除都会跳过它),
+ *    也不会被"超过 500 条挤掉最旧的"挤掉;平时(不在多选里)上了锁的条目右边也留着一个实心小锁,点条目照常粘贴。回收箱里没有锁。
  *  - 没有「清空」键(免得手滑);要删全部就长按进多选再「全选」「删除」。离开面板或点「取消」都会退出多选
  *  - 「回收箱」:剪贴板里删掉的内容先放这里(最多 10 条,最新删的在最上面,满了挤掉最下面最旧的)。
  *    回收箱里也能点一条粘贴、长按多选、全选、删除(这里的删除是真删)。回收箱里「返回」/点空白回到剪贴板。
@@ -23,6 +26,9 @@ class ClipboardPanelView(
     interface Listener {
         fun onPaste(text: String)
         fun onDeleteMany(texts: List<String>)
+
+        /** 点了某条右边的小锁:上锁 ↔ 取消上锁。 */
+        fun onToggleLock(text: String)
         fun onBack()
         fun onPasteTrash(text: String)
         fun onTrashDelete(texts: List<String>)
@@ -32,6 +38,7 @@ class ClipboardPanelView(
     }
 
     private var clipItems: List<String> = emptyList()
+    private var locked: Set<String> = emptySet()
     private var trashItems: List<String> = emptyList()
     private var inTrash = false
     private var wipeOn = true
@@ -54,6 +61,8 @@ class ClipboardPanelView(
     private var curPad = 0f      // 实际用的卡片上下内边距、间距:短内容一屏放 9 条,按屏高调整(字体不变)
     private var curGap = 0f
     private var checkW = 0f      // 多选时每条左边圆圈占的宽度
+    private var lockW = 0f       // 每条右边小锁占的宽度(也是点锁的有效区域宽度)
+    private val lockPath = Path()
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
@@ -94,7 +103,7 @@ class ClipboardPanelView(
         BarKey(ID_CANCEL, "取消", 1.6f, BarKind.PRIMARY),
         BarKey(
             ID_ALL,
-            if (items.isNotEmpty() && selected.size == items.size) "取消全选" else "全选",
+            if (selectable().isNotEmpty() && selected.size == selectable().size) "取消全选" else "全选",
             2f, BarKind.FUNCTION,
         ),
         BarKey(ID_DEL, if (selected.isEmpty()) "删除" else "删除(${selected.size})", 2f, BarKind.FUNCTION),
@@ -139,6 +148,7 @@ class ClipboardPanelView(
         cardPad = context.dpf(if (wide) 14f else 10f)
         cardGap = context.dpf(if (wide) 10f else 6f)
         checkW = context.dpf(if (wide) 40f else 34f)
+        lockW = context.dpf(if (wide) 48f else 42f)
         textBase = baseline(textPaint)
         hintBase = baseline(hintPaint)
         titleBase = baseline(titlePaint)
@@ -150,6 +160,20 @@ class ClipboardPanelView(
         wipeOn = on
         updateBar()
     }
+
+    /** 上了锁的条目(服务创建面板、每次打开面板、点了锁之后调用)。 */
+    fun setLocked(set: Set<String>) {
+        locked = set
+        selected.removeAll(set)   // 上了锁的不能同时处于选中
+        relayout()
+        updateBar()
+    }
+
+    /** 多选时能选的条目:没上锁的。 */
+    private fun selectable(): List<String> = if (locked.isEmpty()) items else items.filter { it !in locked }
+
+    /** 这一条右边要不要留出小锁的位置:多选时每条都有(回收箱除外);平时只有上了锁的。 */
+    private fun hasLock(t: String): Boolean = !inTrash && (selecting || t in locked)
 
     fun setItems(list: List<String>) {
         clipItems = list
@@ -201,7 +225,7 @@ class ClipboardPanelView(
     private fun enterSelect(first: String) {
         selecting = true
         selected.clear()
-        selected.add(first)
+        if (first !in locked) selected.add(first)
         relayout()
         updateBar()
     }
@@ -215,7 +239,7 @@ class ClipboardPanelView(
 
     private fun relayout() {
         if (width == 0) return
-        val maxTextW = width - 2 * padX - 2 * cardPad - (if (selecting) checkW else 0f)
+        val baseTextW = width - 2 * padX - 2 * cardPad - (if (selecting) checkW else 0f)
         // 一屏正好 9 个位置(第 1 个到第 9 个刚好铺满内容区,不留空):间距固定,每个位置的高度按比例拉高,字体不动。
         // 剪贴板页第 1 个位置给常驻小字,所以只放 8 条;回收箱 9 条。
         val total = contentBottom() - (padTop + barH + barGap)
@@ -232,7 +256,7 @@ class ClipboardPanelView(
             hintH = if (inTrash) 0f else h
             hintTop = if (inTrash) 0f else h + curGap
         }
-        lines = items.map { wrap(it, maxTextW) }
+        lines = items.map { wrap(it, baseTextW - (if (hasLock(it)) lockW else 0f)) }
         tops = FloatArray(items.size + 1)
         cardH = FloatArray(items.size)
         var y = 0f
@@ -344,7 +368,12 @@ class ClipboardPanelView(
                 )
             }
 
-            if (selecting) {
+            if (hasLock(items[i])) {
+                val isLocked = items[i] in locked
+                drawLock(canvas, right - lockW / 2f, top + h / 2f, isLocked, if (isLocked) palette.accent else palette.textFaint)
+            }
+
+            if (selecting && items[i] !in locked) {   // 上了锁的选不了,不画圆圈
                 val cx = left + cardPad + checkW * 0.4f
                 val cy = top + h / 2f
                 val r = context.dpf(10f)
@@ -360,6 +389,28 @@ class ClipboardPanelView(
                 }
             }
         }
+    }
+
+    /** 小锁:closed = 实心合上的锁(上了锁),否则是锁梁翘起的锁(没上锁)。cx、cy 是图标中心。 */
+    private fun drawLock(canvas: Canvas, cx: Float, cy: Float, closed: Boolean, color: Int) {
+        val u = context.dpf(if (context.isWide()) 7.5f else 6.5f)
+        val bodyTop = cy - 0.275f * u   // 整个图标(锁梁顶到锁身底)高 2.85u,垂直居中
+        fill.color = color
+        tmp.set(cx - u, bodyTop, cx + u, bodyTop + 1.7f * u)
+        canvas.drawRoundRect(tmp, 0.3f * u, 0.3f * u, fill)
+        val r = 0.65f * u
+        val arcCy = bodyTop - 0.5f * u
+        lockPath.reset()
+        lockPath.moveTo(cx - r, bodyTop)
+        lockPath.lineTo(cx - r, arcCy)
+        tmp.set(cx - r, arcCy - r, cx + r, arcCy + r)
+        lockPath.arcTo(tmp, 180f, 180f)
+        if (closed) lockPath.lineTo(cx + r, bodyTop)   // 合上:右边也落到锁身上;没上锁:右边悬空
+        ring.color = color
+        canvas.drawPath(lockPath, ring)
+        // 锁孔
+        fill.color = palette.key
+        canvas.drawCircle(cx, bodyTop + 0.8f * u, 0.22f * u, fill)
     }
 
     private fun hit(y: Float): Int {
@@ -381,7 +432,7 @@ class ClipboardPanelView(
         val i = hit(y)
         if (i < 0) return false
         if (selecting) {
-            toggle(items[i])
+            if (!inTrash && x >= width - padX - lockW) listener.onToggleLock(items[i]) else toggle(items[i])
         } else if (inTrash) {
             listener.onPasteTrash(items[i])
         } else {
@@ -398,6 +449,7 @@ class ClipboardPanelView(
     }
 
     private fun toggle(t: String) {
+        if (t in locked) return   // 上了锁的不能选(也就删不掉)
         if (!selected.remove(t)) selected.add(t)
         updateBar()
     }
@@ -413,7 +465,8 @@ class ClipboardPanelView(
             }
             ID_CANCEL -> exitSelect()
             ID_ALL -> {
-                if (selected.size == items.size) selected.clear() else selected.addAll(items)
+                val can = selectable()
+                if (selected.size == can.size) selected.clear() else selected.addAll(can)
                 updateBar()
             }
             ID_DEL -> {
