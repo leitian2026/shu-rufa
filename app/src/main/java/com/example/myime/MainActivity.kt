@@ -54,6 +54,7 @@ class MainActivity : Activity() {
             setOnClickListener { startActivity(Intent(this@MainActivity, BackupActivity::class.java)) }
         }, smallButtonParams())
         addTranslateSettings(root, pad)
+        addEdgeSwitch(root, pad)
         addDebugSwitch(root, pad)
         root.addView(EditText(this).apply {
             hint = "在这里测试输入"
@@ -61,6 +62,27 @@ class MainActivity : Activity() {
             setPadding(0, pad, 0, 0)
         })
         setContentView(ScrollView(this).apply { addView(root) })
+    }
+
+    /** Edge 搜索框自动弹键盘的过滤开关:默认开,只对 Edge 生效。 */
+    private fun addEdgeSwitch(root: LinearLayout, pad: Int) {
+        root.addView(TextView(this).apply {
+            text = "Edge 浏览器"
+            textSize = 20f
+            setPadding(0, pad, 0, 0)
+        })
+        root.addView(foldNote(
+            "在 Edge 里点收藏夹时,Edge 会让历史搜索框自动要求弹出键盘,过一秒左右又自己收起(换别的输入法也一样)。" +
+                "开启后,键盘会在这种情况下先等一小会儿(约 0.12 秒):焦点马上转走就不弹;" +
+                "是你自己点了搜索框,就只晚这一点点时间再弹出来。只对 Edge 生效,别的应用不受影响,没有定时任务,不增加耗电。",
+        ))
+        root.addView(CheckBox(this).apply {
+            text = "不让 Edge 点收藏夹时弹出键盘"
+            textSize = 15f
+            minHeight = dpi(48f)
+            isChecked = DictConfig.edgeFilter(this@MainActivity)
+            setOnCheckedChangeListener { _, v -> DictConfig.setEdgeFilter(this@MainActivity, v) }
+        })
     }
 
     /** 调试日志开关:默认关。开了以后键盘往系统日志(logcat,标签 MyIme)写耗时信息,用电脑 adb 才看得到。 */
