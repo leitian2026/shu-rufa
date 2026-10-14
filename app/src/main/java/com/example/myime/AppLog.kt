@@ -14,7 +14,7 @@ import java.util.concurrent.Executors
  *  - d():只在调用方已经判断过「调试日志开关打开」时才会被调到(见 MyImeService.diag)。
  *  - w():出错 / 词库加载失败这类很少发生的事,不管开关都记。
  * 文件在 cacheDir 里:不进备份、不上传;超过约 200 KB 就丢掉前一半旧的。写文件在单独的低优先级线程里,不挡打字。
- * 只记耗时、数量、出错原因,不记输入的内容。
+ * 只记耗时、数量、出错原因,以及键盘弹出时的应用包名和输入框类型(见 MyImeService.editorDesc),不记输入的内容。
  */
 object AppLog {
     private const val FILE = "debuglog.txt"
