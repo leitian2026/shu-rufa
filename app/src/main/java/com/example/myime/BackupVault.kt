@@ -58,6 +58,13 @@ object BackupConfig {
         prefs(ctx).edit().remove("dav_url").remove("dav_user").remove("dav_folder").remove("dav_pw").apply()
     }
 
+    /** 用户自己改的设备名;空表示用系统里的「设备名称」。存在 backupcfg(设备专属,不进备份)。 */
+    fun deviceNameCustom(ctx: Context): String = prefs(ctx).getString("dev_name", "") ?: ""
+
+    fun setDeviceName(ctx: Context, name: String) {
+        prefs(ctx).edit().putString("dev_name", name.trim()).apply()
+    }
+
     /** 每天自动备份到坚果云一次(键盘收起时检查,数据有变化才备份)。默认开。 */
     fun auto(ctx: Context): Boolean = prefs(ctx).getBoolean("auto", true)
 
