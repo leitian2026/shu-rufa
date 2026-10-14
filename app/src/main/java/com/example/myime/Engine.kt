@@ -1,7 +1,6 @@
 package com.example.myime
 
 import android.content.Context
-import android.util.Log
 
 /**
  * consumed:这个候选消耗了输入串的前几个字符(拼音分段上屏时,剩余部分继续留在组合区)。
@@ -515,7 +514,7 @@ object DictLoader {
             e
         }
     } catch (e: Throwable) {
-        Log.w(TAG, "load pinyin failed", e)
+        AppLog.w(TAG, "load pinyin failed", e)
         ErrorHint.set("pinyin", ErrorHint.of("拼音词库加载失败", e))
         null
     }
@@ -550,7 +549,7 @@ object DictLoader {
             e
         }
     } catch (e: Throwable) {
-        Log.w(TAG, "load stroke failed", e)
+        AppLog.w(TAG, "load stroke failed", e)
         ErrorHint.set("stroke", ErrorHint.of("笔画词库加载失败", e))
         null
     }
@@ -608,7 +607,7 @@ object DictLoader {
             }
         }
     } catch (e: Throwable) {
-        Log.w(TAG, "load english failed", e)
+        AppLog.w(TAG, "load english failed", e)
         ErrorHint.set("english", ErrorHint.of("英文词库加载失败", e))
         null
     }
