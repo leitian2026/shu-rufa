@@ -212,7 +212,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     // ---------------------------------------------------------------- 绘制
 
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(palette.background)
+        canvas.drawColor(palette.keyboardBackground)
         val now = drawingTime
         var fading = false
         for (i in keys.indices) {
