@@ -26,8 +26,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()   // 候选查询:只做计算,不碰磁盘
-    // 诊断日志默认关闭(不取时间、不拼字符串、不写日志)。要排查卡顿时:adb shell setprop log.tag.MyIme DEBUG,再重启输入法
-    private val diag = android.util.Log.isLoggable("MyIme", android.util.Log.DEBUG)
+    // 诊断日志默认关闭(不取时间、不拼字符串、不写日志)。打开方式二选一:
+    //  1. 应用首页的「调试日志」开关(下次键盘弹出时生效);
+    //  2. adb shell setprop log.tag.MyIme DEBUG,再重启输入法。
+    @Volatile
+    private var diag = false
+
+    private fun refreshDiag() {
+        diag = android.util.Log.isLoggable("MyIme", android.util.Log.DEBUG) || DictConfig.debugLog(applicationContext)
+    }
     private val ioPool = Executors.newSingleThreadExecutor()    // 所有写文件(带 fsync,可能几十毫秒)都放这里,不会排在候选查询前面
 
     @Volatile private var pinyinEngine: Engine? = null
@@ -149,7 +156,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         loadedStamp = DictStore.stamp(applicationContext)
         clipWipe = getSharedPreferences("clipcfg", MODE_PRIVATE).getBoolean("wipe", true)
         loadClips()
-        if (diag) android.util.Log.d("MyIme", "service created (进程新启动或服务重建;之后若还要重新加载词库就是冷启动)")
+        AppLog.init(applicationContext)
+        refreshDiag()
+        if (diag) AppLog.d("MyIme", "service created (进程新启动或服务重建;之后若还要重新加载词库就是冷启动)")
     }
 
     // ------------------------------------------------------------ 剪贴板历史(内存 + 落盘)
@@ -240,8 +249,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 KIND_STROKE -> DictLoader.loadStroke(ctx)
                 else -> DictLoader.loadEnglish(ctx)
             }
-            // 只在 adb logcat 里看得到(标签 MyIme):每次加载词库花了多少毫秒
-            android.util.Log.d("MyIme", "load dict kind=$kind ${android.os.SystemClock.elapsedRealtime() - t0}ms ok=${engine != null}")
+            // 只在 adb logcat 里看得到(标签 MyIme),且只在调试日志打开时:每次加载词库花了多少毫秒
+            if (diag) AppLog.d("MyIme", "load dict kind=$kind ${android.os.SystemClock.elapsedRealtime() - t0}ms ok=${engine != null}")
             main.post {
                 if (gen == dictGen) {
                     when (kind) {
@@ -880,7 +889,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             sizeChanged = f0 != KbSize.floating || l0 != KbSize.leftFrac || b0 != KbSize.bottomDp ||
                 s0 != KbSize.scale || h0 != KbSize.heightDp || w0 != KbSize.widthFrac
         }
-        if (diag) android.util.Log.d("MyIme", "show restarting=$restarting pinyin=${pinyinEngine != null} stroke=${strokeEngine != null}")
+        refreshDiag()   // 首页的开关改了以后,下次键盘弹出就生效
+        if (diag) AppLog.d("MyIme", "show restarting=$restarting pinyin=${pinyinEngine != null} stroke=${strokeEngine != null}")
         if (!restarting) captureClipboardNow(fromListener = false)   // 切到别的输入法期间复制的内容,回来时补进历史
 
         val now = android.os.SystemClock.elapsedRealtime()
@@ -1631,7 +1641,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         onComposingChanged()
         worker.execute {
             if (gen != queryGen) return@execute   // 排队期间已有更新的输入:这个旧查询不用算了(最新一次的任务一定会跑)
-            val tq = if (diag) android.os.SystemClock.elapsedRealtime() else 0L
+            val dg = diag   // 查询过程中开关被改也不会算出离谱的耗时
+            val tq = if (dg) android.os.SystemClock.elapsedRealtime() else 0L
             val result = try {
                 engine.query(code)
                     .also { ErrorHint.clear("query") }
@@ -1639,9 +1650,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 ErrorHint.set("query", ErrorHint.of("查询出错", t))
                 emptyList()
             }
-            if (diag) {
+            if (dg) {
                 val dt = android.os.SystemClock.elapsedRealtime() - tq
-                if (dt >= 40) android.util.Log.d("MyIme", "slow query len=${code.length} ${dt}ms")   // 单次查询超过 40ms 才记
+                if (dt >= 40) AppLog.d("MyIme", "slow query len=${code.length} ${dt}ms")   // 单次查询超过 40ms 才记
             }
             main.post { if (gen == queryGen) applyCandidates(code, result) }
         }
