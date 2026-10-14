@@ -98,6 +98,16 @@ object DictConfig {
         p(ctx).edit().putBoolean("debug_log", v).apply()
     }
 
+    /**
+     * 压住 Edge 点收藏夹时自动弹出又收起的键盘(默认开)。关掉就完全不拦,键盘行为和以前一样。
+     * 只对 Edge 生效(见 MyImeService.onShowInputRequested),别的应用不受影响。
+     */
+    fun edgeFilter(ctx: Context): Boolean = p(ctx).getBoolean("edge_filter", true)
+
+    fun setEdgeFilter(ctx: Context, v: Boolean) {
+        p(ctx).edit().putBoolean("edge_filter", v).apply()
+    }
+
     /** 记录并使用我的用词(词频学习)。 */
     fun learn(ctx: Context): Boolean = p(ctx).getBoolean("learn", true)
 
