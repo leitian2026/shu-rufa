@@ -17,8 +17,8 @@ class Palette(context: Context) {
     val dark: Boolean =
         (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
-    // 键盘区底色(浅蓝灰)。输入翻译打开时键盘配色不变,只有正在用的翻译那一格和翻译框用绿色。
-    val background = if (dark) 0xFF17191C.toInt() else 0xFFE2E6ED.toInt()
+    // 键盘区底色,同时也是设置页(主页 / 词库管理 / 备份与还原)的页面底色(浅色 #F4F5F9)。输入翻译打开时键盘配色不变,只有正在用的翻译那一格和翻译框用绿色。
+    val background = if (dark) 0xFF17191C.toInt() else 0xFFF4F5F9.toInt()
 
     // 上方预览条 + 工具栏/候选栏(白底)
     val topBar = if (dark) 0xFF222529.toInt() else 0xFFFFFFFF.toInt()
