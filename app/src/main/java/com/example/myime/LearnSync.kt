@@ -87,6 +87,24 @@ object LearnSync {
         }
     }
 
+    /**
+     * 从备份还原成功后调用(BackupManager.restore):学习数据被换成了备份里的内容,可能缺了之前已经合并过的别的设备的数据,
+     * 而这里记着的「这个远端文件我合并过了」会让同步把没变化的远端文件跳过。所以清掉这些记录、把上次拉取时间归零,
+     * 下次键盘弹出时就会把别的设备的文件重新下载、合并一遍(只补缺的,不覆盖现有数据)。
+     * 只清本机 backupcfg 里的记录,不动云端、不动学习数据。只在还原那一刻做一次,平时的同步节奏不变。
+     */
+    fun afterRestore(ctx: Context) {
+        try {
+            val p = BackupConfig.prefs(ctx.applicationContext)
+            val ed = p.edit()
+            for (k in p.all.keys) if (k.startsWith(SIG_PREFIX)) ed.remove(k)
+            ed.putLong(K_PULL, 0L).putLong(K_NEXT, 0L)
+            ed.commit()   // 还原完马上会重启进程,用 commit 保证写进去了
+        } catch (ex: Exception) {
+            // 清不掉也不影响还原本身
+        }
+    }
+
     // ------------------------------------------------------------ 触发
 
     /**
@@ -216,7 +234,7 @@ object LearnSync {
     // ------------------------------------------------------------ 设备 ID 和密钥
 
     /** 这台手机的设备 ID(随机 10 位十六进制,第一次用时生成,存在不进备份的设置里)。 */
-    private fun deviceId(app: Context): String {
+    internal fun deviceId(app: Context): String {
         val p = BackupConfig.prefs(app)
         p.getString(K_DEV, null)?.takeIf { it.length == 10 }?.let { return it }
         val id = BackupCrypto.randomBytes(5).joinToString("") { "%02x".format(it) }
