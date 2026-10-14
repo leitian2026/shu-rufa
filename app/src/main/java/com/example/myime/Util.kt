@@ -1,8 +1,19 @@
 package com.example.myime
 
+import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
+import android.content.res.ColorStateList
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
+import android.graphics.drawable.StateListDrawable
 import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
 import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 
 fun Context.dpf(v: Float): Float =
     TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics)
@@ -183,6 +194,74 @@ fun Context.smallButton(label: String? = null): Button = Button(this).apply {
     minHeight = 0
     minimumHeight = dpi(44f)   // 够手指点;横向不放太宽,词库卡片里一行要放下三个按钮
     setPadding(dpi(12f), dpi(10f), dpi(12f), dpi(10f))
+    // 白底圆角(深色模式下用键盘的深灰键色),按下有水波纹,不可用时变灰
+    val pal = Palette(this@smallButton)
+    fun shape(c: Int) = GradientDrawable().apply {
+        cornerRadius = dpf(10f)
+        setColor(c)
+    }
+    val states = StateListDrawable().apply {
+        addState(intArrayOf(-android.R.attr.state_enabled), shape(if (pal.dark) 0xFF2B2E34.toInt() else 0xFFE9EBF0.toInt()))
+        addState(intArrayOf(), shape(pal.key))
+    }
+    background = RippleDrawable(ColorStateList.valueOf(0x33808896), states, null)
+    setTextColor(
+        ColorStateList(
+            arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+            intArrayOf(pal.textFaint, pal.text),
+        ),
+    )
+}
+
+/** 设置页统一的页面底色(和键盘底色一致)。在 setContentView 之前或之后调用都行。 */
+fun Activity.applyPageBackground() {
+    window.setBackgroundDrawable(ColorDrawable(Palette(this).background))
+}
+
+/** 对话框也用同一个底色(圆角)。必须在 show() 之前调用。 */
+fun AlertDialog.stylePage(): AlertDialog {
+    val pal = Palette(context)
+    window?.setBackgroundDrawable(GradientDrawable().apply {
+        cornerRadius = context.dpf(20f)
+        setColor(pal.background)
+    })
+    return this
+}
+
+/** 等于 create() + 统一底色 + show()。 */
+fun AlertDialog.Builder.showPage(): AlertDialog = create().stylePage().also { it.show() }
+
+/**
+ * 可折叠的说明:默认只显示一行「▸ 说明」,点一下展开、再点收起(状态不保存)。
+ * selectable = true 时展开后的文字可以长按选中复制(比如文件夹路径)。
+ */
+fun Context.foldNote(content: String, title: String = "说明", sp: Float = 13f, selectable: Boolean = false): LinearLayout {
+    val pal = Palette(this)
+    val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    val body = TextView(this).apply {
+        text = content
+        textSize = sp
+        alpha = 0.7f
+        visibility = View.GONE
+        if (selectable) setTextIsSelectable(true)
+        setPadding(0, 0, 0, dpi(6f))
+    }
+    val head = TextView(this).apply {
+        text = "▸ $title"
+        textSize = sp + 1f
+        setTextColor(pal.accent)
+        gravity = Gravity.CENTER_VERTICAL
+        minHeight = dpi(36f)
+        isClickable = true
+        setOnClickListener {
+            val show = body.visibility != View.VISIBLE
+            body.visibility = if (show) View.VISIBLE else View.GONE
+            text = (if (show) "▾ " else "▸ ") + title
+        }
+    }
+    box.addView(head)
+    box.addView(body)
+    return box
 }
 
 /** 小按钮在竖排布局里靠左、不撑满,上下留一点空隙。 */
