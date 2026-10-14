@@ -119,7 +119,7 @@ class TranslateBarView(
             val r = context.dpf(12f)
             box.set(1f, 1f, w - 1f, h - 1f)
             p.style = Paint.Style.FILL
-            p.color = palette.topBar
+            p.color = palette.background
             canvas.drawRoundRect(box, r, r, p)
             p.style = Paint.Style.STROKE
             p.strokeWidth = context.dpf(1f)
