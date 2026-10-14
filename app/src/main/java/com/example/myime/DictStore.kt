@@ -91,6 +91,13 @@ object DictConfig {
     /** 英文最多保留多少个词。 */
     fun englishCap(ctx: Context): Int = p(ctx).getInt("english_cap", 80_000)
 
+    /** 调试日志开关(默认关)。开了以后键盘往 logcat(标签 MyIme)写启动 / 弹出 / 词库加载耗时 / 慢查询,只有耗时和数量,没有输入内容。 */
+    fun debugLog(ctx: Context): Boolean = p(ctx).getBoolean("debug_log", false)
+
+    fun setDebugLog(ctx: Context, v: Boolean) {
+        p(ctx).edit().putBoolean("debug_log", v).apply()
+    }
+
     /** 记录并使用我的用词(词频学习)。 */
     fun learn(ctx: Context): Boolean = p(ctx).getBoolean("learn", true)
 
