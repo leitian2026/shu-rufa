@@ -35,6 +35,77 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun refreshDiag() {
         diag = android.util.Log.isLoggable("MyIme", android.util.Log.DEBUG) || DictConfig.debugLog(applicationContext)
     }
+
+    // ---- 「键盘为什么弹出来」诊断:下面这几个变量和三个函数,只在 diag 为真(调试日志开着)时才会被碰到。
+    //      开关关了就一行都不跑:不读 EditorInfo 的细节、不取时间、不拼字符串、不写日志。
+    private var lastShowReqAt = 0L      // 最近一次系统要求弹键盘的时间
+    private var lastShowReqFlags = -1   // 那次要求的标志:0=隐式(焦点落到输入框自动弹)、1=应用显式要求、3=强制
+    private var lastShowAt = 0L         // 最近一次 onStartInputView 的时间
+
+    /** 系统(应用)要求显示键盘时调用,在 onStartInputView 之前。flags 能区分是应用主动要的还是焦点自动弹的。 */
+    override fun onShowInputRequested(flags: Int, configChange: Boolean): Boolean {
+        val r = super.onShowInputRequested(flags, configChange)
+        if (diag) {
+            lastShowReqAt = SystemClock.elapsedRealtime()
+            lastShowReqFlags = flags
+            AppLog.d("MyIme", "showRequested " + showFlagsName(flags) + " configChange=$configChange accepted=$r")
+        }
+        return r
+    }
+
+    private fun showFlagsName(flags: Int): String = when {
+        flags and android.view.inputmethod.InputMethod.SHOW_FORCED != 0 -> "forced(应用强制要求)"
+        flags and android.view.inputmethod.InputMethod.SHOW_EXPLICIT != 0 -> "explicit(应用主动调了 showSoftInput)"
+        else -> "implicit(没人显式要求,焦点落到输入框自动弹)"
+    }
+
+    /** 键盘弹出这一刻是哪个应用、什么输入框、系统是怎么要求的。只记类型和包名,不记输入的内容;密码框连提示文字都不记。 */
+    private fun editorDesc(info: EditorInfo): String {
+        val now = SystemClock.elapsedRealtime()
+        val type = info.inputType
+        val cls = type and InputType.TYPE_MASK_CLASS
+        val variation = type and InputType.TYPE_MASK_VARIATION
+        val pwd = (cls == InputType.TYPE_CLASS_TEXT &&
+            (variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)) ||
+            (cls == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD)
+        val clsName = when (cls) {
+            InputType.TYPE_CLASS_TEXT -> "TEXT"
+            InputType.TYPE_CLASS_NUMBER -> "NUMBER"
+            InputType.TYPE_CLASS_PHONE -> "PHONE"
+            InputType.TYPE_CLASS_DATETIME -> "DATETIME"
+            0 -> "NULL(不是真输入框,多半是容器抢了焦点)"
+            else -> "?"
+        }
+        val action = when (info.imeOptions and EditorInfo.IME_MASK_ACTION) {
+            EditorInfo.IME_ACTION_SEARCH -> "SEARCH"
+            EditorInfo.IME_ACTION_GO -> "GO"
+            EditorInfo.IME_ACTION_SEND -> "SEND"
+            EditorInfo.IME_ACTION_NEXT -> "NEXT"
+            EditorInfo.IME_ACTION_DONE -> "DONE"
+            EditorInfo.IME_ACTION_NONE -> "NONE"
+            else -> "UNSPEC"
+        }
+        val sb = StringBuilder()
+        sb.append("pkg=").append(info.packageName)
+        sb.append(" inputType=0x").append(Integer.toHexString(type)).append('(').append(clsName).append(')')
+        sb.append(" imeOptions=0x").append(Integer.toHexString(info.imeOptions)).append('(').append(action).append(')')
+        sb.append(" fieldId=").append(info.fieldId)
+        if (!info.fieldName.isNullOrEmpty()) sb.append(" fieldName=").append(info.fieldName)
+        if (!pwd) {
+            val hint = info.hintText?.toString()?.replace('\n', ' ')?.take(24)
+            if (!hint.isNullOrEmpty()) sb.append(" hint=").append(hint)
+        }
+        sb.append(" viewShown=").append(isInputViewShown)
+        sb.append(" hardKb=").append(resources.configuration.keyboard != android.content.res.Configuration.KEYBOARD_NOKEYS)
+        if (lastShowReqAt > 0) {
+            sb.append(" req=").append(showFlagsName(lastShowReqFlags).substringBefore('(')).append(" +").append(now - lastShowReqAt).append("ms")
+        }
+        if (lastShowAt > 0) sb.append(" sinceLastShow=").append(now - lastShowAt).append("ms")
+        lastShowAt = now
+        return sb.toString()
+    }
     private val ioPool = Executors.newSingleThreadExecutor()    // 所有写文件(带 fsync,可能几十毫秒)都放这里,不会排在候选查询前面
 
     @Volatile private var pinyinEngine: Engine? = null
@@ -293,6 +364,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     override fun onWindowHidden() {
         super.onWindowHidden()
+        if (diag && lastShowAt > 0) AppLog.d("MyIme", "hidden after ${SystemClock.elapsedRealtime() - lastShowAt}ms")
         // 键盘收起了:没发出的翻译、没回来的请求、挂着的网络回调都放掉,不在后台耗电耗流量
         transBar?.dismissPopup()
         candidateBar?.dismissPinPopup()
@@ -890,7 +962,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 s0 != KbSize.scale || h0 != KbSize.heightDp || w0 != KbSize.widthFrac
         }
         refreshDiag()   // 首页的开关改了以后,下次键盘弹出就生效
-        if (diag) AppLog.d("MyIme", "show restarting=$restarting pinyin=${pinyinEngine != null} stroke=${strokeEngine != null}")
+        if (diag) AppLog.d("MyIme", "show restarting=$restarting pinyin=${pinyinEngine != null} stroke=${strokeEngine != null} " + editorDesc(info))
         if (!restarting) captureClipboardNow(fromListener = false)   // 切到别的输入法期间复制的内容,回来时补进历史
 
         val now = android.os.SystemClock.elapsedRealtime()
