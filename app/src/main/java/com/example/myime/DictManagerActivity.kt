@@ -42,6 +42,7 @@ class DictManagerActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         active = this
+        applyPageBackground()
         val pad = dpi(16f)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -50,19 +51,12 @@ class DictManagerActivity : Activity() {
 
         root.addView(label("词库管理", 24f, bold = true))
         root.addView(
-            label(
-                "词库存放的文件夹(可手动部署,见下):\n" + DictStore.root(this).absolutePath, 13f, alpha = 0.7f,
-            ).apply {
-                setTextIsSelectable(true)
-                setPadding(0, pad / 2, 0, 0)
-            },
-        )
-        root.addView(
-            label(
-                "手动部署:把转换好的 pinyin.txt / stroke.txt / english.txt / english_bigram.txt 直接放进这个文件夹," +
+            foldNote(
+                "词库存放的文件夹(可手动部署,见下):\n" + DictStore.root(this).absolutePath + "\n\n" +
+                    "手动部署:把转换好的 pinyin.txt / stroke.txt / english.txt / english_bigram.txt 直接放进这个文件夹," +
                     "或把原始文件放进其中的 raw/ 子文件夹后点「下载并安装」(下载失败时会用 raw/ 里已有的文件转换)。" +
                     "装好后回到输入框,键盘会自动重新加载。没装时拼音/笔画用内置小样本,英文页没有补全。",
-                13f, alpha = 0.7f,
+                selectable = true,
             ).apply { setPadding(0, pad / 2, 0, pad) },
         )
 
@@ -86,12 +80,7 @@ class DictManagerActivity : Activity() {
 
         // ---- 网络
         root.addView(label("网络", 18f, bold = true).apply { setPadding(0, pad, 0, pad / 2) })
-        root.addView(
-            label(
-                "下载地址在 GitHub / norvig.com。连不上时可以填一个镜像前缀(会先试 前缀+原地址,再直连),留空 = 直连。",
-                13f, alpha = 0.7f,
-            ),
-        )
+        root.addView(foldNote("下载地址在 GitHub / norvig.com。连不上时可以填一个镜像前缀(会先试 前缀+原地址,再直连),留空 = 直连。"))
         val mirror = EditText(this).apply {
             hint = "镜像前缀,例如 https://你的镜像/"
             setText(DictConfig.mirror(this@DictManagerActivity))
@@ -111,10 +100,9 @@ class DictManagerActivity : Activity() {
         // ---- 学习
         root.addView(label("词频学习", 18f, bold = true).apply { setPadding(0, pad, 0, pad / 2) })
         root.addView(
-            label(
+            foldNote(
                 "选过的候选会排得更靠前;英文还会记住你常打的新词和词的先后顺序。只存在本机应用私有目录,不上传。" +
                     "密码框、网址/邮箱框,以及应用声明不要建议/个性化学习的输入框里不记录。",
-                13f, alpha = 0.7f,
             ),
         )
         root.addView(
@@ -147,7 +135,7 @@ class DictManagerActivity : Activity() {
                             refresh()
                         }
                         .setNegativeButton("取消", null)
-                        .show()
+                        .showPage()
                 }
             },
             smallButtonParams(),
@@ -191,7 +179,7 @@ class DictManagerActivity : Activity() {
             }
         }
         box.addView(label(title, 17f, bold = true))
-        box.addView(label(desc, 13f, alpha = 0.7f).apply { setPadding(0, dpi(2f), 0, dpi(6f)) })
+        box.addView(foldNote(desc))
         card.status = label("", 14f)
         box.addView(card.status)
         card.source = label("", 12f, alpha = 0.7f)
@@ -319,7 +307,7 @@ class DictManagerActivity : Activity() {
                 Toast.makeText(this, "已恢复默认来源,点「下载并更新」生效", Toast.LENGTH_SHORT).show()
             }
             .setNeutralButton("取消", null)
-            .show()
+            .showPage()
     }
 
     private fun showProgress(pack: String, text: String, frac: Float) {
