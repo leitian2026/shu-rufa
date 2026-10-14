@@ -19,6 +19,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyPageBackground()
         val pad = dpi(20f)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -29,14 +30,13 @@ class MainActivity : Activity() {
             text = "我的输入法"
             textSize = 24f
         })
-        root.addView(TextView(this).apply {
-            text = "拼音 / 笔画 / 英文 / 表情 / 剪贴板 / 输入翻译。联网只有两处:「词库管理」页点下载时;以及你在键盘「功能」页打开「输入翻译」并在翻译框里打字时(原文会发给微软 / 谷歌翻译)。其余时候键盘不联网。\n" +
+        root.addView(foldNote(
+            sp = 14f,
+            content = "拼音 / 笔画 / 英文 / 表情 / 剪贴板 / 输入翻译。联网只有两处:「词库管理」页点下载时;以及你在键盘「功能」页打开「输入翻译」并在翻译框里打字时(原文会发给微软 / 谷歌翻译)。其余时候键盘不联网。\n" +
                 "剪贴板历史加密后保存在本机应用私有目录(用手机的安全存储密钥加密),本身不联网上传(只有你开了坚果云备份时,才会随加密的备份包一起上传);输入习惯(词频)只存在本机应用私有目录,可在词库管理里清除。\n" +
                 "「备份与还原」可以把输入习惯和设置加密后存到你选的文件夹(本地、网盘),备份文件没有你的密码就打不开;网盘上传由网盘 App 完成,本输入法自己不联网。\n\n" +
-                "先点第一个按钮,在系统设置里打开本输入法;再点第二个按钮切换过来,然后在下面的输入框里试试。"
-            textSize = 15f
-            setPadding(0, pad / 2, 0, pad)
-        })
+                "先点第一个按钮,在系统设置里打开本输入法;再点第二个按钮切换过来,然后在下面的输入框里试试。",
+        ).apply { setPadding(0, pad / 2, 0, pad) })
         root.addView(smallButton("1. 去系统设置启用").apply {
             setOnClickListener { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) }
         }, smallButtonParams())
@@ -86,12 +86,11 @@ class MainActivity : Activity() {
             textSize = 20f
             setPadding(0, pad, 0, 0)
         })
-        root.addView(TextView(this).apply {
-            text = "全部留空 = 用默认的免费接口(微软 Edge / 谷歌 gtx)。接口以后变了,在这里改地址即可。" +
+        root.addView(foldNote(
+            "全部留空 = 用默认的免费接口(微软 Edge / 谷歌 gtx)。接口以后变了,在这里改地址即可。" +
                 "填了「密钥」就改用官方接口:微软 Azure Translator、谷歌 Cloud Translation v2(此时地址留空会用官方默认地址)。" +
-                "设置只存在本机应用私有目录。"
-            textSize = 13f
-        })
+                "设置只存在本机应用私有目录。",
+        ))
         val msUrl = field(root, "微软:接口地址", Translator.DEF_MS_FREE, "ms_url", false)
         val msKey = field(root, "微软:密钥(可空,官方接口才需要)", "Azure Translator 密钥", "ms_key", true)
         val msRegion = field(root, "微软:区域(可空,如 eastasia)", "密钥所在区域", "ms_region", true)
