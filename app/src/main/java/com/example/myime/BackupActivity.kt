@@ -23,7 +23,8 @@ import java.util.Locale
 /**
  * 备份与还原页(应用首页的「备份与还原」进入)。
  * 备份只有两个去处:本地(存成一个加密压缩包到手机上任意位置)、坚果云(WebDAV 上传同样的加密压缩包)。
- * 还原也是两个:选本地压缩包,或点一下从坚果云下载最新的一份;都会自动解压还原。
+ * 还原也是两个:选本地压缩包,或从坚果云选一台设备的备份(本机预选);都会自动解压还原。
+ * 几台设备(手机、平板)可以共用同一个坚果云文件夹:备份文件名里带设备名,各管各的,清理旧备份也只清自己的。
  * 加密用的备份密码在构建时从环境变量 BACKUP_PASSWORD 读入(见 BackupVault.defaultPassword()),App 里不用设置、不用记。
  * 页面打开了防截屏。
  */
@@ -69,7 +70,8 @@ class BackupActivity : Activity() {
             label(
                 "要先在坚果云网页端:账户信息 → 安全选项 → 第三方应用管理 → 添加应用,生成一个「应用密码」(不是登录密码)。" +
                     "账号填坚果云登录邮箱。备份会放在你指定的文件夹里(默认 myime,不存在会自动创建;" +
-                    "如果提示不能创建,请先在坚果云里建好这个文件夹)。",
+                    "如果提示不能创建,请先在坚果云里建好这个文件夹)。" +
+                    "几台设备(手机、平板)可以填同一个文件夹,备份文件名里会带各自的设备名,互不干扰。",
                 13f, alpha = 0.7f,
             ),
         )
@@ -92,18 +94,18 @@ class BackupActivity : Activity() {
         root.addView(smallButton("备份到坚果云").apply { setOnClickListener { startCloudBackup() } }, smallButtonParams())
         root.addView(
             label(
-                "本地:选一个位置存成单个加密压缩包(手机上任意文件夹都行)。坚果云:自动上传,云端只保留最近 7 份。",
+                "本地:选一个位置存成单个加密压缩包(手机上任意文件夹都行)。坚果云:自动上传,云端每台设备各保留最近 7 份。",
                 13f, alpha = 0.7f,
             ),
         )
 
         root.addView(section("3. 还原"))
         root.addView(smallButton("从本地压缩包还原…").apply { setOnClickListener { pickFile(REQ_RESTORE_PICK) } }, smallButtonParams())
-        root.addView(smallButton("从坚果云还原(最新一份)").apply { setOnClickListener { confirmCloudRestore() } }, smallButtonParams())
+        root.addView(smallButton("从坚果云还原…").apply { setOnClickListener { startCloudRestore() } }, smallButtonParams())
         root.addView(
             label(
                 "会用备份里的内容替换现在的数据和设置,完成后输入法会重启一次;还原前的数据会在应用内留一份。" +
-                    "换手机时先设置好坚果云账号,再点「从坚果云还原」。",
+                    "换手机时先设置好坚果云账号,再点「从坚果云还原」,在列表里选旧手机的备份(列表里本机的排第一并预选;新手机没有本机备份,要自己点选)。",
                 13f, alpha = 0.7f,
             ),
         )
@@ -165,6 +167,7 @@ class BackupActivity : Activity() {
         } else {
             sb.append("未设置账号")
         }
+        sb.append("\n    本机设备名:").append(BackupNames.clean(BackupManager.deviceName(this)))
         sb.append("\n    上次成功:").append(fmt(BackupConfig.lastOk(this, BackupConfig.CLOUD)))
         val m = BackupConfig.lastMsg(this, BackupConfig.CLOUD)
         if (m.startsWith("失败")) sb.append("\n    最近一次").append(m)
@@ -255,15 +258,21 @@ class BackupActivity : Activity() {
             setSingleLine(true)
             setText(BackupConfig.davFolder(this@BackupActivity))
         }
+        val devName = EditText(this).apply {
+            hint = "本机设备名(留空用系统设备名称:${BackupManager.systemDeviceName(this@BackupActivity)})"
+            setSingleLine(true)
+            setText(BackupConfig.deviceNameCustom(this@BackupActivity))
+        }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dpi(20f), dpi(8f), dpi(20f), 0)
             addView(user)
             addView(pw)
             addView(folder)
+            addView(devName)
         }
         AlertDialog.Builder(this).setTitle("设置坚果云账号")
-            .setMessage("密码用「应用密码」,不是坚果云的登录密码。保存后会自动测试连接。")
+            .setMessage("密码用「应用密码」,不是坚果云的登录密码。几台设备可以填同一个文件夹,用设备名区分各自的备份。保存后会自动测试连接。")
             .setView(box)
             .setPositiveButton("保存") { _, _ ->
                 val u = user.text.toString().trim()
@@ -275,6 +284,7 @@ class BackupActivity : Activity() {
                     WebDavClient.splitFolder(f).isEmpty() -> toast("文件夹名不对")
                     else -> {
                         BackupConfig.setDav(this, BackupConfig.DEFAULT_DAV_URL, u, f, p.ifEmpty { null })
+                        BackupConfig.setDeviceName(this, devName.text.toString())
                         refresh()
                         testDav()
                     }
@@ -307,9 +317,8 @@ class BackupActivity : Activity() {
     }
 
     private fun startLocalBackup() {
-        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val i = Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-            .setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE, BackupManager.PREFIX + stamp + BackupManager.EXT)
+            .setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE, BackupManager.backupFileName(this))
         try {
             startActivityForResult(i, REQ_EXPORT)
         } catch (e: Exception) {
@@ -331,28 +340,73 @@ class BackupActivity : Activity() {
 
     // ------------------------------------------------------------ 还原
 
-    private fun confirmCloudRestore() {
+    /** 点「从坚果云还原…」:只发一次列目录请求,弹出每台设备最新备份的列表(本机排第一并预选)。 */
+    private fun startCloudRestore() {
         if (!BackupConfig.davConfigured(this)) {
             toast("请先设置坚果云账号")
             return
         }
-        AlertDialog.Builder(this).setTitle("从坚果云还原")
-            .setMessage("会下载坚果云上最新的一份备份,并用它替换现在的数据和设置。还原前的数据会在应用内留一份。继续吗?")
-            .setPositiveButton("还原") { _, _ ->
-                runBg("正在从坚果云下载…") {
-                    try {
-                        val (name, file) = BackupManager.downloadLatest(this, BackupManager.PREFIX, BackupManager.EXT)
-                        ui.post { say("已下载 $name,正在解密并校验…") }
-                        val r = BackupManager.restore(this) { FileInputStream(file) }
-                        BackupManager.clearTemp(this)
-                        ui.post { finishRestore(r) }
-                    } catch (e: Exception) {
-                        BackupManager.clearTemp(this)
-                        ui.post { say("从坚果云下载失败:" + (e.message ?: e.javaClass.simpleName)) }
-                    }
-                }
+        runBg("正在读取坚果云上的备份列表…") {
+            try {
+                val groups = BackupManager.listCloudBackups(this)
+                ui.post { say(""); chooseCloudBackup(groups) }
+            } catch (e: Exception) {
+                ui.post { say("读取坚果云备份列表失败:" + (e.message ?: e.javaClass.simpleName)) }
             }
+        }
+    }
+
+    private fun sizeText(bytes: Long): String =
+        if (bytes >= 1024 * 1024) "%.1f MB".format(Locale.US, bytes / 1048576.0) else "${(bytes + 1023) / 1024} KB"
+
+    private fun chooseCloudBackup(groups: List<BackupNames.Group>) {
+        val items = groups.map { g ->
+            g.label + (if (g.local) "(本机)" else "") + "\n" + BackupNames.stampText(g.stamp) + " · " + sizeText(g.size)
+        }.toTypedArray()
+        var sel = if (groups[0].local) 0 else -1   // 没有本机的备份(新手机)时不预选,免得顺手点成别的设备的
+        val dlg = AlertDialog.Builder(this).setTitle("还原哪台设备的备份?")
+            .setSingleChoiceItems(items, sel) { d, which ->
+                sel = which
+                (d as AlertDialog).getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+            }
+            .setPositiveButton("还原") { _, _ ->
+                val g = groups.getOrNull(sel)
+                if (g != null) confirmRestoreFrom(g)
+            }
+            .setNegativeButton("取消", null).create()
+        dlg.show()
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = sel >= 0
+    }
+
+    /** 本机的备份:选好点「还原」后直接还原,不再多问;别的设备 / 旧版的备份会多确认一次。 */
+    private fun confirmRestoreFrom(g: BackupNames.Group) {
+        if (g.local) {
+            restoreFromCloud(g)
+            return
+        }
+        val who = if (g.tag == null) "旧版备份(不知道是哪台设备的)" else "「${g.label}」的备份"
+        AlertDialog.Builder(this).setTitle("还原别的设备的备份?")
+            .setMessage(
+                "你选的是$who(${BackupNames.stampText(g.stamp)})。\n\n" +
+                    "会用它替换现在的数据和设置,键盘大小、悬浮键盘位置等设置也会变成那台设备的。还原前的数据会在应用内留一份。继续吗?",
+            )
+            .setPositiveButton("还原") { _, _ -> restoreFromCloud(g) }
             .setNegativeButton("取消", null).show()
+    }
+
+    private fun restoreFromCloud(g: BackupNames.Group) {
+        runBg("正在从坚果云下载…") {
+            try {
+                val file = BackupManager.downloadBackup(this, g)
+                ui.post { say("已下载 ${g.file},正在解密并校验…") }
+                val r = BackupManager.restore(this) { FileInputStream(file) }
+                BackupManager.clearTemp(this)
+                ui.post { finishRestore(r) }
+            } catch (e: Exception) {
+                BackupManager.clearTemp(this)
+                ui.post { say("从坚果云下载失败:" + (e.message ?: e.javaClass.simpleName)) }
+            }
+        }
     }
 
     private fun finishRestore(r: BackupManager.RestoreResult) {
