@@ -46,6 +46,7 @@ class BackupActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         title = "备份与还原"
+        applyPageBackground()
         val pad = dpi(16f)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -55,10 +56,9 @@ class BackupActivity : Activity() {
 
         root.addView(label("备份与还原", 22f, bold = true))
         root.addView(
-            label(
+            foldNote(
                 "把学习数据、固定词、各项设置打成一个加密压缩包(.mybk),可以备份到手机本地,也可以备份到坚果云。" +
                     "自动加密(AES-256-GCM),不用设密码、不用记。每次备份完会马上读回来解密校验,确认真的能还原。剪贴板历史和回收箱会一起备份(备份包是加密的)。",
-                13f, alpha = 0.7f,
             ).apply { setPadding(0, pad / 2, 0, pad / 2) },
         )
 
@@ -67,12 +67,11 @@ class BackupActivity : Activity() {
 
         root.addView(section("1. 坚果云账号"))
         root.addView(
-            label(
+            foldNote(
                 "要先在坚果云网页端:账户信息 → 安全选项 → 第三方应用管理 → 添加应用,生成一个「应用密码」(不是登录密码)。" +
                     "账号填坚果云登录邮箱。备份会放在你指定的文件夹里(默认 myime,不存在会自动创建;" +
                     "如果提示不能创建,请先在坚果云里建好这个文件夹)。" +
                     "几台设备(手机、平板)可以填同一个文件夹,备份文件名里会带各自的设备名,互不干扰。",
-                13f, alpha = 0.7f,
             ),
         )
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -93,9 +92,8 @@ class BackupActivity : Activity() {
         root.addView(smallButton("备份到本地…").apply { setOnClickListener { startLocalBackup() } }, smallButtonParams())
         root.addView(smallButton("备份到坚果云").apply { setOnClickListener { startCloudBackup() } }, smallButtonParams())
         root.addView(
-            label(
+            foldNote(
                 "本地:选一个位置存成单个加密压缩包(手机上任意文件夹都行)。坚果云:自动上传,云端每台设备各保留最近 7 份。",
-                13f, alpha = 0.7f,
             ),
         )
 
@@ -103,21 +101,19 @@ class BackupActivity : Activity() {
         root.addView(smallButton("从本地压缩包还原…").apply { setOnClickListener { pickFile(REQ_RESTORE_PICK) } }, smallButtonParams())
         root.addView(smallButton("从坚果云还原…").apply { setOnClickListener { startCloudRestore() } }, smallButtonParams())
         root.addView(
-            label(
+            foldNote(
                 "会用备份里的内容替换现在的数据和设置,完成后输入法会重启一次;还原前的数据会在应用内留一份。" +
                     "换手机时先设置好坚果云账号,再点「从坚果云还原」,在列表里选旧手机的备份(列表里本机的排第一并预选;新手机没有本机备份,要自己点选)。",
-                13f, alpha = 0.7f,
             ),
         )
 
         root.addView(section("4. 多台手机同步学习数据"))
         root.addView(
-            label(
+            foldNote(
                 "几台都是你自己的手机,可以共享选词记录(拼音、笔画)和联想词,打得越多越准。只同步这些;剪贴板、回收箱、设置、英文用词都不会同步。" +
                     "用上面的坚果云账号,每台手机只写自己的一个加密文件(自动加密,不用设密码)。要求几台手机装的是同一个构建,并且都设好了坚果云账号。" +
                     "键盘收起时检查:新学了 300 次以上且距上次上传满 1 天(或有新学的、超过 7 天)就上传;键盘弹出时每天拉取一次别的手机的更新。没有定时器,Wi-Fi 和流量都可以。" +
                     "在一台手机上清除学习数据只清这一台,不会清掉别的手机。",
-                13f, alpha = 0.7f,
             ),
         )
         syncBox = CheckBox(this).apply {
@@ -290,7 +286,7 @@ class BackupActivity : Activity() {
                     }
                 }
             }
-            .setNegativeButton("取消", null).show()
+            .setNegativeButton("取消", null).showPage()
     }
 
     private fun testDav() {
@@ -374,7 +370,7 @@ class BackupActivity : Activity() {
                 if (g != null) confirmRestoreFrom(g)
             }
             .setNegativeButton("取消", null).create()
-        dlg.show()
+        dlg.stylePage().show()
         dlg.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = sel >= 0
     }
 
@@ -391,7 +387,7 @@ class BackupActivity : Activity() {
                     "会用它替换现在的数据和设置,键盘大小、悬浮键盘位置等设置也会变成那台设备的。还原前的数据会在应用内留一份。继续吗?",
             )
             .setPositiveButton("还原") { _, _ -> restoreFromCloud(g) }
-            .setNegativeButton("取消", null).show()
+            .setNegativeButton("取消", null).showPage()
     }
 
     private fun restoreFromCloud(g: BackupNames.Group) {
@@ -415,7 +411,7 @@ class BackupActivity : Activity() {
             AlertDialog.Builder(this).setTitle("还原完成").setMessage(r.msg + "\n\n点「确定」重启输入法进程使其生效。")
                 .setCancelable(false)
                 .setPositiveButton("确定") { _, _ -> android.os.Process.killProcess(android.os.Process.myPid()) }
-                .show()
+                .showPage()
         }
     }
 }
