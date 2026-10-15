@@ -474,11 +474,14 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         pointerKey.put(id, i)
         performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
         listener.onKey(spec) // 可能触发 setLayout,会重置上面的状态
-        if (spec.repeatable) startRepeat(spec, id)
+        // onKey 可能触发 setLayout 把按压状态清空;这时手指已不在跟踪里,抬起时收不到停止信号,
+        // 连删会停不下来(把打的字全删光),所以只在仍被跟踪时才启动连发
+        if (spec.repeatable && pointerKey.get(id, -1) >= 0) startRepeat(spec, id)
         invalidate()
     }
 
     private fun pointerUp(id: Int) {
+        if (repeatPointer == id) stopRepeat() // 先停连发,不能被下面的提前 return 跳过
         val i = pointerKey.get(id, -1)
         if (i < 0) return
         pointerKey.delete(id)
