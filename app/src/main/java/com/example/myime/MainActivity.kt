@@ -28,7 +28,7 @@ class MainActivity : Activity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "我的输入法"
+            text = "搜猪输入法"
             textSize = 24f
         })
         root.addView(foldNote(
