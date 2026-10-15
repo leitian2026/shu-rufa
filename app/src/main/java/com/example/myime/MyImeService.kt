@@ -232,6 +232,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             englishEngine?.prev = v
         }
     private var prevChinese2: String? = null  // 再上一个词(两词上下文,更准)
+    // 造词:同一次输入里连续选了几段拼音候选,记下每一段,选完时拼成新词(见 PinyinEngine.makeWord)
+    private val wordCodes = ArrayList<String>()
+    private val wordTexts = ArrayList<String>()
+    private var wordTail: String? = null
     private var prevChinese: String? = null   // 上一个上屏的中文词,给中文联想("我常在 X 后面打 Y")和拼音候选排序用
         set(v) {
             prevChinese2 = if (v == null) null else field   // 设新词时,旧的退到"上上个";清空时两个一起清
@@ -383,6 +387,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                             pinyinEngine = engine as Engine?
                             (engine as? PinyinEngine)?.let {
                                 it.chain = UserData.chain(applicationContext)
+                                it.words = UserData.words(applicationContext)
                                 it.prev = prevChinese
                                 it.prev2 = prevChinese2
                             }
@@ -402,7 +407,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
             // 词库交给主线程之后,接着在这个后台线程把联想用的排序下标建好:
             // 否则第一次出联想词时要现场给整个词库排序,联想词就会慢半拍才出来
-            if (kind == KIND_PINYIN && gen == dictGen) (engine as? PinyinEngine)?.prepareFollowers()
+            if (kind == KIND_PINYIN && gen == dictGen) {
+                (engine as? PinyinEngine)?.let {
+                    it.prepareFollowers()
+                    it.warmUp()
+                    // 开着模糊音就顺便把折叠后的索引建好(不开就什么都不做)
+                    it.fuzzyMask = DictConfig.fuzzy(ctx)
+                    it.prepareFuzzy()
+                }
+            }
         }
     }
 
@@ -1076,6 +1089,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         // 是否记录我的用词仍由下面的 allowLearn 单独控制(和中文联想的做法一致)
         englishAssist = cls == InputType.TYPE_CLASS_TEXT && !secureField && forced != Mode.ENGLISH && !uriField
         allowLearn = !secureField && !noSuggest && !noLearn && DictConfig.learn(applicationContext)
+        // 模糊音设置:每次弹出键盘读一次(SharedPreferences 在内存里),在设置页改了下次弹出就生效
+        (pinyinEngine as? PinyinEngine)?.let {
+            it.fuzzyMask = DictConfig.fuzzy(applicationContext)
+            it.maxCandidates = DictConfig.candidates(applicationContext)
+            // 系统省电模式:引擎少做几件费电的事(多种整句、模糊音整句、拼错容错整句、后台建索引)
+            it.lowPower = (getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager)?.isPowerSaveMode == true
+        }
 
         enterLabel = enterLabelFor(info)
         if (!restarting) {
@@ -1298,6 +1318,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 commitTo(ic, c.text)
                 noteChineseCommit(c.text, false)
                 composing.delete(0, c.consumed.coerceIn(1, composing.length))
+                afterPick()
                 if (composing.isNotEmpty()) showComposing()
             }
             ic.endBatchEdit()
@@ -1779,6 +1800,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             val dg = diag   // 查询过程中开关被改也不会算出离谱的耗时
             val tq = if (dg) android.os.SystemClock.elapsedRealtime() else 0L
             val result = try {
+                (engine as? PinyinEngine)?.stale = { gen != queryGen }   // 查询中途又有新按键,贵的几步就不做了
                 engine.query(code)
                     .also { ErrorHint.clear("query") }
             } catch (t: Throwable) {
@@ -1893,6 +1915,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         commitTo(ic, c.text)
         noteChineseCommit(c.text, false)
         composing.delete(0, c.consumed.coerceIn(1, composing.length))
+        afterPick()
         if (composing.isNotEmpty()) showComposing()
         ic.endBatchEdit()
         afterChineseCommit()
@@ -2064,6 +2087,53 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val typed = composing.substring(0, c.consumed.coerceIn(1, composing.length)).replace("'", "")
         if (typed.isNotEmpty()) {
             e.learn(typed, c.text)
+            trackWordPiece(e, typed, c)
+            // 选的是整句:句子里相邻的两个词,记成「后一个接在前一个后面」(下次整句里更倾向这样断词)
+            val ws = (e as? PinyinEngine)?.sentenceWords(typed, c.text)
+            if (ws != null && ws.size >= 2) {
+                val app = applicationContext
+                worker.execute {
+                    val ch = UserData.chain(app)
+                    for (k in 0 until ws.size - 1) ch.learn(ws[k], ws[k + 1])
+                }
+            }
+        }
+    }
+
+    /** 记下这一段;输入中途改过(退格、接着打字)就不是「同一次连续选词」,重新开始。 */
+    private fun trackWordPiece(e: Engine, typed: String, c: Candidate) {
+        val tail = wordTail
+        if (tail != null && composing.toString() != tail) {
+            wordCodes.clear()
+            wordTexts.clear()
+        }
+        if (e is PinyinEngine && mode == Mode.PINYIN && c.kind == 0) {
+            wordCodes.add(typed)
+            wordTexts.add(c.text)
+        } else {
+            wordCodes.clear()
+            wordTexts.clear()
+        }
+    }
+
+    /** 选完一段、这一段的拼音已经从组合区删掉之后调用:这次输入选完了,而且连续选了不止一段,就造词(放后台线程)。 */
+    private fun afterPick() {
+        if (wordCodes.isEmpty()) {
+            wordTail = null
+            return
+        }
+        if (composing.isNotEmpty()) {
+            wordTail = composing.toString()
+            return
+        }
+        val codes = ArrayList(wordCodes)
+        val pieces = ArrayList(wordTexts)
+        wordCodes.clear()
+        wordTexts.clear()
+        wordTail = null
+        if (codes.size >= 2 && allowLearn) {
+            val e = currentEngine() as? PinyinEngine ?: return
+            worker.execute { e.makeWord(codes, pieces) }
         }
     }
 
