@@ -12,14 +12,15 @@ import java.util.List;
 /**
  * 多台自己的手机共享\"词频学习数据\"用的文件格式。纯 JDK 代码(不依赖 Android),可以脱离手机单独测试(见 tools/LearnSyncSelfTest.java)。
  *
- * 只共享三样:拼音的选词记录(UserFreq)、笔画的选词记录(UserFreq)、中文联想(UserChain)。
- * 别的数据(剪贴板、回收箱、设置、翻译配置、英文用词……)一概不碰:这里是白名单,只认下面三个对象。
+ * 只共享四样:拼音的选词记录(UserFreq)、笔画的选词记录(UserFreq)、中文联想(UserChain)、我自己造的词(UserWords)。
+ * 别的数据(剪贴板、回收箱、设置、翻译配置、英文用词……)一概不碰:这里是白名单,只认下面几个对象。
  *
  * 明文格式(之后整体 gzip 压缩、用 BackupCrypto 加密,见 LearnSync):
  *   #myime-learn v1
  *   @pinyin      后面是拼音 UserFreq 的 T / P / W 行(和存盘文件里的行一样)
  *   @stroke      后面是笔画 UserFreq 的 T / P / W 行
  *   @chain       后面是 UserChain 的 C 行
+ *   @words       后面是 UserWords 的 W 行(0.24.0 新增;老版本遇到不认识的区块会跳过,所以版本号仍是 1)
  *   #end         结尾标记(没有就当文件不完整)
  * 每行以 \n 结尾;联想的两词上下文里有 \u0001,所以读的时候只按 \n 断行(不能用 readLine,它会把 \r 也当换行)。
  *
@@ -57,6 +58,11 @@ public final class LearnShare {
 
     /** 写出共享文件的明文。 */
     public static void write(Writer w, UserFreq pinyin, UserFreq stroke, UserChain chain) throws IOException {
+        write(w, pinyin, stroke, chain, null);
+    }
+
+    /** 同上,words 不为 null 时再带上我自己造的词(@words 区块)。 */
+    public static void write(Writer w, UserFreq pinyin, UserFreq stroke, UserChain chain, UserWords words) throws IOException {
         w.write(HEADER + VERSION + "\n");
         w.write("@pinyin\n");
         pinyin.exportShared(w);
@@ -64,6 +70,10 @@ public final class LearnShare {
         stroke.exportShared(w);
         w.write("@chain\n");
         chain.exportShared(w);
+        if (words != null) {
+            w.write("@words\n");
+            words.exportShared(w);
+        }
         w.write(TRAILER + "\n");
         w.flush();
     }
@@ -78,6 +88,12 @@ public final class LearnShare {
 
     /** minTs:这台手机清除学习数据的时间;早于它的记录不收,免得清掉的又被别的手机同步回来。 */
     public static int merge(InputStream in, UserFreq pinyin, UserFreq stroke, UserChain chain, long now, long minTs) throws IOException {
+        return merge(in, pinyin, stroke, chain, null, now, minTs);
+    }
+
+    /** 同上,words 不为 null 时也合并对方的 @words 区块(null 时忽略这个区块)。 */
+    public static int merge(InputStream in, UserFreq pinyin, UserFreq stroke, UserChain chain, UserWords words,
+                            long now, long minTs) throws IOException {
         BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8), 1 << 16);
         String first = readLine(r);
         if (first == null || !first.startsWith(HEADER)) throw new IOException("不是学习数据同步文件");
@@ -92,6 +108,7 @@ public final class LearnShare {
         List<String> pl = new ArrayList<>();
         List<String> sl = new ArrayList<>();
         List<String> cl = new ArrayList<>();
+        List<String> wl = new ArrayList<>();
         List<String> cur = null;
         boolean ended = false;
         int total = 0;
@@ -106,6 +123,7 @@ public final class LearnShare {
                     case "@pinyin": cur = pl; break;
                     case "@stroke": cur = sl; break;
                     case "@chain": cur = cl; break;
+                    case "@words": cur = wl; break;
                     default: cur = null;   // 以后版本加的新区块:不认识就跳过
                 }
                 continue;
@@ -115,7 +133,9 @@ public final class LearnShare {
             cur.add(line);
         }
         if (!ended) throw new IOException("同步文件不完整");
-        return pinyin.mergeRows(pl, now, minTs) + stroke.mergeRows(sl, now, minTs) + chain.mergeRows(cl, now, minTs);
+        int changed = pinyin.mergeRows(pl, now, minTs) + stroke.mergeRows(sl, now, minTs) + chain.mergeRows(cl, now, minTs);
+        if (words != null) changed += words.mergeRows(wl, now, minTs);
+        return changed;
     }
 
     /** 只按 \n 断行;文件结束时没有内容返回 null。 */
