@@ -193,6 +193,7 @@ object UserData {
     private var strokeFreq: UserFreq? = null
     private var englishData: UserEnglish? = null
     private var chainData: UserChain? = null
+    private var wordsData: UserWords? = null
     private var pinsData: EnglishPins? = null
 
     private fun dir(ctx: Context): File {
@@ -218,6 +219,10 @@ object UserData {
         chainData ?: UserChain(File(dir(ctx), "chain.txt")).also { chainData = it }
 
     @Synchronized
+    fun words(ctx: Context): UserWords =
+        wordsData ?: UserWords(File(dir(ctx), "words.txt")).also { wordsData = it }
+
+    @Synchronized
     fun pins(ctx: Context): EnglishPins =
         pinsData ?: EnglishPins(File(dir(ctx), "english_pins.txt")).also { pinsData = it }
 
@@ -228,6 +233,7 @@ object UserData {
         strokeFreq?.saveIfDirty()
         englishData?.saveIfDirty()
         chainData?.saveIfDirty()
+        wordsData?.saveIfDirty()
     }
 
     fun clearAll(ctx: Context) {
@@ -235,6 +241,7 @@ object UserData {
         stroke(ctx).clear()
         english(ctx).clear()
         chain(ctx).clear()
+        words(ctx).clear()
         LearnSync.noteCleared(ctx)   // 多机同步:清除只清本机,清除之前的记录也不会被别的手机再同步回来
     }
 }
