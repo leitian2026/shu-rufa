@@ -115,6 +115,23 @@ object DictConfig {
         p(ctx).edit().putBoolean("learn", v).apply()
     }
 
+    /** 拼音每次最多给几个词候选(15 / 30 / 50 / 80 四档,默认 30)。 */
+    fun candidates(ctx: Context): Int = p(ctx).getInt("cands", 30).coerceIn(10, 100)
+
+    fun setCandidates(ctx: Context, v: Int) {
+        p(ctx).edit().putInt("cands", v.coerceIn(10, 100)).apply()
+    }
+
+    /**
+     * 模糊音:打开了哪些规则(Fuzzy.ZH / CH / SH / ANG / ENG / ING / LN / FH 按位或),默认 0 = 全关。
+     * 开着会在第一次用时后台建一份折叠后的词库索引(几百毫秒,占一点内存),全关就一点开销都没有。
+     */
+    fun fuzzy(ctx: Context): Int = p(ctx).getInt("fuzzy", 0) and 0xFF
+
+    fun setFuzzy(ctx: Context, v: Int) {
+        p(ctx).edit().putInt("fuzzy", v and 0xFF).apply()
+    }
+
     /** 打开输入法时默认的输入方式:pinyin / stroke / english;last = 沿用上次用的。 */
     fun defaultMode(ctx: Context): String = p(ctx).getString("default_mode", "last") ?: "last"
 
