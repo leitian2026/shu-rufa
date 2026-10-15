@@ -62,7 +62,8 @@ class ClipboardPanelView(
     private var curGap = 0f
     private var checkW = 0f      // 多选时每条左边圆圈占的宽度
     private var lockW = 0f       // 每条右边小锁占的宽度(也是点锁的有效区域宽度)
-    private val lockPath = Path()
+    private val lockPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+    private var lockBase = 0f
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
@@ -140,6 +141,7 @@ class ClipboardPanelView(
         val wide = context.isWide()
         textPaint.textSize = context.spf(if (wide) 17f else 15f)
         hintPaint.textSize = context.spf(if (wide) 16f else 14f)
+        lockPaint.textSize = context.spf(if (wide) 16f else 14f)   // 比条目文字(17 / 15)小一号
         titlePaint.textSize = context.spf(if (wide) 18f else 16f)
         countPaint.textSize = context.spf(if (wide) 15f else 13f)
         noteText.textSize = context.spf(if (wide) 14f else 12f)
@@ -151,6 +153,7 @@ class ClipboardPanelView(
         lockW = context.dpf(if (wide) 48f else 42f)
         textBase = baseline(textPaint)
         hintBase = baseline(hintPaint)
+        lockBase = baseline(lockPaint)
         titleBase = baseline(titlePaint)
     }
 
@@ -370,7 +373,7 @@ class ClipboardPanelView(
 
             if (hasLock(items[i])) {
                 val isLocked = items[i] in locked
-                drawLock(canvas, right - lockW / 2f, top + h / 2f, isLocked, if (isLocked) palette.accent else palette.textFaint)
+                drawLock(canvas, right - lockW / 2f, top + h / 2f, isLocked)
             }
 
             if (selecting && items[i] !in locked) {   // 上了锁的选不了,不画圆圈
@@ -391,26 +394,10 @@ class ClipboardPanelView(
         }
     }
 
-    /** 小锁:closed = 实心合上的锁(上了锁),否则是锁梁翘起的锁(没上锁)。cx、cy 是图标中心。 */
-    private fun drawLock(canvas: Canvas, cx: Float, cy: Float, closed: Boolean, color: Int) {
-        val u = context.dpf(if (context.isWide()) 7.5f else 6.5f)
-        val bodyTop = cy - 0.275f * u   // 整个图标(锁梁顶到锁身底)高 2.85u,垂直居中
-        fill.color = color
-        tmp.set(cx - u, bodyTop, cx + u, bodyTop + 1.7f * u)
-        canvas.drawRoundRect(tmp, 0.3f * u, 0.3f * u, fill)
-        val r = 0.65f * u
-        val arcCy = bodyTop - 0.5f * u
-        lockPath.reset()
-        lockPath.moveTo(cx - r, bodyTop)
-        lockPath.lineTo(cx - r, arcCy)
-        tmp.set(cx - r, arcCy - r, cx + r, arcCy + r)
-        lockPath.arcTo(tmp, 180f, 180f)
-        if (closed) lockPath.lineTo(cx + r, bodyTop)   // 合上:右边也落到锁身上;没上锁:右边悬空
-        ring.color = color
-        canvas.drawPath(lockPath, ring)
-        // 锁孔
-        fill.color = palette.key
-        canvas.drawCircle(cx, bodyTop + 0.8f * u, 0.22f * u, fill)
+    /** 小锁:用表情里那个金色的 🔒(上了锁);没上锁(多选时每条都有)画 🔓,淡一点。字号比条目文字小一号。cx、cy 是图标中心。 */
+    private fun drawLock(canvas: Canvas, cx: Float, cy: Float, closed: Boolean) {
+        lockPaint.alpha = if (closed) 255 else 110
+        canvas.drawText(if (closed) "\uD83D\uDD12" else "\uD83D\uDD13", cx, cy + lockBase, lockPaint)
     }
 
     private fun hit(y: Float): Int {
