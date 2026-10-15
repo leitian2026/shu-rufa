@@ -541,3 +541,9 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 - **代码**:`CandidateBarView.infoHandler` / `showInfo`(和「固定」菜单共用一个弹窗,抽成 `popupAt`);`PinyinEngine.readings`、`StrokeEngine.infoOf`;服务 `requestInfo`。
 - 测试:`tools/StrokeWordsSelfTest.java` 增加整字(exact)的前缀 / `*` / 两种笔顺 / 空段 / 分段,以及 `strokeCount`、`firstCode`。
 
+
+### 第 14 次(0.29.0):简 / 繁键移到功能页 + 剪贴板金色锁 + 长按提示位置
+- **简 / 繁**:笔画字形偏好从词库管理页挪到功能页,做成一个键:默认「简 / 简体优先」,点一下变「繁 / 繁体优先」,整格变蓝;当场生效(正在打笔画时候选立刻重排),留在功能页不跳回键盘。词库管理页里原来的「笔画字形偏好」单选已删除。设置项还是 `stroke_trad_first`,原来的选择保留。代码:`SettingsPanelView.ID_TRAD` / `accentIds`(原 `accentId` 改成集合,悬浮键盘和繁体键可以同时亮),服务 `refreshTradKey`。
+- **剪贴板的锁**:换成表情里那个金色 🔒(没上锁时多选里显示淡一点的 🔓),字号比条目文字小一号(手机 14 / 平板 16)。
+- **长按候选的读音笔画提示**:气泡改用 `showAsDropDown` 按候选栏自己的位置定位,整个落在候选栏上边缘之上、正对着长按的那个字,不再盖住候选字或上面的预览条。
+- 修:连点 ✕(退格)时布局刷新会让长按连删停不下来、把打的字全删光(0.28.1)。
