@@ -167,6 +167,32 @@ class DictManagerActivity : Activity() {
         }
         root.addView(candGroup)
 
+        // ---- 笔画字形偏好
+        root.addView(label("笔画字形偏好", 18f, bold = true).apply { setPadding(0, pad, 0, pad / 2) })
+        root.addView(
+            foldNote(
+                "笔画页里,常用的简体字和常用的繁体字谁排前面(两边都常用的通用字不受影响;我选过的字永远最前)。" +
+                    "需要笔画词库带繁体字频:没有的话,重新下载一次笔画词库(会顺便取朙月拼音)。下次弹出键盘生效。",
+            ),
+        )
+        val tradNow = DictConfig.strokeTradFirst(this)
+        val scriptGroup = android.widget.RadioGroup(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((name, trad) in listOf("简体优先(默认)" to false, "繁体优先" to true)) {
+            scriptGroup.addView(
+                android.widget.RadioButton(this).apply {
+                    id = View.generateViewId()
+                    text = name
+                    textSize = 15f
+                    minHeight = dpi(48f)
+                    isChecked = trad == tradNow
+                    setOnCheckedChangeListener { _, v ->
+                        if (v) DictConfig.setStrokeTradFirst(this@DictManagerActivity, trad)
+                    }
+                },
+            )
+        }
+        root.addView(scriptGroup)
+
         // ---- 模糊音
         root.addView(label("模糊音", 18f, bold = true).apply { setPadding(0, pad, 0, pad / 2) })
         root.addView(
@@ -322,7 +348,7 @@ class DictManagerActivity : Activity() {
         DictPacks.PINYIN ->
             "每行一个地址(http/https),按顺序合并。每个文件是 Rime 的 *.dict.yaml,或「词<Tab>拼音(音节空格分开)<Tab>词频」文本。"
         DictPacks.STROKE ->
-            "第 1 行:笔画字表(Rime stroke.dict.yaml 格式)。\n第 2 行(可选):字频表(Rime 格式,用来决定常用字排前面)。"
+            "第 1 行:笔画字表(Rime stroke.dict.yaml 格式)。\n第 2 行(可选):字频表(Rime 格式,用来决定常用字排前面)。\n第 3 行(可选):繁体字频表(Rime 格式,如朙月拼音,用来让常用的繁体字排前面)。"
         else ->
             "第 1 行:单词词频(每行「词<Tab>次数」,按次数从高到低)。\n第 2 行(可选):双词词频(每行「词1 词2<Tab>次数」,用来做下一个词联想)。"
     }
