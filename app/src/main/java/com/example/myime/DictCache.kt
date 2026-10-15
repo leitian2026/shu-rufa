@@ -21,7 +21,7 @@ object DictCache {
     private const val MAGIC = 0x4D494331
     // 各词库的缓存格式版本分开记:拼音改了格式,只让拼音缓存作废重建,笔画和英文不受影响
     private const val PINYIN_VERSION = 2
-    private const val STROKE_VERSION = 1
+    private const val STROKE_VERSION = 2   // 2:每条多存一个繁体字频
     private const val ENGLISH_VERSION = 1
 
     private fun file(ctx: Context, name: String): File {
@@ -140,6 +140,7 @@ object DictCache {
                 o.writeUTF(e.texts[i])
                 o.writeUTF(e.codeOf[i])
                 o.writeInt(e.freqs[i])
+                o.writeInt(e.tfreqs?.get(i) ?: 0)
             }
             for (x in e.ids) o.writeInt(x)
         }
@@ -153,13 +154,15 @@ object DictCache {
                 val texts = Array(n) { "" }
                 val codes = Array(n) { "" }
                 val freqs = IntArray(n)
+                val tfreqs = IntArray(n)
                 for (k in 0 until n) {
                     texts[k] = it.readUTF()
                     codes[k] = it.readUTF()
                     freqs[k] = it.readInt()
+                    tfreqs[k] = it.readInt()
                 }
                 val order = IntArray(n) { _ -> it.readInt() }
-                StrokeEngine(texts, codes, freqs, user, order)
+                StrokeEngine(texts, codes, freqs, user, order, tfreqs)
             }
         } catch (e: Exception) {
             ErrorHint.set("cache", ErrorHint.of("词库缓存读取失败,已重建", e))
