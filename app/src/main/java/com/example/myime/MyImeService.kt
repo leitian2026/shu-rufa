@@ -992,6 +992,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
             }
             SettingsPanelView.ID_FLOAT -> toggleFloating()
+            SettingsPanelView.ID_TRAD -> {
+                // 简 ↔ 繁:留在功能页,按键颜色当场变;正在打笔画的话候选马上按新偏好重排
+                DictConfig.setStrokeTradFirst(applicationContext, !DictConfig.strokeTradFirst(applicationContext))
+                applyStrokeConfig()
+                refreshTradKey()
+                if (mode == Mode.STROKE && composing.isNotEmpty()) requery()
+            }
             SettingsPanelView.ID_TRANS_MS -> {
                 onTransKey(Translator.MS)
                 leavePage()   // 点完翻译自动回到键盘
@@ -1300,6 +1307,21 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     /** 笔画页字形偏好(简体优先 / 繁体优先):词库加载好时和每次弹出键盘时更新一次。 */
     private fun applyStrokeConfig() {
         (strokeEngine as? StrokeEngine)?.tradFirst = DictConfig.strokeTradFirst(applicationContext)
+        refreshTradKey()
+    }
+
+    /** 功能页「简 / 繁」键:默认简体优先;点一下变繁体优先,整格变色。 */
+    private fun refreshTradKey() {
+        val trad = DictConfig.strokeTradFirst(applicationContext)
+        settingsPanel?.setItemText(
+            SettingsPanelView.ID_TRAD,
+            if (trad) "繁" else "简",
+            if (trad) "繁体优先" else "简体优先",
+        )
+        settingsPanel?.accentIds = setOfNotNull(
+            if (KbSize.floating) SettingsPanelView.ID_FLOAT else null,
+            if (trad) SettingsPanelView.ID_TRAD else null,
+        )
     }
 
     // ------------------------------------------------------------ 拼音里的笔画筛选
@@ -2763,7 +2785,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     )
 
     private fun refreshLayout(animate: Boolean) {
-        settingsPanel?.accentId = if (KbSize.floating) SettingsPanelView.ID_FLOAT else -1
+        refreshTradKey()
         warmUp()
         val kb = keyboardView ?: return
         candidateBar?.setActiveTool(
