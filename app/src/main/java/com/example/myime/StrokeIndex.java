@@ -52,6 +52,63 @@ public final class StrokeIndex {
         return false;
     }
 
+    /**
+     * 字码为 cp 的字,有没有一种笔顺和 pattern 对得上:pattern 里 * 代表任意一笔,pattern 可以比笔顺短(只比前几笔)。
+     * pattern 为空 = 这一位还没打笔画,任何字都行(笔画表里有没有都不管)。笔画组词用。
+     */
+    public boolean matchesCp(int cp, String pattern) {
+        return matchesCp(cp, pattern, false);
+    }
+
+    /** exact = true:笔顺的笔画数必须刚好等于 pattern 的长度(「整字」:只要刚好这么多画的字)。 */
+    public boolean matchesCp(int cp, String pattern, boolean exact) {
+        if (pattern.isEmpty()) return true;
+        int lo = 0;
+        int hi = cps.length;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (cps[mid] < cp) lo = mid + 1; else hi = mid;
+        }
+        while (lo < cps.length && cps[lo] == cp) {
+            String c = codes[ids[lo]];
+            if (exact ? c.length() == pattern.length() : c.length() >= pattern.length()) {
+                boolean ok = true;
+                for (int i = 0; i < pattern.length(); i++) {
+                    char p = pattern.charAt(i);
+                    if (p != '*' && p != c.charAt(i)) { ok = false; break; }
+                }
+                if (ok) return true;
+            }
+            lo++;
+        }
+        return false;
+    }
+
+    /** 单字 cp 的第一种笔顺(笔画表里没有返回 null)。长按候选看笔顺用。 */
+    public String firstCode(int cp) {
+        int lo = 0;
+        int hi = cps.length;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (cps[mid] < cp) lo = mid + 1; else hi = mid;
+        }
+        return (lo < cps.length && cps[lo] == cp) ? codes[ids[lo]] : null;
+    }
+
+    /** text 里每个字取第一种笔顺的笔画数之和;有字不在笔画表里、或 text 为空,返回 -1。长按候选看笔画数用。 */
+    public int strokeCount(String text) {
+        if (text == null || text.isEmpty()) return -1;
+        int total = 0;
+        for (int off = 0; off < text.length(); ) {
+            int cp = text.codePointAt(off);
+            off += Character.charCount(cp);
+            String c = firstCode(cp);
+            if (c == null) return -1;
+            total += c.length();
+        }
+        return total;
+    }
+
     /** 条目数(自测用)。 */
     public int size() {
         return cps.length;
