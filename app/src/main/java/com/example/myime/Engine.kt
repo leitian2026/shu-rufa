@@ -117,6 +117,153 @@ class PinyinEngine(
 
     private val compactKeys: Array<String>
     internal val compactOf: Array<String> = compact
+
+    // 整句输入:第一次要用时才建(只算一个总词频),不输长句就不占任何东西
+    private val sentence: SentenceDecoder by lazy {
+        SentenceDecoder(compactKeys, compactIds, texts, freqs, sylLens, sylStart, compactOf, initialKeys, initialIds)
+    }
+
+    /** 最近一次算出的整句候选和它们对应的输入(选了其中一句时,按词分别学习)。 */
+    @Volatile private var lastSentences: List<SentenceDecoder.Result> = emptyList()
+    @Volatile private var lastSentenceP: String? = null
+
+    /** 模糊音:哪些规则打开了(Fuzzy.ZH 等按位或),0 = 全关。由键盘服务设置。 */
+    @Volatile var fuzzyMask: Int = 0
+    @Volatile private var fuzzyIdx: Fuzzy.Index? = null
+    @Volatile private var fuzzyFailed = false
+    private val fuzzyBuilding = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun buildFuzzy(mask: Int) {
+        if (!fuzzyBuilding.compareAndSet(false, true)) return
+        try {
+            fuzzyIdx = Fuzzy.Index.build(compactOf, sylLens, sylStart, mask)
+        } catch (t: Throwable) {
+            fuzzyFailed = true   // 内存不够之类:这个词库实例里不再重试
+            AppLog.w(TAG, "build fuzzy index failed", t)
+        } finally {
+            fuzzyBuilding.set(false)
+        }
+    }
+
+    /**
+     * 规范形索引。没开模糊音返回 null(并放掉旧索引);开了但还没建好:在后台线程建,这一次先不用模糊音。
+     * 建好后下一次按键起生效。
+     */
+    private fun fuzzyIndex(): Fuzzy.Index? {
+        val mask = fuzzyMask
+        if (mask == 0) {
+            if (fuzzyIdx != null) fuzzyIdx = null
+            return null
+        }
+        val cur = fuzzyIdx
+        if (cur != null && cur.mask == mask) return cur
+        if (!fuzzyFailed && !lowPower && !fuzzyBuilding.get()) {
+            Thread { buildFuzzy(mask) }.apply {
+                isDaemon = true
+                priority = Thread.MIN_PRIORITY
+            }.start()
+        }
+        return null
+    }
+
+    /** 我自己造的词(连续选了几段拼成的新词);由键盘服务设置,没有就不查。 */
+    @Volatile var words: UserWords? = null
+
+    /**
+     * 这次查询是不是已经过期(又有了更新的按键):由键盘服务在每次查询前设置。
+     * 贵的几步(整句、混拼、拼错容错)开始前看一眼,过期了就不做了——结果反正会被丢掉。
+     */
+    @Volatile var stale: (() -> Boolean)? = null
+
+    /**
+     * 拼音每次最多给几个词候选(整句、联想、表情不算在内),默认 30。由键盘服务按设置页的「候选数量」设置;
+     * 少一点:查询时挑选和候选栏都少做事;多一点:能翻到更靠后的词。限制在 10~100。
+     */
+    @Volatile var maxCandidates: Int = MAX
+        set(v) {
+            field = v.coerceIn(MIN_CANDIDATES, MAX_CANDIDATES)
+        }
+
+    /** 系统开着省电模式:不查多种整句、不拼模糊音整句、拼错容错不拼整句、不在后台建模糊音索引。 */
+    @Volatile var lowPower: Boolean = false
+
+    private fun cancelled(): Boolean = stale?.invoke() == true
+
+    /** 词库加载完后在后台线程调用:把第一次要用的东西先备好,第一次输长句时就不会卡一下。 */
+    fun warmUp() {
+        sentence                              // 建整句解码器(算一次总词频)
+        Syllabary.segment("nihaoma")          // 音节表
+        Typo.variants("nihoa", 1)
+    }
+
+    /**
+     * 选了整句候选(typed 是打的拼音,text 是选的文字)时,返回这一句里的每个词;不是整句返回 null。
+     * 键盘服务用它把相邻的词两两记进「词接词」记录。
+     */
+    fun sentenceWords(typed: String, text: String): Array<String>? {
+        val sp = lastSentenceP ?: return null
+        for (s in lastSentences) {
+            if (s.text == text && s.letters <= sp.length && Syllabary.normalize(typed) == sp.substring(0, s.letters)) {
+                return s.words
+            }
+        }
+        return null
+    }
+
+    /** 词库里有没有「拼音连写正好是 code、文字是 text」的词条;有就返回词条号,没有返回 -1。 */
+    private fun dictFind(code: String, text: String): Int {
+        var i = lowerBound(compactKeys, code)
+        val end = lowerBound(compactKeys, code + '\u0000')
+        while (i < end) {
+            val id = compactIds[i]
+            if (texts[id] == text) return id
+            i++
+        }
+        return -1
+    }
+
+    /**
+     * 造词:同一次输入里连续选了几段(typedCodes[i] 是第 i 段打的拼音,pieces[i] 是它选的字),拼起来是词库里没有的新词就记下来。
+     * 每一段都得是词库里真实的读音和写法(用模糊音、拼错、简拼、联想词打出来的不算,免得记下错的拼音)。
+     * 每段都是单字的第一次就可用;有多字词的段,拼成同样的词第二次才可用。放在后台线程调用。
+     */
+    fun makeWord(typedCodes: List<String>, pieces: List<String>) {
+        val w = words ?: return
+        if (typedCodes.size < 2 || typedCodes.size != pieces.size) return
+        val whole = pieces.joinToString("")
+        val chars = whole.codePointCount(0, whole.length)
+        if (chars < UserWords.MIN_CHARS || chars > UserWords.MAX_CHARS) return
+        var i = 0
+        while (i < whole.length) {   // 只记汉字拼成的词
+            val cp = whole.codePointAt(i)
+            if (Character.UnicodeScript.of(cp) != Character.UnicodeScript.HAN) return
+            i += Character.charCount(cp)
+        }
+        val codes = typedCodes.map { Syllabary.normalize(it) }   // jv 当作 ju 这类别写
+        val syls = ArrayList<String>()
+        var allSingle = true
+        for (k in codes.indices) {
+            val id = dictFind(codes[k], pieces[k])
+            if (id < 0) return
+            val a = sylStart[id]
+            val b = sylStart[id + 1]
+            if (b - a != pieces[k].codePointCount(0, pieces[k].length)) return   // 音节数和字数对不上的词条不处理
+            var pos = 0
+            for (x in a until b) {
+                syls.add(codes[k].substring(pos, pos + sylLens[x]))
+                pos += sylLens[x]
+            }
+            if (b - a != 1) allSingle = false
+        }
+        if (dictFind(codes.joinToString(""), whole) >= 0) return   // 词库里本来就有
+        w.add(whole, syls.toTypedArray(), allSingle)
+    }
+
+    /** 提前建好模糊音索引(在后台线程调用,开着模糊音时才建),第一次输入就不用等。 */
+    fun prepareFuzzy() {
+        val m = fuzzyMask
+        if (m != 0 && !fuzzyFailed && !lowPower && fuzzyIdx?.mask != m) buildFuzzy(m)
+    }
     internal val compactIds: IntArray
     private val initialKeys: Array<String>
     internal val initialIds: IntArray
@@ -191,6 +338,22 @@ class PinyinEngine(
 
     override fun query(code: String): List<Candidate> {
         val raw = code.lowercase()
+        // ü 的别写(jv/yve/lue/nue)统一成词库写法;长度不变。绝大多数输入没有别写,直接走一次查询
+        val fixed = Syllabary.normalizeRaw(raw)
+        if (fixed == raw) return queryRaw(raw)
+        // 有别写:先放按词库写法查到的,再补原样查到的(lue 也可能是 lu + e),按词去重
+        val first = queryRaw(fixed)
+        val second = queryRaw(raw)
+        if (second.isEmpty()) return first
+        val seenText = HashSet<String>()
+        val merged = ArrayList<Candidate>(first.size + second.size)
+        for (c in first) if (seenText.add(c.text)) merged.add(c)
+        for (c in second) if (seenText.add(c.text)) merged.add(c)
+        val capAll = maxCandidates + PARTIAL_MAX
+        return if (merged.size > capAll) merged.subList(0, capAll) else merged
+    }
+
+    private fun queryRaw(raw: String): List<Candidate> {
         val p = raw.replace("'", "")
         if (p.isEmpty()) return emptyList()
 
@@ -218,12 +381,123 @@ class PinyinEngine(
             }
         }
 
+        val maxC = maxCandidates   // 这次查询用的候选上限(设置页可调)
+        val lu = user?.takeIf { it.hasLearned() }
+        val cutsArr = cuts.toIntArray()
+        // 我自己造的词:整串正好是我的词时排在所有候选最前面
+        val uw = words?.snapshot()
+        if (uw != null) {
+            val whole = rawConsumed(raw, p.length, p.length)
+            for (t in uw.exact(p)) if (seen.add(t)) out.add(Candidate(t, whole))
+        }
+        // 模糊音:有分词符时不用(用户已经手动分好了);索引没建好时这一次先不用
+        val fi = if (cuts.isEmpty()) fuzzyIndex() else null
+        val seg: IntArray? by lazy { Syllabary.segment(p) }   // 音节切分最多算一次(模糊音、混拼都要用)
+        val cn = if (fi != null) Fuzzy.canon(p, fi.mask, seg) else null
+        val low = lowPower
+
         val end0 = p + '\u0000'
         val endF = p + '\uffff'
-        add(top(compactKeys, compactIds, p, end0, cuts, ctx), p.length, MAX)
-        if (p.length >= 2) add(top(initialKeys, initialIds, p, end0, emptyList(), ctx), p.length, MAX)
-        add(top(compactKeys, compactIds, p, endF, cuts, ctx), p.length, MAX)
-        if (p.length >= 2) add(top(initialKeys, initialIds, p, endF, emptyList(), ctx), p.length, MAX)
+        add(top(compactKeys, compactIds, p, end0, cuts, ctx), p.length, maxC)
+        val hadExact = out.isNotEmpty()   // 整串正好是词库里的一个词
+        val exactCount = out.size
+        if (fi != null && cn != null) {
+            add(top(fi.keys, fi.ids, cn.canon, cn.canon + '\u0000', emptyList(), ctx, p), p.length, maxC)
+        }
+        if (p.length >= 2) add(top(initialKeys, initialIds, p, end0, emptyList(), ctx), p.length, maxC)
+        if (uw != null) {
+            // 我造的词里以打出来的开头的(补全),排在词库的补全前面
+            val whole = rawConsumed(raw, p.length, p.length)
+            for (t in uw.prefix(p, USER_WORD_PREFIX)) if (seen.add(t)) out.add(Candidate(t, whole))
+        }
+        add(top(compactKeys, compactIds, p, endF, cuts, ctx), p.length, maxC)
+        if (p.length >= 2) add(top(initialKeys, initialIds, p, endF, emptyList(), ctx), p.length, maxC)
+        if (fi != null && cn != null) {
+            add(top(fi.keys, fi.ids, cn.canon, cn.canon + '\uffff', emptyList(), ctx, p), p.length, maxC)
+        }
+
+        // 整句:把拼音切成几个词拼成整句(最多 3 句,歧义切分各给一句;模糊音下再加最多 2 句)。
+        // 整串不是一个词时放在最前面;整串本来就是词时(输入够长才查)放在这些词后面,只给 2 句
+        var sentenceDone = false
+        val sents = ArrayList<SentenceDecoder.Result>()
+        if (p.length >= SENTENCE_MIN && (!hadExact || (!low && p.length >= SENTENCE_MIN_EXACT)) && !cancelled()) {
+            // 省电模式只要最好的一句;相邻的词用我的「词接词」记录加分
+            sents.addAll(sentence.decodeTop(p, cutsArr, lu, ctx, if (low) 1 else SENTENCE_K, uw, chain))
+        }
+        if (!low && fi != null && cn != null && p.length >= SENTENCE_MIN && !cancelled()) {
+            sents.addAll(sentence.decodeFuzzyTop(p, cn, fi.keys, fi.ids, lu, ctx, 2))
+        }
+        if (sents.isNotEmpty()) {
+            val limit = if (hadExact) SENT_WITH_EXACT else SENT_SHOWN
+            var at = if (hadExact) minOf(exactCount, 3) else 0
+            var shown = 0
+            val done = HashSet<String>()
+            for (s in sents) {
+                if (shown >= limit) break
+                if (!done.add(s.text)) continue
+                if (!seen.add(s.text)) {
+                    if (hadExact) continue
+                    out.removeAll { it.text == s.text }   // 原来排在后面的同一句,提到前面来
+                    if (at > out.size) at = out.size
+                }
+                out.add(at++, Candidate(s.text, rawConsumed(raw, p.length, s.letters)))
+                shown++
+            }
+            if (shown > 0) {
+                lastSentences = sents
+                lastSentenceP = p
+                sentenceDone = true
+            }
+        }
+        // 混拼:输入里有没法当成完整音节的字母(zgren、wmmtquks),每个音节可以只写声母,最后一个音节可以没打完。
+        // 能切成完整音节的输入(绝大多数)不会走到这里
+        if (!sentenceDone && p.length >= MIXED_MIN && seg == null && !cancelled()) {
+            val m = sentence.decodeMixed(p, cutsArr, lu, ctx)
+            if (m != null) {
+                val consumed = rawConsumed(raw, p.length, m.letters)
+                out.removeAll { it.text == m.text }
+                out.add(0, Candidate(m.text, consumed))
+                seen.add(m.text)
+                var at = 1
+                for (alt in m.alternatives) {
+                    if (seen.add(alt)) out.add(at++, Candidate(alt, consumed))
+                }
+                lastSentences = listOf(m)
+                lastSentenceP = p
+            }
+        }
+
+        // 拼错容错:只有上面所有办法都解释不了整串(没有任何候选能吃完整串)时才试,平时一点开销都没有。
+        // 只在出错位置附近改一处(写反 / 按错相邻键 / 多打 / 漏打),改完是合法拼音才查词;
+        // 查到的放在最前面(此时 out 是空的),空格直接上屏改正后的词。有分词符的输入不改
+        if (cuts.isEmpty() && p.length >= TYPO_MIN && out.none { it.consumed >= raw.length } && !cancelled()) {
+            var found = 0
+            var sentTried = 0
+            val whole = rawConsumed(raw, p.length, p.length)
+            for (v in Typo.variants(p, TYPO_VARIANTS)) {
+                if (found >= TYPO_MAX) break
+                // 学习记录按用户实际打的(带错的)写法记,所以下次同样打错也排在前面
+                val ids = top(compactKeys, compactIds, v, v + '\u0000', emptyList(), ctx, p)
+                for (id in ids) {
+                    if (found >= TYPO_MAX) break
+                    if (seen.add(texts[id])) {
+                        out.add(Candidate(texts[id], whole))
+                        found++
+                    }
+                }
+                // 整串不是一个词:改完后拼整句(最多试几个写法,整句比查词贵)
+                if (ids.isEmpty() && !low && p.length >= SENTENCE_MIN && sentTried < TYPO_SENT && !cancelled()) {
+                    sentTried++
+                    val s = sentence.decode(v, null, lu, ctx)
+                    if (s != null && s.letters == v.length && seen.add(s.text)) {
+                        out.add(Candidate(s.text, whole))
+                        found++
+                    }
+                }
+            }
+        }
+
+        if (cancelled()) return out   // 已经有更新的按键:这次的结果会被丢掉,后面的分段不用做了
 
         // 分段:找最长的、能精确匹配的前缀
         var q = p.length - 1
@@ -251,15 +525,17 @@ class PinyinEngine(
     private fun top(
         keys: Array<String>, ids: IntArray, from: String, to: String, cuts: List<Int>,
         ctx: Map<String, Long>? = null,
+        code: String = from,   // 查学习记录用的编码;模糊音查规范形索引时 from 是折叠后的,code 是用户实际打的
     ): List<Int> {
         val lo = lowerBound(keys, from)
         val hi = lowerBound(keys, to)
         if (hi <= lo) return emptyList()
         val u = user?.takeIf { it.hasLearned() }   // 没学过任何词就完全不查表
         val boosted = u != null || ctx != null
-        val win = u?.recent(from)   // 这个编码最近几次的选择,整次查询取一次
-        val bestId = IntArray(MAX)
-        val bestKey = LongArray(MAX)
+        val win = u?.recent(code)   // 这个编码最近几次的选择,整次查询取一次
+        val maxC = maxCandidates
+        val bestId = IntArray(maxC)
+        val bestKey = LongArray(maxC)
         var size = 0
         for (j in lo until hi) {
             val id = ids[j]
@@ -269,11 +545,11 @@ class PinyinEngine(
             val key = if (!boosted) {
                 freqs[id].toLong()
             } else {
-                val r = UserFreq.rank(u, from, texts[id], win, ctx?.get(texts[id]) ?: 0L)
+                val r = UserFreq.rank(u, code, texts[id], win, ctx?.get(texts[id]) ?: 0L)
                 if (r != 0L) r else freqs[id].toLong()
             }
-            if (size == MAX && key <= bestKey[MAX - 1]) continue
-            var pos = if (size < MAX) size else MAX - 1
+            if (size == maxC && key <= bestKey[maxC - 1]) continue
+            var pos = if (size < maxC) size else maxC - 1
             while (pos > 0 && bestKey[pos - 1] < key) {
                 bestKey[pos] = bestKey[pos - 1]
                 bestId[pos] = bestId[pos - 1]
@@ -281,7 +557,7 @@ class PinyinEngine(
             }
             bestKey[pos] = key
             bestId[pos] = id
-            if (size < MAX) size++
+            if (size < maxC) size++
         }
         val out = ArrayList<Int>(size)
         for (k in 0 until size) out.add(bestId[k])
@@ -289,7 +565,19 @@ class PinyinEngine(
     }
 
     override fun learn(code: String, text: String) {
-        user?.learn(code, text)
+        // 和查询用同一种写法记,下次查才对得上(jv 记成 ju)
+        val c = Syllabary.normalize(code)
+        val sp = lastSentenceP
+        if (sp != null) {
+            for (s in lastSentences) {
+                if (s.text == text && s.letters <= sp.length && c == sp.substring(0, s.letters)) {
+                    // 选的是整句:句子里每个词各记一笔(整句本身不在词库里,记不了)
+                    for (k in s.words.indices) user?.learn(s.codes[k], s.words[k])
+                    return
+                }
+            }
+        }
+        user?.learn(c, text)
     }
 
     /** cuts(升序)里的每个位置,都必须恰好是该词条的一个音节结束处。 */
@@ -305,8 +593,21 @@ class PinyinEngine(
     }
 
     private companion object {
-        const val MAX = 30
+        const val MAX = 30   // 候选上限的默认值
+        const val MIN_CANDIDATES = 10
+        const val MAX_CANDIDATES = 100
         const val PARTIAL_MAX = 8
+        const val SENTENCE_MIN = 5   // 少于这么多字母不拼整句
+        const val SENTENCE_MIN_EXACT = 6   // 整串本来就是词库里的词时,至少这么长才再查整句(给歧义切分)
+        const val SENTENCE_K = 3     // 整句最多几种切法
+        const val USER_WORD_PREFIX = 3   // 我造的词里,补全最多放几个
+        const val TYPO_MIN = 3       // 少于这么多字母不做拼错容错(太短改什么都对得上)
+        const val TYPO_VARIANTS = 8  // 最多试几个改过的写法
+        const val TYPO_MAX = 6       // 容错最多给几个候选
+        const val TYPO_SENT = 3      // 最多对几个改过的写法拼整句
+        const val SENT_SHOWN = 4     // 整句最多放几个到候选里(含模糊音的)
+        const val SENT_WITH_EXACT = 2   // 整串本来就是词时,整句最多放几个
+        const val MIXED_MIN = 4      // 少于这么多字母不查混拼(2、3 个字母的纯声母原来就能查)
     }
 }
 
