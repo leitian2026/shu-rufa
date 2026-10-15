@@ -526,9 +526,14 @@ class CandidateBarView(
         getLocationOnScreen(loc)
         val center = loc[0] + inset + (xs[index] + xs[index + 1]) / 2f - offset
         val x = (center - w / 2f).toInt().coerceIn(0, maxOf(0, screenW - w))
-        val y = (loc[1] + stripH - ph - context.dpf(4f)).toInt().coerceAtLeast(0)
+        // 整个气泡落在候选栏的上边缘之上、正对着被长按的那个字(不压住上面那条拼音/笔画预览)。
+        // 用 showAsDropDown 按候选栏自己的位置算偏移:showAtLocation 的 y 在输入法窗口里会被状态栏等偏移,
+        // 以前气泡会往下掉、盖住候选字。
+        pw.isClippingEnabled = false
+        val xoff = x - loc[0]
+        val yoff = -height - ph - context.dpi(2f)
         try {
-            pw.showAtLocation(this, Gravity.NO_GRAVITY, x, y)
+            pw.showAsDropDown(this, xoff, yoff, Gravity.NO_GRAVITY)
             pinPopup = pw
             postDelayed(pinAutoDismiss, 5000)
         } catch (e: Exception) {
