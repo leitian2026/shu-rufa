@@ -6,7 +6,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 
 /** 格子面板里的一格:glyph 是上面的大符号,label 是下面的小字。 */
-class GridItem(val id: Int, val glyph: String, var label: String)
+class GridItem(val id: Int, var glyph: String, var label: String)
 
 /**
  * 一格一个功能的面板,用在两处:
@@ -56,6 +56,15 @@ class SettingsPanelView(
             invalidate()
         }
 
+    /** 同时改某一格的大符号和小字(简 / 繁切换键用)。 */
+    fun setItemText(id: Int, glyph: String, label: String) {
+        val item = items.firstOrNull { x -> x.id == id } ?: return
+        if (item.glyph == glyph && item.label == label) return
+        item.glyph = glyph
+        item.label = label
+        invalidate()
+    }
+
     /** 改某一格下面的小字。 */
     fun setItemLabel(id: Int, label: String) {
         val item = items.firstOrNull { x -> x.id == id } ?: return
@@ -97,8 +106,8 @@ class SettingsPanelView(
         canvas.drawText(title, left, centerY + titleBase, titlePaint)
     }
 
-    /** 开着的开关(悬浮键盘):整格蓝底白字,一眼看出现在是开的,-1 表示没有。 */
-    var accentId = -1
+    /** 开着的开关(悬浮键盘、繁体优先):整格蓝底白字,一眼看出现在是开的;空 = 都没开。 */
+    var accentIds: Set<Int> = emptySet()
         set(v) {
             if (field == v) return
             field = v
@@ -157,7 +166,7 @@ class SettingsPanelView(
 
             val sel = items[i].id == selectedId
             // 「翻译微软 / 翻译谷歌」哪个正在用,哪一格整格变绿底白字(只有这一格变,键盘配色不变)
-            val on = items[i].id == accentId
+            val on = items[i].id in accentIds
             val filled = items[i].id == filledId || on
             tmp.set(x, y + shadowH, x + cellW, y + cellH + shadowH)
             fill.color = if (on) palette.accentShadow else if (filled) palette.transShadow else palette.keyShadow
@@ -206,6 +215,7 @@ class SettingsPanelView(
             GridItem(ID_TRANS_MS, "微", "翻译微软"),
             GridItem(ID_TRANS_GOOGLE, "谷", "翻译谷歌"),
             GridItem(ID_FLOAT, "浮", "悬浮键盘"),
+            GridItem(ID_TRAD, "简", "简体优先"),
             GridItem(ID_ADJUST, "↔↕", "键盘调节"),
             GridItem(ID_DICT, "库", "词库管理"),
             GridItem(ID_APP, "设", "输入法设置"),
@@ -233,6 +243,7 @@ class SettingsPanelView(
         const val ID_FLOAT = 13
         const val ID_TRANS_MS = 14       // 用微软翻译:点一下打开(绿色),再点关闭
         const val ID_TRANS_GOOGLE = 15   // 用谷歌翻译:点一下打开(绿色),再点关闭;正开着微软时点它 = 直接换成谷歌
+        const val ID_TRAD = 16           // 笔画页字形:简体优先(默认)↔ 繁体优先,开着(繁)时整格变蓝
         const val ID_PINYIN = 21
         const val ID_STROKE = 22
         const val ID_ENGLISH = 23
