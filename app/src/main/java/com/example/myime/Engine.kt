@@ -336,6 +336,40 @@ class PinyinEngine(
         return out
     }
 
+    /**
+     * 笔画组词用:挑「以 firsts 里某个字开头」的词(单字本身不要),accept 通过的才要,score 打分留前 max 个,分数从高到低。
+     * 最多看 scanCap 个词。用的是联想那份「按词排序」的下标(用到联想时本来就会建,这里不多占内存)。
+     */
+    fun pickWords(firsts: List<String>, accept: TextFilter, score: WordScore, max: Int, scanCap: Int): Array<String> =
+        StrokeWords.pick(textKeys, textOrder, texts, freqs, firsts, accept, score, max, scanCap)
+
+    /**
+     * 长按候选看的读音:词库里文字正好是 text 的条目的拼音(音节之间加空格),多音字最多 max 个、去重。
+     * 用的是联想那份「按词排序」的下标(第一次会建,放在后台线程调用)。词库里没有返回空列表。
+     */
+    fun readings(text: String, max: Int = 4): List<String> {
+        val keys = textKeys
+        val ord = textOrder
+        val out = ArrayList<String>()
+        var j = lowerBound(keys, text)
+        while (j < keys.size && keys[j] == text && out.size < max) {
+            val id = ord[j]
+            val c = compactOf[id]
+            val sb = StringBuilder()
+            var pos = 0
+            for (k in sylStart[id] until sylStart[id + 1]) {
+                if (sb.isNotEmpty()) sb.append(' ')
+                val n = sylLens[k].toInt()
+                sb.append(c, pos, pos + n)
+                pos += n
+            }
+            val r = sb.toString()
+            if (r !in out) out.add(r)
+            j++
+        }
+        return out
+    }
+
     override fun query(code: String): List<Candidate> {
         val raw = code.lowercase()
         // ü 的别写(jv/yve/lue/nue)统一成词库写法;长度不变。绝大多数输入没有别写,直接走一次查询
@@ -707,14 +741,21 @@ class PinyinEngine(
     }
 }
 
-/** 笔画引擎:输入 h/s/p/n/z 序列,前缀匹配;* 代表任意一笔;精确匹配的排前面。 */
+/** 长按候选看的笔画信息:count = 笔画数,order = 单字的笔顺(词没有)。 */
+class StrokeInfo(val count: Int, val order: String?)
+
+/** 笔画引擎:输入 h/s/p/n/z 序列,前缀匹配;* 代表任意一笔;精确匹配的排前面。整字(queryExact)只要笔画数刚好的。 */
 class StrokeEngine(
     internal val texts: Array<String>,
     internal val codeOf: Array<String>,
     internal val freqs: IntArray,
     private val user: UserFreq? = null,
     order: IntArray? = null,   // 已经排好的顺序(来自二进制缓存)
+    internal val tfreqs: IntArray? = null,   // 繁体字频(笔画词库第 4 列);旧词库没有这一列 = null
 ) : Engine {
+
+    /** 笔画页字形偏好:false = 简体优先(默认),true = 繁体优先。键盘服务按设置页设,每次弹出键盘更新一次。见 StrokeRank。 */
+    @Volatile var tradFirst: Boolean = false
 
     private val keys: Array<String>
     internal val ids: IntArray
@@ -726,7 +767,12 @@ class StrokeEngine(
     }
 
     /** 拼音里的「笔画筛选」用:字 → 笔画的反查索引。第一次要用时才建(在后台查询线程里),随这个引擎一起释放;不用笔画筛选就不占。 */
-    private val charIndex: StrokeIndex by lazy { StrokeIndex(texts, codeOf) }
+    @Volatile private var charIdx: StrokeIndex? = null
+    private val charIndex: StrokeIndex
+        get() = charIdx ?: synchronized(this) { charIdx ?: StrokeIndex(texts, codeOf).also { charIdx = it } }
+
+    /** 反查索引建好了没有(长按候选看笔画数时,没建好就放到后台线程去建,不卡界面)。 */
+    fun indexReady(): Boolean = charIdx != null
 
     /** 提前把反查索引建好(在后台线程调用,用户按了「笔筛」之后),第一次筛选就不用等。 */
     fun prepareFilter() {
@@ -741,7 +787,15 @@ class StrokeEngine(
         }
     }
 
-    override fun query(code: String): List<Candidate> {
+    override fun query(code: String): List<Candidate> = search(code, false)
+
+    /**
+     * 整字:只要笔画数刚好等于输入的字(* 代表任意一笔,所以 h***** 就是「横开头、一共 6 画」)。
+     * 不带 * 时编码必须正好等于输入,只是一小段连续区间,比前缀查询还快。
+     */
+    fun queryExact(code: String): List<Candidate> = search(code, true)
+
+    private fun search(code: String, exact: Boolean): List<Candidate> {
         if (code.isEmpty()) return emptyList()
         val star = code.indexOf('*')
         val prefix = if (star < 0) code else code.substring(0, star)
@@ -749,29 +803,24 @@ class StrokeEngine(
 
         // 只挑最靠前的 SLOTS 个。排序从高到低:
         //   我选过的(最近选的最靠前;同音字再看最近几次里出现几次,见 UserFreq.rank) >
-        //   有字频的常用字 > 没字频的生僻字;同一组里笔画数刚好等于输入的 > 还没打完的;再按字频(2 倍一档);精确字频;笔画短的
+        //   偏好字形的常用字 > 另一种字形的常用字 > 没字频的生僻字(见 StrokeRank);
+        //   同一档里笔画数刚好等于输入的 > 还没打完的;再按字频(2 倍一档);精确字频;笔画短的
         val bestId = IntArray(SLOTS)
         val bestKey = LongArray(SLOTS)
         var size = 0
         val win = u?.recent(code)   // 这个输入最近几次的选择,整次查询取一次
+        val tfq = tfreqs
+        val trad = tradFirst
         fun offer(id: Int) {
             val len = codeOf[id].length
-            val f = freqs[id]
             val r = if (u != null) UserFreq.rank(u, code, texts[id], win, 0L) else 0L
+            // 笔画数刚好等于输入的(用户已经打完了整个字)排在还没打完的前面,再按字频。
+            // 以前字频排在"笔画数刚好"前面:前缀(如撇折点)后面接着的常用字有几百个,只留前 80 个,
+            // 刚好 3 笔的字(么)字频不够高就被挤出去了,往后翻也没有
             val key = if (r != 0L) {
                 (1L shl 62) or r
             } else {
-                val tier = if (f > 1) 1L shl 61 else 0L
-                val octave = (32 - Integer.numberOfLeadingZeros(maxOf(f, 0))).toLong()   // 0..32,字频按 2 倍一档
-                // 笔画数刚好等于输入的(用户已经打完了整个字)排在还没打完的前面,再按字频。
-                // 以前字频排在"笔画数刚好"前面:前缀(如撇折点)后面接着的常用字有几百个,只留前 80 个,
-                // 刚好 3 笔的字(么)字频不够高就被挤出去了,往后翻也没有
-                val exact = len == code.length
-                tier or
-                    (if (exact) 1L shl 60 else 0L) or
-                    (octave shl 53) or
-                    (f.toLong() shl 18) or
-                    (255 - minOf(len, 255)).toLong()
+                StrokeRank.key(freqs[id], if (tfq != null) tfq[id] else 0, trad, len == code.length, len)
             }
             if (size == SLOTS && key <= bestKey[SLOTS - 1]) return
             var pos = if (size < SLOTS) size else SLOTS - 1
@@ -787,14 +836,14 @@ class StrokeEngine(
 
         if (prefix.isEmpty()) {
             for (j in ids.indices) {
-                if (matches(ids[j], code)) offer(ids[j])
+                if (matches(ids[j], code, exact)) offer(ids[j])
             }
         } else {
             val lo = lowerBound(keys, prefix)
-            val hi = lowerBound(keys, prefix + '\uffff')
+            val hi = lowerBound(keys, if (exact && star < 0) prefix + '\u0000' else prefix + '\uffff')
             for (j in lo until hi) {
                 val id = ids[j]
-                if (star < 0 || matches(id, code)) offer(id)
+                if ((star < 0 && !exact) || matches(id, code, exact)) offer(id)
             }
         }
         if (size == 0) return emptyList()
@@ -812,13 +861,87 @@ class StrokeEngine(
         return out
     }
 
+    /**
+     * 笔画组词:code 里用 ' 隔开每个字的笔画,如 hs'sphn(第一个字打 hs,第二个字打 sphn)。
+     * 先照常查第一段的首字候选(最多 40 个),再在词库里挑「以这些字开头、后面每个字的笔画都对得上」的词
+     * (见 StrokeWords,总共最多看 WORD_SCAN_CAP 个词);词比单字靠前:我选过的最前,其余字数刚好等于段数的优先,再按词频。
+     * 最后跟几个「只上屏第一个字」的候选(消耗第一段和分字符),剩下的笔画留在组合区继续打,和拼音的分段上屏一样。
+     * 拼音词库(dict)还没加载好时只有这几个单字候选;加载完服务会再查一次。
+     * 尾巴是空段(hs')表示第二个字任意,只要是两个字以上、第一个字对得上的词。
+     */
+    fun queryWords(code: String, dict: PinyinEngine?, exact: Boolean = false): List<Candidate> {
+        val segs = code.split('\'')
+        val first = segs[0]
+        if (first.isEmpty()) return emptyList()
+        val chars = search(first, exact)   // 整字开着时,每一段都要笔画数刚好
+        if (chars.isEmpty()) return emptyList()
+        val out = ArrayList<Candidate>()
+        if (dict != null) {
+            val u = user?.takeIf { it.hasLearned() }
+            val plain = code.replace("'", "")   // 学习记录里用的编码:各段连起来,和单字一样不带分字符
+            val win = u?.recent(plain)
+            val n = segs.size
+            val score = WordScore { text, freq ->
+                val mine = if (u != null) UserFreq.rank(u, plain, text, win, 0L) else 0L
+                if (mine != 0L) {
+                    (1L shl 62) or mine
+                } else {
+                    val exact = if (text.codePointCount(0, text.length) == n) (1L shl 40) else 0L
+                    exact or freq.toLong()
+                }
+            }
+            val firsts = ArrayList<String>(chars.size)
+            for (c in chars) firsts.add(c.text)
+            val words = dict.pickWords(firsts, StrokeWords.accept(charIndex, segs.toTypedArray(), exact), score, WORD_MAX, WORD_SCAN_CAP)
+            for (t in words) out.add(Candidate(t, code.length))
+        }
+        val consumed = first.length + 1
+        var added = 0
+        for (c in chars) {
+            if (added >= WORD_PARTIAL) break
+            out.add(Candidate(c.text, consumed))
+            added++
+        }
+        return out
+    }
+
+    /**
+     * 长按候选看的笔画信息:笔画数(词是各字之和,都取第一种笔顺)、单字的笔顺(用 一丨丿丶ㄥ 画出来)。
+     * 笔画表里没有就返回 null。第一次会建反查索引,放在后台线程调用。
+     */
+    fun infoOf(text: String): StrokeInfo? {
+        val ix = charIndex
+        val n = ix.strokeCount(text)
+        if (n < 0) return null
+        var order: String? = null
+        if (text.codePointCount(0, text.length) == 1) {
+            val c = ix.firstCode(text.codePointAt(0))
+            if (c != null) {
+                val sb = StringBuilder(c.length)
+                for (ch in c) {
+                    sb.append(
+                        when (ch) {
+                            'h' -> '一'
+                            's' -> '丨'
+                            'p' -> '丿'
+                            'n' -> '丶'
+                            else -> 'ㄥ'
+                        },
+                    )
+                }
+                order = sb.toString()
+            }
+        }
+        return StrokeInfo(n, order)
+    }
+
     override fun learn(code: String, text: String) {
         user?.learn(code, text)
     }
 
-    private fun matches(id: Int, code: String): Boolean {
+    private fun matches(id: Int, code: String, exact: Boolean = false): Boolean {
         val c = codeOf[id]
-        if (c.length < code.length) return false
+        if (if (exact) c.length != code.length else c.length < code.length) return false
         for (i in code.indices) {
             if (code[i] != '*' && code[i] != c[i]) return false
         }
@@ -828,13 +951,16 @@ class StrokeEngine(
     private companion object {
         const val MAX = 40
         const val SLOTS = 80   // 同一个字可能有几种笔顺,多取一些再去重
+        const val WORD_MAX = 30         // 笔画组词最多给几个词
+        const val WORD_SCAN_CAP = 8000  // 一次最多看几个词(常用字开头的词有几千个,扫描量有上限,手机上一次按键约十几毫秒)
+        const val WORD_PARTIAL = 8      // 后面跟几个「只上屏第一个字」的候选
     }
 }
 
 /**
  * 词库格式(UTF-8,Tab 分隔,# 开头为注释):
  *   pinyin.txt:  词 <Tab> pin yin <Tab> 词频(可省略)
- *   stroke.txt:  字 <Tab> hspnz 笔画串 <Tab> 字频(可省略)
+ *   stroke.txt:  字 <Tab> hspnz 笔画串 <Tab> 简体字频(可省略) <Tab> 繁体字频(可省略)
  *   english.txt: 词 <Tab> 权重
  *   english_bigram.txt: 前词 <Tab> 后词 <Tab> 权重
  * 前两个和 Rime 的 .dict.yaml 正文列顺序一致。
@@ -943,6 +1069,7 @@ object DictLoader {
             val texts = ArrayList<String>()
             val codes = ArrayList<String>()
             val freqs = ArrayList<Int>()
+            val tfreqs = ArrayList<Int>()
             openDict(context, DictStore.STROKE_FILE).bufferedReader(Charsets.UTF_8).useLines { lines ->
                 for (line in lines) {
                     if (line.isEmpty() || line[0] == '#') continue
@@ -955,9 +1082,10 @@ object DictLoader {
                     texts.add(text)
                     codes.add(code)
                     freqs.add(p.getOrNull(2)?.trim()?.toIntOrNull() ?: 1)
+                    tfreqs.add(p.getOrNull(3)?.trim()?.toIntOrNull() ?: 0)   // 第 4 列:繁体字频,旧词库没有
                 }
             }
-            val e = StrokeEngine(texts.toTypedArray(), codes.toTypedArray(), freqs.toIntArray(), user)
+            val e = StrokeEngine(texts.toTypedArray(), codes.toTypedArray(), freqs.toIntArray(), user, tfreqs = tfreqs.toIntArray())
             if (src != null) DictCache.saveStroke(context, src, e)
             e
         }
