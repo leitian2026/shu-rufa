@@ -5,6 +5,7 @@ enum class ActionType {
     LANG,       // 中/英
     METHOD,     // 拼音 ↔ 笔画
     SEPARATOR,  // 分词(拼音输入中插入音节分隔)
+    FILTER,     // 笔筛:拼音输入中打开 / 关闭「用笔画筛选候选」
     SYMBOL,     // 符号页 / 数字页 / 返回
     SHIFT,
     EDIT,       // 光标编辑页里的各个键
@@ -65,6 +66,7 @@ class KbState(
     val composing: Boolean,
     val selecting: Boolean,
     val shiftLock: Boolean = false,
+    val filter: Boolean = false,   // 拼音里「笔筛」开着:h s p n z 五个键换成笔画
 )
 
 object Layouts {
@@ -109,6 +111,9 @@ object Layouts {
     private fun symKey(label: String, target: String, icon: Int = Icon.NONE) =
         KeySpec(label, ActionType.SYMBOL, value = target, function = true, icon = icon)
 
+    private const val FILTER_GLYPHS = "hspnz"      // 笔画键对应的字母
+    private const val STROKE_SHOWN = "一丨丿丶ㄥ"       // 和上面一一对应的显示符号(和笔画页一样)
+
     private val numpad = listOf("1", "2", "3", "+", "4", "5", "6", "-", "7", "8", "9", "/", ",", "0", ".", ":")
 
     // ---------------------------------------------------------------- 26 键(拼音 / 英文)
@@ -124,7 +129,13 @@ object Layouts {
                 val c = rows[r][i]
                 val label = (if (upper) c.uppercaseChar() else c).toString()
                 val value = if (english) label else c.toString()  // 拼音:永远是小写字母
-                keys.add(KeySpec(label, ActionType.CHAR, value = value).at(startX[r] + i, r.toFloat()))
+                val glyph = if (!english && s.filter) FILTER_GLYPHS.indexOf(c) else -1
+                if (glyph >= 0) {
+                    // 笔筛开着:这五个键位置不动,换成笔画(和笔画页同样的一 丨 丿 丶 ㄥ);其余字母照常继续打拼音
+                    keys.add(KeySpec(STROKE_SHOWN[glyph].toString(), ActionType.STROKE, value = c.toString()).at(startX[r] + i, r.toFloat()))
+                } else {
+                    keys.add(KeySpec(label, ActionType.CHAR, value = value).at(startX[r] + i, r.toFloat()))
+                }
             }
         }
 
@@ -144,7 +155,12 @@ object Layouts {
 
         val cn = !english
         keys.add(symKey("123", "number").at(0f, 3f, 1.4f))
-        keys.add(symKey("符", "symbol").at(1.4f, 3f, 1.4f))
+        // 拼音输入中「符」换成「笔筛」:音形混输,打完拼音再按几笔把同音字筛出来。打完这一段就换回去
+        if (cn && s.composing) {
+            keys.add(KeySpec("笔筛", ActionType.FILTER, function = true, active = s.filter).at(1.4f, 3f, 1.4f))
+        } else {
+            keys.add(symKey("符", "symbol").at(1.4f, 3f, 1.4f))
+        }
         keys.add(ch(if (cn) "，" else ",").at(2.8f, 3f, 1f))
         keys.add(spaceKey().at(3.8f, 3f, 2.4f))
         keys.add(ch(if (cn) "。" else ".").at(6.2f, 3f, 1f))
