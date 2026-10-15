@@ -167,32 +167,6 @@ class DictManagerActivity : Activity() {
         }
         root.addView(candGroup)
 
-        // ---- 笔画字形偏好
-        root.addView(label("笔画字形偏好", 18f, bold = true).apply { setPadding(0, pad, 0, pad / 2) })
-        root.addView(
-            foldNote(
-                "笔画页里,常用的简体字和常用的繁体字谁排前面(两边都常用的通用字不受影响;我选过的字永远最前)。" +
-                    "需要笔画词库带繁体字频:没有的话,重新下载一次笔画词库(会顺便取朙月拼音)。下次弹出键盘生效。",
-            ),
-        )
-        val tradNow = DictConfig.strokeTradFirst(this)
-        val scriptGroup = android.widget.RadioGroup(this).apply { orientation = LinearLayout.HORIZONTAL }
-        for ((name, trad) in listOf("简体优先(默认)" to false, "繁体优先" to true)) {
-            scriptGroup.addView(
-                android.widget.RadioButton(this).apply {
-                    id = View.generateViewId()
-                    text = name
-                    textSize = 15f
-                    minHeight = dpi(48f)
-                    isChecked = trad == tradNow
-                    setOnCheckedChangeListener { _, v ->
-                        if (v) DictConfig.setStrokeTradFirst(this@DictManagerActivity, trad)
-                    }
-                },
-            )
-        }
-        root.addView(scriptGroup)
-
         // ---- 模糊音
         root.addView(label("模糊音", 18f, bold = true).apply { setPadding(0, pad, 0, pad / 2) })
         root.addView(
