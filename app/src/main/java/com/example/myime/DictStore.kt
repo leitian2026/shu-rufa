@@ -68,7 +68,7 @@ object DictConfig {
     /**
      * 某个词库包的自定义下载地址(一行一个,空 = 用内置默认来源)。
      * 拼音:每行一个 Rime *.dict.yaml(或「词<Tab>拼音<Tab>词频」文本),按顺序合并。
-     * 笔画:第 1 行笔画字表(Rime stroke.dict.yaml 格式),第 2 行(可选)字频表(Rime 格式)。
+     * 笔画:第 1 行笔画字表(Rime stroke.dict.yaml 格式),第 2 行(可选)字频表(Rime 格式),第 3 行(可选)繁体字频表(Rime 格式,如朙月拼音)。
      * 英文:第 1 行单词词频(词<Tab>次数),第 2 行(可选)双词词频(词1 词2<Tab>次数)。
      */
     fun customUrls(ctx: Context, pack: String): List<String> =
@@ -113,6 +113,16 @@ object DictConfig {
 
     fun setLearn(ctx: Context, v: Boolean) {
         p(ctx).edit().putBoolean("learn", v).apply()
+    }
+
+    /**
+     * 笔画页的字形偏好:false = 简体优先(默认,和以前一样),true = 繁体优先。
+     * 只决定「常用的简体字」和「常用的繁体字」谁排前面(见 StrokeRank);需要笔画词库带繁体字频才有区别。
+     */
+    fun strokeTradFirst(ctx: Context): Boolean = p(ctx).getBoolean("stroke_trad_first", false)
+
+    fun setStrokeTradFirst(ctx: Context, v: Boolean) {
+        p(ctx).edit().putBoolean("stroke_trad_first", v).apply()
     }
 
     /** 拼音每次最多给几个词候选(15 / 30 / 50 / 80 四档,默认 30)。 */
