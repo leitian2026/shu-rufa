@@ -27,6 +27,7 @@ object DictPacks {
     val ALL = listOf(STROKE, PINYIN, ENGLISH)
 
     private const val FREQ_FILE = "8105.dict.yaml"
+    private const val TRAD_FILE = "luna_pinyin.dict.yaml"
 
     private fun gh(owner: String, repo: String, path: String): List<String> = listOf(
         "https://raw.githubusercontent.com/$owner/$repo/main/$path",
@@ -46,6 +47,8 @@ object DictPacks {
         STROKE -> listOf(
             Source("stroke.dict.yaml", gh("rime", "rime-stroke", "stroke.dict.yaml")),
             Source(FREQ_FILE, ice("cn_dicts/8105.dict.yaml"), optional = true, reuse = true),
+            // 朙月拼音只用来取繁体字频(拼音包也下它,已经有了就直接用)
+            Source(TRAD_FILE, gh("rime", "rime-luna-pinyin", "luna_pinyin.dict.yaml"), optional = true, reuse = true),
         )
         // 拼音:雾凇的 8105 字表 + 基础词库 + 扩展词库 + 41448 大字表(生僻字),再加朙月拼音(繁体)
         PINYIN -> listOf(
@@ -53,7 +56,7 @@ object DictPacks {
             Source("base.dict.yaml", ice("cn_dicts/base.dict.yaml")),
             Source("ext.dict.yaml", ice("cn_dicts/ext.dict.yaml"), optional = true),
             Source("41448.dict.yaml", ice("cn_dicts/41448.dict.yaml"), optional = true),
-            Source("luna_pinyin.dict.yaml", gh("rime", "rime-luna-pinyin", "luna_pinyin.dict.yaml"), optional = true),
+            Source(TRAD_FILE, gh("rime", "rime-luna-pinyin", "luna_pinyin.dict.yaml"), optional = true),
         )
         // 英文:Norvig 整理的谷歌语料词频(单词 + 双词)
         ENGLISH -> listOf(
@@ -71,7 +74,7 @@ object DictPacks {
         val urls = DictConfig.customUrls(ctx, pack)
         if (urls.isEmpty()) return sources(pack)
         return urls.mapIndexed { i, u ->
-            val optional = pack != PINYIN && i >= 1   // 笔画的字频表、英文的双词表可以缺
+            val optional = pack != PINYIN && i >= 1   // 笔画的字频表和繁体字频表、英文的双词表可以缺
             Source(customName(pack, i), listOf(u), optional = optional)
         }
     }
@@ -85,6 +88,9 @@ object DictPacks {
     }
 
     fun freqFileName(): String = FREQ_FILE
+
+    /** 朙月拼音:拼音包拿它当繁体补充,笔画包拿它取繁体字频,两边共用一份。 */
+    fun tradFileName(): String = TRAD_FILE
 }
 
 object DictDownloader {
@@ -232,9 +238,11 @@ object DictInstaller {
                 val strokeName = if (custom) DictPacks.customName(pack, 0) else "stroke.dict.yaml"
                 val stroke = rawFile(strokeName) ?: throw IOException("缺少 raw/$strokeName")
                 val freq = if (custom) rawFile(DictPacks.customName(pack, 1)) else rawFile(DictPacks.freqFileName())
+                val trad = if (custom) rawFile(DictPacks.customName(pack, 2)) else rawFile(DictPacks.tradFileName())
                 DictConvert.buildStroke(
                     stroke, freq,
                     DictStore.file(ctx, DictStore.STROKE_FILE), cancel, conv,
+                    tradFile = trad,
                 )
             }
             DictPacks.PINYIN -> {
@@ -271,7 +279,8 @@ object DictInstaller {
         for (f in DictPacks.outputs(pack)) DictStore.file(ctx, f).delete()
         val raw = DictStore.raw(ctx)
         for (s in DictPacks.sources(pack)) {
-            if (s.name != DictPacks.freqFileName()) File(raw, s.name).delete()
+            // 8105 和朙月拼音是拼音、笔画共用的,放到下面两边都没有了再删
+            if (s.name != DictPacks.freqFileName() && s.name != DictPacks.tradFileName()) File(raw, s.name).delete()
         }
         raw.listFiles()?.forEach { if (it.name.startsWith("custom_${pack}_")) it.delete() }
         // 8105 是拼音、笔画共用的,两边都没有了才删
@@ -279,6 +288,7 @@ object DictInstaller {
             !DictStore.file(ctx, DictStore.STROKE_FILE).isFile
         ) {
             File(raw, DictPacks.freqFileName()).delete()
+            File(raw, DictPacks.tradFileName()).delete()
         }
         DictConfig.clearMeta(ctx, pack)
         DictCache.clear(ctx)
