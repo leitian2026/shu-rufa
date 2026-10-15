@@ -49,6 +49,12 @@ class CandidateBarView(
     }
 
     var pinHandler: PinHandler? = null
+
+    /**
+     * 长按候选词、而且不是「固定」菜单适用的(中文候选):请求这个词的读音和笔画数。返回 true = 已受理,
+     * 结果稍后由调用方用 showInfo 显示(查询在后台线程,词库没加载好时还要等)。
+     */
+    var infoHandler: ((Int) -> Boolean)? = null
     private var pinPopup: PopupWindow? = null
     private val pinAutoDismiss = Runnable { dismissPinPopup() }
 
@@ -127,7 +133,7 @@ class CandidateBarView(
             val x = e.x - inset + offset
             for (i in items.indices) {
                 if (x >= xs[i] && x < xs[i + 1]) {
-                    if (pinHandler?.canPin(i) == true) showPinPopup(i)
+                    if (pinHandler?.canPin(i) == true) showPinPopup(i) else infoHandler?.invoke(i)
                     return
                 }
             }
@@ -477,8 +483,32 @@ class CandidateBarView(
             dismissPinPopup()
             h.onPin(index, false)
         })
+        popupAt(index, row)
+    }
+
+    /** 在候选栏上方弹出一行信息(长按候选看读音和笔画数)。和固定菜单共用一个弹窗:5 秒后自动收起,候选一变就收起。 */
+    fun showInfo(index: Int, text: String) {
+        if (!targetVisible || index !in 0 until items.size) return
+        dismissPinPopup()
+        val tv = TextView(context)
+        tv.text = text
+        tv.textSize = 16f
+        tv.gravity = Gravity.CENTER
+        tv.setTextColor(palette.text)
+        tv.setPadding(context.dpi(14f), context.dpi(9f), context.dpi(14f), context.dpi(9f))
+        tv.background = GradientDrawable().apply {
+            setColor(palette.background)
+            cornerRadius = context.dpf(12f)
+            setStroke(context.dpi(1f), palette.textFaint)
+        }
+        popupAt(index, tv)
+    }
+
+    /** 把 row 放在第 index 个候选的正上方弹出(超出屏幕就贴边;太宽就换行)。 */
+    private fun popupAt(index: Int, row: View) {
+        val screenW = context.resources.displayMetrics.widthPixels
         row.measure(
-            MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
+            MeasureSpec.makeMeasureSpec(screenW - context.dpi(16f), MeasureSpec.AT_MOST),
             MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
         )
         val w = row.measuredWidth
@@ -495,7 +525,6 @@ class CandidateBarView(
         val loc = IntArray(2)
         getLocationOnScreen(loc)
         val center = loc[0] + inset + (xs[index] + xs[index + 1]) / 2f - offset
-        val screenW = context.resources.displayMetrics.widthPixels
         val x = (center - w / 2f).toInt().coerceIn(0, maxOf(0, screenW - w))
         val y = (loc[1] + stripH - ph - context.dpf(4f)).toInt().coerceAtLeast(0)
         try {
