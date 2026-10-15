@@ -269,13 +269,18 @@ object DictConvert {
 
     // ------------------------------------------------------------ 笔画
 
-    /** freqFile(可空):拿它的单字权重当字频,让常用字排前面;没有字频的字(繁体、生僻字)权重为 1。 */
+    /**
+     * freqFile(可空):拿它的单字权重当简体字频,让常用字排前面;没有字频的字(繁体、生僻字)权重为 1。
+     * tradFile(可空,朙月拼音):拿它的单字权重当「繁体字频」写成第 4 列。有了它,常用的繁体字(學、體)在笔画页
+     * 不再和没字频的生僻字挤在一起(见 StrokeRank);没有就不写第 4 列,排序和以前一样。
+     */
     fun buildStroke(
         strokeFile: File,
         freqFile: File?,
         out: File,
         cancel: AtomicBoolean,
         progress: Progress,
+        tradFile: File? = null,
     ): Int {
         val freq = HashMap<String, Long>()
         if (freqFile != null && freqFile.isFile) {
@@ -288,12 +293,23 @@ object DictConvert {
             }
         }
 
+        val trad = HashMap<String, Long>()
+        if (tradFile != null && tradFile.isFile) {
+            progress("读取繁体字频 ${tradFile.name}", 0.25f)
+            forEachRime(tradFile, cancel) { text, code, w ->
+                if (isSingleChar(text) && isPinyin(code)) {
+                    val old = trad[text]
+                    if (old == null || w > old) trad[text] = w
+                }
+            }
+        }
+
         progress("转换 ${strokeFile.name}", 0.4f)
         val tmp = tmpOf(out)
         var count = 0
         val seen = LongSet()
         tmp.bufferedWriter(Charsets.UTF_8).use { wr ->
-            wr.write("# 由词库管理生成: 字<Tab>笔画串(h横 s竖 p撇 n点/捺 z折)<Tab>字频\n")
+            wr.write("# 由词库管理生成: 字<Tab>笔画串(h横 s竖 p撇 n点/捺 z折)<Tab>简体字频<Tab>繁体字频(没有就省略)\n")
             forEachRime(strokeFile, cancel) { text, code, w ->
                 if (!isStroke(code)) return@forEachRime
                 if (!seen.add(hash64(text, code))) return@forEachRime
@@ -304,6 +320,11 @@ object DictConvert {
                 wr.write(code)
                 wr.write("\t")
                 wr.write(clampInt(weight).toString())
+                val tf = trad[text]
+                if (tf != null && tf > 1L) {
+                    wr.write("\t")
+                    wr.write(clampInt(tf).toString())
+                }
                 wr.write("\n")
                 count++
             }
