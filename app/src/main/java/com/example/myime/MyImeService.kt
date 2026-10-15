@@ -257,6 +257,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         const val KIND_PINYIN = 0
         const val KIND_STROKE = 1
         const val KIND_ENGLISH = 2
+        const val FILTER_MAX = 8          // 笔画筛选最多打几笔
         const val TRASH_MAX = 10          // 回收箱最多放几条
         const val EDGE_WAIT_MS = 120L     // Edge 搜索框要求弹键盘后先等多久(实测焦点转走用了 32~64ms)
         const val EDGE_ALLOW_MS = 800L    // 补弹键盘时放行多久
@@ -266,6 +267,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     private val composing = StringBuilder()
+
+    // 拼音里的笔画筛选(音形混输):filterOn = 「笔筛」开着,这时 h s p n z 五个键当笔画用;filterStrokes = 已经打的笔画(hspnz)。
+    // 一段拼音选完、清空、换页都会复位;只在用户按了「笔筛」时才有,平时这两个量不动、查询也完全走原来的路。
+    @Volatile private var filterOn = false   // 词库加载线程也会看一眼,决定要不要顺便建反查索引
+    private val filterStrokes = StringBuilder()
     private var candidates: List<Candidate> = emptyList()
     private var candidatesFor = ""
     @Volatile private var queryGen = 0   // 后台线程也要读:排队的旧查询靠它判断自己是否已过期
@@ -405,6 +411,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                     else if (kind == KIND_PINYIN && assocKey != null) showChineseAssoc()
                 }
             }
+            // 用户正开着「笔筛」才读的笔画词库:顺便把反查索引建好(平时用笔画页不建,不多耗一点电)
+            if (kind == KIND_STROKE && gen == dictGen && filterOn) (engine as? StrokeEngine)?.prepareFilter()
             // 词库交给主线程之后,接着在这个后台线程把联想用的排序下标建好:
             // 否则第一次出联想词时要现场给整个词库排序,联想词就会慢半拍才出来
             if (kind == KIND_PINYIN && gen == dictGen) {
@@ -1012,6 +1020,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         selFocus = -1
 
         composing.clear()
+        filterOn = false
+        filterStrokes.clear()
         queryGen++
         candidates = emptyList()
         candidatesFor = ""
@@ -1205,6 +1215,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             ActionType.LANG -> toggleLang()
             ActionType.METHOD -> switchMethod()
             ActionType.SEPARATOR -> typeSeparator()
+            ActionType.FILTER -> toggleFilter()
             ActionType.SYMBOL -> when (spec.value) {
                 "symbol" -> gotoPage(Mode.SYMBOL)
                 "number" -> gotoPage(Mode.NUMBER)
@@ -1229,6 +1240,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun typeChar(t: String) {
         val ic = currentInputConnection ?: return
         if (mode == Mode.PINYIN && t.length == 1 && t[0] in 'a'..'z') {
+            if (composing.isEmpty()) resetFilter()   // 新的一段输入,上一段留下的筛选不带过来
             composing.append(t)
             showComposing()
             requery()
@@ -1261,10 +1273,68 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     private fun typeStroke(c: Char) {
+        if (mode == Mode.PINYIN) {
+            // 拼音里「笔筛」开着时,五个笔画键打的是筛选用的笔画,不进拼音
+            if (!filterActive() || c !in "hspnz" || filterStrokes.length >= FILTER_MAX) return
+            filterStrokes.append(c)
+            requery()
+            return
+        }
         if (mode != Mode.STROKE) return
         composing.append(c)
         showComposing()
         requery()
+    }
+
+    // ------------------------------------------------------------ 拼音里的笔画筛选
+
+    /** 笔筛开着(只在拼音、正在打字时才算)。 */
+    private fun filterActive() = filterOn && mode == Mode.PINYIN && composing.isNotEmpty()
+
+    /** 笔筛开着而且已经打了笔画:这时候选要按笔画筛。 */
+    private fun filterQueryOn() = filterActive() && filterStrokes.isNotEmpty()
+
+    /** 当前候选对应的查询键:拼音,有笔画筛选时再加上笔画。候选是不是过期,拿它比,而不是只比拼音。 */
+    private fun queryKey(): String =
+        if (filterQueryOn()) composing.toString() + '\u0001' + filterStrokes else composing.toString()
+
+    /** 筛选复位(笔筛关掉、笔画清空)。本来就没开就什么都不做。 */
+    private fun resetFilter() {
+        if (!filterOn && filterStrokes.isEmpty()) return
+        filterOn = false
+        filterStrokes.clear()
+        refreshLayout(animate = false)
+    }
+
+    /** 「笔筛」键:开 / 关。开的时候才去加载笔画词库(没加载过才读;读完会自动重查一次),不用就不占内存、不耗电。 */
+    private fun toggleFilter() {
+        if (mode != Mode.PINYIN || composing.isEmpty()) return
+        if (filterOn) {
+            val had = filterStrokes.isNotEmpty()
+            filterOn = false
+            filterStrokes.clear()
+            refreshLayout(animate = false)
+            if (had) requery() else onComposingChanged()
+        } else {
+            filterOn = true
+            val se = strokeEngine as? StrokeEngine
+            if (se != null) {
+                loader.execute { se.prepareFilter() }   // 笔画词库已经在内存里:只把反查索引在后台建好
+            } else {
+                loadKind(KIND_STROKE)                   // 还没读:读完会顺便建索引,并自动重查一次
+            }
+            refreshLayout(animate = false)
+            onComposingChanged()
+        }
+    }
+
+    /** 候选栏上方的预览:拼音;笔筛开着时后面跟「 ｜」和已打的笔画。输入框里的组合区仍只有拼音。 */
+    private fun previewText(): String {
+        val base = displayComposing()
+        if (!filterActive()) return base
+        val sb = StringBuilder(base).append(" ｜")
+        for (c in filterStrokes) sb.append(strokeGlyph(c))
+        return sb.toString()
     }
 
     /** 分词键:在拼音输入里插入音节边界。 */
@@ -1277,6 +1347,18 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     private fun backspace() {
+        if (filterActive()) {
+            // 笔筛开着:先退掉打的笔画,笔画退完了再退一下就关掉笔筛(拼音不动)
+            if (filterStrokes.isNotEmpty()) {
+                filterStrokes.deleteCharAt(filterStrokes.length - 1)
+                requery()
+            } else {
+                filterOn = false
+                refreshLayout(animate = false)
+                onComposingChanged()
+            }
+            return
+        }
         if (composing.isNotEmpty()) {
             composing.deleteCharAt(composing.length - 1)
             showComposing()
@@ -1773,7 +1855,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     /** 组合内容变了:更新预览条;「分词/笔画」「清除/回车」这类键的文字也随之切换。 */
     private fun onComposingChanged() {
-        candidateBar?.setComposing(displayComposing())
+        candidateBar?.setComposing(previewText())
         val c = composing.isNotEmpty()
         if (c != layoutComposing) {
             layoutComposing = c
@@ -1784,6 +1866,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     /** 查询放后台线程;用代数丢弃过期结果。 */
     private fun requery() {
         val code = composing.toString()
+        val key = queryKey()
         val gen = ++queryGen
         if (code.isEmpty()) {
             applyCandidates("", emptyList())
@@ -1791,18 +1874,27 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         val engine = currentEngine()
         if (engine == null) {
-            applyCandidates(code, emptyList())
+            applyCandidates(key, emptyList())
             return
         }
         onComposingChanged()
+        // 拼音里「笔筛」打了笔画:只要第一个字笔顺对得上的词。笔画词库还没加载好时先给普通候选,加载完会自动再查一次
+        val strokes = if (filterQueryOn()) filterStrokes.toString() else null
+        val se = if (strokes != null) strokeEngine as? StrokeEngine else null
         worker.execute {
             if (gen != queryGen) return@execute   // 排队期间已有更新的输入:这个旧查询不用算了(最新一次的任务一定会跑)
             val dg = diag   // 查询过程中开关被改也不会算出离谱的耗时
             val tq = if (dg) android.os.SystemClock.elapsedRealtime() else 0L
             val result = try {
                 (engine as? PinyinEngine)?.stale = { gen != queryGen }   // 查询中途又有新按键,贵的几步就不做了
-                engine.query(code)
-                    .also { ErrorHint.clear("query") }
+                val found: List<Candidate> =
+                    if (se != null && strokes != null && engine is PinyinEngine) {
+                        engine.queryFiltered(code, se.firstStrokes(strokes))   // 反查索引第一次用时在这里(后台线程)建
+                    } else {
+                        engine.query(code)
+                    }
+                ErrorHint.clear("query")
+                found
             } catch (t: Throwable) {
                 ErrorHint.set("query", ErrorHint.of("查询出错", t))
                 emptyList()
@@ -1811,7 +1903,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 val dt = android.os.SystemClock.elapsedRealtime() - tq
                 if (dt >= 40) AppLog.d("MyIme", "slow query len=${code.length} ${dt}ms")   // 单次查询超过 40ms 才记
             }
-            main.post { if (gen == queryGen) applyCandidates(code, result) }
+            main.post { if (gen == queryGen) applyCandidates(key, result) }
         }
     }
 
@@ -1822,7 +1914,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         candidateBar?.setCandidates(shown.map { it.text })
         candidateBar?.setHint(
             ErrorHint.get("query") ?: when (mode) {
-                Mode.PINYIN -> ErrorHint.get("pinyin")
+                Mode.PINYIN -> ErrorHint.get("pinyin") ?: if (filterQueryOn()) {
+                    ErrorHint.get("stroke") ?: if (strokeEngine == null && dictState[KIND_STROKE] == 2) "笔画词库不可用,筛选没生效" else null
+                } else {
+                    null
+                }
                 Mode.STROKE -> ErrorHint.get("stroke")
                 Mode.ENGLISH -> ErrorHint.get("english")
                 else -> null
@@ -1862,6 +1958,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     private fun clearCandidates() {
+        resetFilter()
         queryGen++
         // 本来就是空的(英文没装词库时每个键都会走到这里)就不用刷新界面
         if (candidates.isEmpty() && candidatesFor.isEmpty() && !layoutComposing && composing.isEmpty()) return
@@ -1871,13 +1968,23 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun bestCandidate(): Candidate? {
         if (composing.isEmpty()) return null
         val code = composing.toString()
-        if (candidatesFor == code) return candidates.firstOrNull()
-        return currentEngine()?.query(code)?.firstOrNull() // 候选还没回来,同步查一次
+        if (candidatesFor == queryKey()) return candidates.firstOrNull()
+        return queryNow(code)?.firstOrNull() // 候选还没回来,同步查一次
+    }
+
+    /** 同步查一次(候选还没回来时用);笔筛有笔画时也按笔画筛。 */
+    private fun queryNow(code: String): List<Candidate>? {
+        val e = currentEngine() ?: return null
+        if (filterQueryOn() && e is PinyinEngine) {
+            val se = strokeEngine as? StrokeEngine
+            if (se != null) return e.queryFiltered(code, se.firstStrokes(filterStrokes.toString()))
+        }
+        return e.query(code)
     }
 
     private fun onCandidatePicked(index: Int) {
         val ic = currentInputConnection ?: return
-        if (candidatesFor != composing.toString()) return // 过期的点击
+        if (candidatesFor != queryKey()) return // 过期的点击
         val c = candidates.getOrNull(index) ?: return
         if (mode == Mode.ENGLISH) {
             pickEnglish(ic, c)
@@ -1888,6 +1995,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             commitTo(ic, c.text)
             if (composing.isNotEmpty()) {
                 composing.delete(0, c.consumed.coerceIn(1, composing.length))
+                resetFilter()
                 if (composing.isNotEmpty()) showComposing()
             }
             ic.endBatchEdit()
@@ -2118,6 +2226,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     /** 选完一段、这一段的拼音已经从组合区删掉之后调用:这次输入选完了,而且连续选了不止一段,就造词(放后台线程)。 */
     private fun afterPick() {
+        resetFilter()   // 这一段选完了:笔筛和笔画都复位,下一段(要是还有)重新来
         if (wordCodes.isEmpty()) {
             wordTail = null
             return
@@ -2568,7 +2677,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     private fun kbState() = KbState(
         if (transActive && transBuf.isNotEmpty()) "完成" else enterLabel,   // 翻译框有字时,回车键 = 完成
-        shift, composing.isNotEmpty(), selecting, shiftLock,
+        shift, composing.isNotEmpty(), selecting, shiftLock, filterActive(),
     )
 
     private fun refreshLayout(animate: Boolean) {
