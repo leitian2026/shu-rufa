@@ -154,7 +154,7 @@ object LearnSync {
 
     /** 把本进程新学的次数折算进 ls_new(持久保存,进程重启不丢)。 */
     private fun countNew(app: Context) {
-        val total = UserData.pinyin(app).learnedCount() + UserData.stroke(app).learnedCount() + UserData.chain(app).learnedCount()
+        val total = UserData.pinyin(app).learnedCount() + UserData.stroke(app).learnedCount() + UserData.chain(app).learnedCount() + UserData.words(app).learnedCount()
         val delta = total - seenLearned
         if (delta <= 0) return
         seenLearned = total
@@ -163,7 +163,7 @@ object LearnSync {
     }
 
     private fun hasData(app: Context): Boolean =
-        UserData.pinyin(app).hasLearned() || UserData.stroke(app).hasLearned() || UserData.chain(app).count() > 0
+        UserData.pinyin(app).hasLearned() || UserData.stroke(app).hasLearned() || UserData.chain(app).count() > 0 || UserData.words(app).count() > 0
 
     /** 有网就行(Wi-Fi 和移动流量都可以)。 */
     private fun online(app: Context): Boolean {
@@ -204,7 +204,7 @@ object LearnSync {
             val now = System.currentTimeMillis()
             val r = LearnSyncCore.run(
                 client, folder, deviceId(app), k.first, k.second,
-                UserData.pinyin(app), UserData.stroke(app), UserData.chain(app),
+                UserData.pinyin(app), UserData.stroke(app), UserData.chain(app), UserData.words(app),
                 app.cacheDir, state, push, now,
             ) { UserData.saveAll() }
             val e = p.edit().putLong(K_PULL, now).putLong(K_OK, now)
@@ -228,7 +228,7 @@ object LearnSync {
 
     /** 上传成功后,把"已折算"的计数对齐到现在的学习次数,免得马上又重复计一遍。 */
     private fun seenLearnedReset(app: Context) {
-        seenLearned = UserData.pinyin(app).learnedCount() + UserData.stroke(app).learnedCount() + UserData.chain(app).learnedCount()
+        seenLearned = UserData.pinyin(app).learnedCount() + UserData.stroke(app).learnedCount() + UserData.chain(app).learnedCount() + UserData.words(app).learnedCount()
     }
 
     // ------------------------------------------------------------ 设备 ID 和密钥
