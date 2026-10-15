@@ -353,6 +353,100 @@ class PinyinEngine(
         return if (merged.size > capAll) merged.subList(0, capAll) else merged
     }
 
+    /**
+     * 笔画筛选:只要第一个字符合 accept 的词。和 query 的区别:
+     *  - 过滤发生在「挑前 N 个」的时候,所以筛完仍是满额的前 N 个(不是先取前 N 个再筛,那样想要的生僻同音字根本进不了前 N 个);
+     *  - 不做整句、混拼、拼错容错(这几样的结果是拼出来的句子,没有"第一个字的笔画"可筛),只查词库、我造的词和最长前缀分段。
+     * 只在用户按了「笔筛」并打了笔画时才走这里,平时的查询一点没变。
+     */
+    fun queryFiltered(code: String, accept: TextFilter): List<Candidate> {
+        val raw = code.lowercase()
+        val fixed = Syllabary.normalizeRaw(raw)
+        val first = queryFilteredRaw(fixed, accept)
+        if (fixed == raw) return first
+        val second = queryFilteredRaw(raw, accept)
+        if (second.isEmpty()) return first
+        val seenText = HashSet<String>()
+        val merged = ArrayList<Candidate>(first.size + second.size)
+        for (c in first) if (seenText.add(c.text)) merged.add(c)
+        for (c in second) if (seenText.add(c.text)) merged.add(c)
+        val capAll = maxCandidates + PARTIAL_MAX
+        return if (merged.size > capAll) merged.subList(0, capAll) else merged
+    }
+
+    private fun queryFilteredRaw(raw: String, accept: TextFilter): List<Candidate> {
+        val p = raw.replace("'", "")
+        if (p.isEmpty()) return emptyList()
+
+        val cuts = ArrayList<Int>()
+        var n = 0
+        for (ch in raw) {
+            if (ch == '\'') {
+                if (n > 0 && (cuts.isEmpty() || cuts[cuts.size - 1] != n)) cuts.add(n)
+            } else {
+                n++
+            }
+        }
+
+        val out = ArrayList<Candidate>()
+        val seen = HashSet<String>()
+        val ctx = chain?.ctxRow(prev2, prev)
+
+        fun add(ids: List<Int>, letters: Int, cap: Int) {
+            val consumed = rawConsumed(raw, p.length, letters)
+            for (id in ids) {
+                if (out.size >= cap) return
+                if (seen.add(texts[id])) out.add(Candidate(texts[id], consumed))
+            }
+        }
+
+        val maxC = maxCandidates
+        val cutsArr = cuts
+        val uw = words?.snapshot()
+        val whole = rawConsumed(raw, p.length, p.length)
+        if (uw != null) {
+            for (t in uw.exact(p)) if (accept.accept(t) && seen.add(t)) out.add(Candidate(t, whole))
+        }
+        val fi = if (cuts.isEmpty()) fuzzyIndex() else null
+        val cn = if (fi != null) Fuzzy.canon(p, fi.mask, Syllabary.segment(p)) else null
+
+        val end0 = p + '\u0000'
+        val endF = p + '\uffff'
+        add(top(compactKeys, compactIds, p, end0, cutsArr, ctx, p, accept), p.length, maxC)
+        if (fi != null && cn != null) {
+            add(top(fi.keys, fi.ids, cn.canon, cn.canon + '\u0000', emptyList(), ctx, p, accept), p.length, maxC)
+        }
+        if (p.length >= 2) add(top(initialKeys, initialIds, p, end0, emptyList(), ctx, p, accept), p.length, maxC)
+        if (uw != null) {
+            for (t in uw.prefix(p, USER_WORD_PREFIX)) if (accept.accept(t) && seen.add(t)) out.add(Candidate(t, whole))
+        }
+        add(top(compactKeys, compactIds, p, endF, cutsArr, ctx, p, accept), p.length, maxC)
+        if (p.length >= 2) add(top(initialKeys, initialIds, p, endF, emptyList(), ctx, p, accept), p.length, maxC)
+        if (fi != null && cn != null) {
+            add(top(fi.keys, fi.ids, cn.canon, cn.canon + '\uffff', emptyList(), ctx, p, accept), p.length, maxC)
+        }
+
+        if (cancelled()) return out
+
+        // 分段:找最长的、能精确匹配的前缀(输入了几个音节、想先选第一个字时用)
+        var q = p.length - 1
+        var added = 0
+        while (q >= 1 && added == 0) {
+            val sub = p.substring(0, q)
+            val subCuts = cuts.filter { it <= q }
+            val consumed = rawConsumed(raw, p.length, q)
+            for (id in top(compactKeys, compactIds, sub, sub + '\u0000', subCuts, ctx, sub, accept)) {
+                if (added >= PARTIAL_MAX) break
+                if (seen.add(texts[id])) {
+                    out.add(Candidate(texts[id], consumed))
+                    added++
+                }
+            }
+            q--
+        }
+        return out
+    }
+
     private fun queryRaw(raw: String): List<Candidate> {
         val p = raw.replace("'", "")
         if (p.isEmpty()) return emptyList()
@@ -526,6 +620,7 @@ class PinyinEngine(
         keys: Array<String>, ids: IntArray, from: String, to: String, cuts: List<Int>,
         ctx: Map<String, Long>? = null,
         code: String = from,   // 查学习记录用的编码;模糊音查规范形索引时 from 是折叠后的,code 是用户实际打的
+        accept: TextFilter? = null,   // 笔画筛选:不要的词在挑选时就不进候选池,这样筛出来的仍是满额的前几名(不是先取前 30 再筛)
     ): List<Int> {
         val lo = lowerBound(keys, from)
         val hi = lowerBound(keys, to)
@@ -549,6 +644,7 @@ class PinyinEngine(
                 if (r != 0L) r else freqs[id].toLong()
             }
             if (size == maxC && key <= bestKey[maxC - 1]) continue
+            if (accept != null && !accept.accept(texts[id])) continue   // 先比分数再问过滤:池子满了以后大部分词连问都不用问
             var pos = if (size < maxC) size else maxC - 1
             while (pos > 0 && bestKey[pos - 1] < key) {
                 bestKey[pos] = bestKey[pos - 1]
@@ -627,6 +723,22 @@ class StrokeEngine(
         val s = order ?: texts.indices.sortedBy { codeOf[it] }.toIntArray()
         ids = s
         keys = Array(s.size) { codeOf[s[it]] }
+    }
+
+    /** 拼音里的「笔画筛选」用:字 → 笔画的反查索引。第一次要用时才建(在后台查询线程里),随这个引擎一起释放;不用笔画筛选就不占。 */
+    private val charIndex: StrokeIndex by lazy { StrokeIndex(texts, codeOf) }
+
+    /** 提前把反查索引建好(在后台线程调用,用户按了「笔筛」之后),第一次筛选就不用等。 */
+    fun prepareFilter() {
+        charIndex.size()
+    }
+
+    /** 过滤条件:候选词的第一个字,有一种笔顺是以 strokes(h s p n z 组成的串)开头的才要。 */
+    fun firstStrokes(strokes: String): TextFilter {
+        val ix = charIndex
+        return object : TextFilter {
+            override fun accept(text: String): Boolean = ix.hasPrefix(text, strokes)
+        }
     }
 
     override fun query(code: String): List<Candidate> {
