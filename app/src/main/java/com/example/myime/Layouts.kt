@@ -6,6 +6,7 @@ enum class ActionType {
     METHOD,     // 拼音 ↔ 笔画
     SEPARATOR,  // 分词(拼音输入中插入音节分隔)
     FILTER,     // 笔筛:拼音输入中打开 / 关闭「用笔画筛选候选」
+    EXACT,      // 整字:笔画页里打开 / 关闭「只要笔画数刚好等于输入的字」
     SYMBOL,     // 符号页 / 数字页 / 返回
     SHIFT,
     EDIT,       // 光标编辑页里的各个键
@@ -67,6 +68,7 @@ class KbState(
     val selecting: Boolean,
     val shiftLock: Boolean = false,
     val filter: Boolean = false,   // 拼音里「笔筛」开着:h s p n z 五个键换成笔画
+    val exact: Boolean = false,    // 笔画页里「整字」开着
 )
 
 object Layouts {
@@ -204,14 +206,23 @@ object Layouts {
         val xr = x1 + 3f
         keys.add(backspace().at(xr, 0f, rw, 1f))
         keys.add(KeySpec("*", ActionType.STROKE, value = "*", function = true).at(xr, 1f, rw, 1f))
-        val sym = if (wide) symKey("符", "symbol") else symKey("123", "number")
+        // 打了笔画后「符」换成「分字」:一个词的每个字各打一段笔画,段与段之间按它隔开(笔画组词)
+        val sepKey = KeySpec("分字", ActionType.SEPARATOR, function = true)
+        // 「整字」:只要笔画数刚好等于输入的字(不然是前缀匹配,会带出一大堆更多画的字)。窄屏占「123」的位置,宽屏数字区在左边、占空格的一半
+        val exactKey = KeySpec("整字", ActionType.EXACT, function = true, active = s.exact)
+        val sym = if (wide) (if (s.composing) sepKey else symKey("符", "symbol")) else (if (s.composing) exactKey else symKey("123", "number"))
         keys.add(sym.at(xr, 2f, rw, 1f))
         keys.add(enterKey(if (s.composing) "清除" else s.enterLabel).at(xr, 3f, rw, 1f))
 
         if (wide) {
-            keys.add(spaceKey().at(x1, 3f, 2f, 1f))
+            if (s.composing) {
+                keys.add(spaceKey().at(x1, 3f, 1f, 1f))
+                keys.add(exactKey.at(x1 + 1f, 3f, 1f, 1f))
+            } else {
+                keys.add(spaceKey().at(x1, 3f, 2f, 1f))
+            }
         } else {
-            keys.add(symKey("符", "symbol").at(x1, 3f, 1f, 1f))
+            keys.add((if (s.composing) sepKey else symKey("符", "symbol")).at(x1, 3f, 1f, 1f))
             keys.add(spaceKey().at(x1 + 1f, 3f, 1f, 1f))
         }
         keys.add(langKey(false).at(x1 + 2f, 3f, 1f, 1f))
