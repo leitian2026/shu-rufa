@@ -141,6 +141,66 @@ class DictManagerActivity : Activity() {
             smallButtonParams(),
         )
 
+        // ---- 候选数量
+        root.addView(label("候选数量", 18f, bold = true).apply { setPadding(0, pad, 0, pad / 2) })
+        root.addView(
+            foldNote(
+                "拼音每次最多给出多少个词候选(整句、联想、表情不算在内)。少一点:查词和候选栏都少做事,更省电;" +
+                    "多一点:能翻到更靠后的词。默认 30,下次弹出键盘生效。笔画和英文不受影响。",
+            ),
+        )
+        val candNow = DictConfig.candidates(this)
+        val candGroup = android.widget.RadioGroup(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (n in intArrayOf(15, 30, 50, 80)) {
+            candGroup.addView(
+                android.widget.RadioButton(this).apply {
+                    id = View.generateViewId()
+                    text = if (n == 30) "30(默认)" else "$n"
+                    textSize = 15f
+                    minHeight = dpi(48f)
+                    isChecked = n == candNow
+                    setOnCheckedChangeListener { _, v ->
+                        if (v) DictConfig.setCandidates(this@DictManagerActivity, n)
+                    }
+                },
+            )
+        }
+        root.addView(candGroup)
+
+        // ---- 模糊音
+        root.addView(label("模糊音", 18f, bold = true).apply { setPadding(0, pad, 0, pad / 2) })
+        root.addView(
+            foldNote(
+                "勾选后,打成相近的音也能出候选,例如勾了 z / zh,打 zi 也能找到「知」。" +
+                    "勾的越多候选越杂,只勾你真的会混的。第一次用时会在后台花一两秒建一份索引,多占一点内存;全不勾就没有任何开销。" +
+                    "打了分词符 ' 的输入不使用模糊音。",
+            ),
+        )
+        val fuzzyItems = listOf(
+            "z / zh(zi ≈ zhi)" to Fuzzy.ZH,
+            "c / ch(ci ≈ chi)" to Fuzzy.CH,
+            "s / sh(si ≈ shi)" to Fuzzy.SH,
+            "an / ang(xian ≈ xiang)" to Fuzzy.ANG,
+            "en / eng(fen ≈ feng)" to Fuzzy.ENG,
+            "in / ing(xin ≈ xing)" to Fuzzy.ING,
+            "l / n(lan ≈ nan)" to Fuzzy.LN,
+            "f / h(fu ≈ hu)" to Fuzzy.FH,
+        )
+        for ((name, bit) in fuzzyItems) {
+            root.addView(
+                CheckBox(this).apply {
+                    text = name
+                    textSize = 15f
+                    minHeight = dpi(48f)
+                    isChecked = (DictConfig.fuzzy(this@DictManagerActivity) and bit) != 0
+                    setOnCheckedChangeListener { _, v ->
+                        val cur = DictConfig.fuzzy(this@DictManagerActivity)
+                        DictConfig.setFuzzy(this@DictManagerActivity, if (v) cur or bit else cur and bit.inv())
+                    }
+                },
+            )
+        }
+
         setContentView(ScrollView(this).apply { addView(root) })
         refresh()
     }
