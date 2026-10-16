@@ -117,6 +117,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private var bubbleKey = -1
     private var bubbleText = ""
     private var bubbleStart = 0L
+    private val bubbleDirty = android.graphics.Rect()   // 气泡会到的最大范围(视图坐标,顶排会是负的):只重绘这一小块,并保证擦得干净
 
     init {
         applyMetrics()
@@ -312,7 +313,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             drawLabel(canvas, k, r, onFace)
         }
         drawHoldPopup(canvas)
-        if (drawHoldBubble(canvas)) postInvalidateOnAnimation()
+        // 气泡只在这 330ms 里动:限到约 30 帧/秒,并且只重绘气泡那一小块(不跟屏幕 60/120Hz 走,也不重画整个键盘)
+        if (drawHoldBubble(canvas)) {
+            postInvalidateDelayed(BUBBLE_FRAME_MS, bubbleDirty.left, bubbleDirty.top, bubbleDirty.right, bubbleDirty.bottom)
+        }
         if (fading) postInvalidateOnAnimation()
     }
 
@@ -358,19 +362,20 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val bw = r.width() * 0.9f * scale
         val bh = r.height() * 0.9f * scale
         val cx = r.centerX().coerceIn(bw / 2f, maxOf(bw / 2f, width - bw / 2f))
-        val bottom = r.top - context.dpf(4f) * ease
-        val top = maxOf(0f, bottom - bh)
+        val bottom = r.top - r.height() * BUBBLE_GAP * ease          // 间距也按键高算,键盘高矮变了比例不变
+        val top = bottom - bh   // 顶排的键:气泡直接画到键盘视图外面,盖住上面的候选栏/标题(父布局已关掉裁剪)
         popRect.set(cx - bw / 2f, top, cx + bw / 2f, top + bh)
         val a = (alpha * 255).toInt().coerceIn(0, 255)
         val oldFill = fill.color
         val oldText = letterPaint.color
         fill.color = palette.accent
         fill.alpha = a
-        canvas.drawRoundRect(popRect, radius * 1.3f, radius * 1.3f, fill)
+        val cr = minOf(bw, bh) * BUBBLE_CORNER
+        canvas.drawRoundRect(popRect, cr, cr, fill)
         letterPaint.color = palette.onAccent
         letterPaint.alpha = a
         val oldSize = letterPaint.textSize
-        letterPaint.textSize = oldSize * scale
+        letterPaint.textSize = minOf(bw, bh) * BUBBLE_TEXT   // 字号跟气泡大小走,键盘调大调小时和气泡保持同一比例
         canvas.drawText(bubbleText, popRect.centerX(), popRect.centerY() + baseline(letterPaint), letterPaint)
         letterPaint.textSize = oldSize
         fill.color = oldFill
@@ -378,11 +383,26 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         return true
     }
 
+    /** 撤掉气泡并把它占过的那一块擦掉(气泡在键盘视图外面的部分,普通 invalidate() 擦不到)。 */
     private fun stopBubble() {
         if (bubbleKey >= 0) {
             bubbleKey = -1
-            invalidate()
+            invalidate(bubbleDirty)
         }
+    }
+
+    private fun prepareBubble(i: Int) {
+        val r = rects[i]
+        val m = r.height() * 0.05f
+        val bw = r.width() * 0.9f
+        val bh = r.height() * 0.9f
+        val cx = r.centerX().coerceIn(bw / 2f, maxOf(bw / 2f, width - bw / 2f))
+        bubbleDirty.set(
+            (cx - bw / 2f - m).toInt(),
+            (r.top - r.height() * BUBBLE_GAP - bh - m).toInt(),
+            (cx + bw / 2f + m).toInt() + 1,
+            r.top.toInt() + 1,
+        )
     }
 
     /** 按下时高亮,松手立刻恢复,没有渐隐动画。 */
@@ -602,7 +622,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private fun flushPendingHold() {
         if (holdOptions != null || holdPending.size() == 0) return
         uiHandler.removeCallbacks(holdRunnable)
-        bubbleKey = -1
+        stopBubble()
         val list = ArrayList<KeySpec>(holdPending.size())
         for (j in 0 until holdPending.size()) list.add(holdPending.valueAt(j))
         holdPending.clear()
@@ -617,7 +637,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val i = pointerKey.get(id, -1)
         if (i < 0 || i >= rects.size) return
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-        bubbleKey = -1   // 气泡到点了,和字符上屏同一刻收掉
+        stopBubble()   // 气泡到点了,和字符上屏同一刻收掉
         if (opts.size == 1) {
             // 只有一个备选:长按直接打出来,松手不再重复
             holdPending.remove(id)
@@ -667,7 +687,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         holdKey = -1
         holdOptions = null
         holdSel = 0
-        bubbleKey = -1
+        stopBubble()
     }
 
     private fun pointerDown(id: Int, x: Float, y: Float) {
@@ -686,6 +706,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             holdDownX = x
             val only = holdOpts.singleOrNull()
             if (only != null) {
+                prepareBubble(i)
                 bubbleKey = i
                 bubbleText = only
                 bubbleStart = SystemClock.uptimeMillis()
@@ -785,5 +806,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         const val REPEAT_DELAY_MS = 420L
         const val REPEAT_INTERVAL_MS = 55L
         const val HOLD_MS = 330L
+        const val BUBBLE_FRAME_MS = 33L
+        const val BUBBLE_GAP = 0.09f      // 气泡离键帽的间距 / 键高
+        const val BUBBLE_CORNER = 0.25f   // 圆角 / 气泡短边
+        const val BUBBLE_TEXT = 0.66f     // 字号 / 气泡短边
     }
 }
