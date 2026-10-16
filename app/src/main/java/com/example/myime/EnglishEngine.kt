@@ -29,27 +29,18 @@ class EnglishEngine(
     @Volatile
     var prev: String? = null
 
-    /** 我固定的词(长按候选 → 固定)。服务在词库加载好后设置。 */
+    /**
+     * 我选过的词(点过哪个候选):和拼音 / 笔画同一套规则(UserFreq),选过的排在没选过的前面,最近选的最靠前。
+     * 服务在词库加载好后设置。没有就不排。
+     */
     @Volatile
-    var pins: EnglishPins? = null
+    var pick: UserFreq? = null
 
     init {
         val ord = order ?: words.indices.sortedBy { lowerById[it] }.toIntArray()
         ids = ord
         keys = Array(ord.size) { lowerById[ord[it]] }
         for (i in words.indices) exact[lowerById[i]] = i
-    }
-
-    fun isPinned(lower: String): Boolean = pins?.isPinned(lower) == true
-
-    /** 固定这个词。写法:词库 / 我学过的写法优先,都没有就用候选上显示的写法。 */
-    fun pin(text: String) {
-        val lower = text.lowercase()
-        pins?.pin(lower, if (isKnown(lower)) displayOf(lower) else text)
-    }
-
-    fun unpin(text: String) {
-        pins?.unpin(text.lowercase())
     }
 
     fun isKnown(lower: String): Boolean =
@@ -116,31 +107,47 @@ class EnglishEngine(
         }
         scored.sortByDescending { it.second }
 
+        // 我点选过的词排在最前面(和拼音 / 笔画一样):这个前缀下点过的最靠前,别的前缀下点过的其次,都是最近点的在前;
+        // 没点过的还是按上面的 词频 + 联想 + 用词 排。
+        val pk = pick?.takeIf { it.hasLearned() }
+        val order = ArrayList<String>(scored.size)
+        if (pk != null) {
+            val win = pk.recent(lower)
+            val front = ArrayList<Pair<String, Long>>()
+            val rest = ArrayList<String>()
+            for (p in scored) {
+                val r = UserFreq.rank(pk, lower, p.first, win, 0L)
+                if (r != 0L) front.add(Pair(p.first, r)) else rest.add(p.first)
+            }
+            front.sortByDescending { it.second }
+            for (f in front) order.add(f.first)
+            order.addAll(rest)
+        } else {
+            for (p in scored) order.add(p.first)
+        }
+
         val out = ArrayList<Candidate>()
         val seen = HashSet<String>()
         out.add(Candidate(literalOf(typed, lower), n, 0))
         seen.add(lower)
         var completions = 0
-        // 我固定的词:前缀对得上就排在最前面(原样输入那一项之后),先于词频排序的结果
-        val pl = pins?.list()
-        if (pl != null && pl.isNotEmpty()) {
-            for ((lw, sp) in pl) {
-                if (lw.length <= lower.length || !lw.startsWith(lower)) continue
-                if (!seen.add(lw)) continue
-                out.add(Candidate(applyCase(typed, sp), n, 0))
-                completions++
-            }
-        }
-        for (p in scored) {
+        for (lw in order) {
             if (completions >= MAX_COMPLETIONS) break
-            if (!seen.add(p.first)) continue
-            out.add(Candidate(applyCase(typed, displayOf(p.first)), n, 0))
+            if (!seen.add(lw)) continue
+            out.add(Candidate(applyCase(typed, displayOf(lw)), n, 0))
             completions++
         }
 
         // 2. 纠错:不是词,而且补不出几个词的时候
         if (n >= 2 && !isKnown(lower) && completions < 3) {
-            for (p in corrections(lower, context)) {
+            val fixes = corrections(lower, context)
+            val fixOrder = if (pk != null) {
+                val win = pk.recent(lower)
+                fixes.sortedByDescending { UserFreq.rank(pk, lower, it.first, win, 0L) }   // 以前打成这样、点过的改正排前面(同分保持原顺序)
+            } else {
+                fixes
+            }
+            for (p in fixOrder) {
                 if (!seen.add(p.first)) continue
                 out.add(Candidate(applyCase(typed, displayOf(p.first)), n, 1))
             }
@@ -165,20 +172,6 @@ class EnglishEngine(
         for (e in score.entries.sortedByDescending { it.value }) {
             out.add(Candidate(displayOf(e.key), 0, 2))
             if (out.size >= 8) break
-        }
-        // 固定的词如果在联想里,排到最前面(按固定的先后)
-        val pl = pins?.list()
-        if (pl != null && pl.isNotEmpty()) {
-            val front = ArrayList<Candidate>()
-            val rest = ArrayList(out)
-            for ((lw, _) in pl) {
-                val i = rest.indexOfFirst { it.text.lowercase() == lw }
-                if (i >= 0) front.add(rest.removeAt(i))
-            }
-            if (front.isNotEmpty()) {
-                front.addAll(rest)
-                return front
-            }
         }
         return out
     }
