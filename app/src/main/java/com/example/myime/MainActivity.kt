@@ -74,10 +74,12 @@ class MainActivity : Activity() {
         root.addView(foldNote(
             "在 Edge 里点收藏夹时,Edge 会让历史搜索框自动要求弹出键盘,过一秒左右又自己收起(换别的输入法也一样)。" +
                 "开启后,键盘会在这种情况下先等一小会儿(约 0.12 秒):焦点马上转走就不弹;" +
-                "是你自己点了搜索框,就只晚这一点点时间再弹出来。只对 Edge 生效,别的应用不受影响,没有定时任务,不增加耗电。",
+                "是你自己点了搜索框,就只晚这一点点时间再弹出来。" +
+                "在「下载 / 历史记录 / 收藏夹」页面,搜索框是页面自己自动对焦的,键盘不会自动弹出,点一下搜索框才弹。" +
+                "只对 Edge 生效,别的应用不受影响,没有定时任务,不增加耗电。",
         ))
         root.addView(CheckBox(this).apply {
-            text = "不让 Edge 点收藏夹时弹出键盘"
+            text = "不让 Edge 点收藏夹 / 下载时弹出键盘"
             textSize = 15f
             minHeight = dpi(48f)
             isChecked = DictConfig.edgeFilter(this@MainActivity)
