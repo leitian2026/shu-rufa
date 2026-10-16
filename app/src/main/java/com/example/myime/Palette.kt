@@ -49,7 +49,7 @@ class Palette(context: Context) {
 
     val text = if (dark) 0xFFECEFF4.toInt() else 0xFF1D2025.toInt()
     // 键帽右上角小字(数字/符号):浅黑,比正文色略淡
-    val hintText = if (dark) 0xFFC3C8D0.toInt() else 0xFF4A4F58.toInt()
+    val hintText = if (dark) 0xFFC3C8D0.toInt() else 0xFFC3C8D0.toInt()
     val textFaint = if (dark) 0xFF8B919C.toInt() else 0xFF8D939D.toInt()
     val icon = if (dark) 0xFFB4BAC4.toInt() else 0xFF50555E.toInt()
 
