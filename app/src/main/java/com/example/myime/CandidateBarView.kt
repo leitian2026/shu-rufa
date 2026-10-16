@@ -41,17 +41,8 @@ class CandidateBarView(
     private var contentWidth = 0f
     private var offset = 0f
 
-    /** 长按候选词的"固定 / 取消固定"(目前只有英文用)。 */
-    interface PinHandler {
-        fun canPin(index: Int): Boolean
-        fun isPinned(index: Int): Boolean
-        fun onPin(index: Int, pin: Boolean)
-    }
-
-    var pinHandler: PinHandler? = null
-
     /**
-     * 长按候选词、而且不是「固定」菜单适用的(中文候选):请求这个词的读音和笔画数。返回 true = 已受理,
+     * 长按候选词(中文候选):请求这个词的读音和笔画数。返回 true = 已受理,
      * 结果稍后由调用方用 showInfo 显示(查询在后台线程,词库没加载好时还要等)。
      */
     var infoHandler: ((Int) -> Boolean)? = null
@@ -133,7 +124,7 @@ class CandidateBarView(
             val x = e.x - inset + offset
             for (i in items.indices) {
                 if (x >= xs[i] && x < xs[i + 1]) {
-                    if (pinHandler?.canPin(i) == true) showPinPopup(i) else infoHandler?.invoke(i)
+                    infoHandler?.invoke(i)
                     return
                 }
             }
@@ -451,42 +442,7 @@ class CandidateBarView(
         return if (x >= inset && idx in 0 until TOOLS) idx else -1
     }
 
-    private fun pinButton(label: String, enabled: Boolean, onClick: () -> Unit): TextView {
-        val tv = TextView(context)
-        tv.text = label
-        tv.textSize = 15f
-        tv.gravity = Gravity.CENTER
-        tv.setPadding(context.dpi(14f), context.dpi(9f), context.dpi(14f), context.dpi(9f))
-        tv.setTextColor(if (enabled) palette.accent else palette.textFaint)
-        tv.alpha = if (enabled) 1f else 0.45f
-        if (enabled) tv.setOnClickListener { onClick() }
-        return tv
-    }
-
-    /** 长按候选词:在候选栏上方弹出一个小菜单,两个选项:固定 / 取消固定(不适用的那个变灰)。 */
-    private fun showPinPopup(index: Int) {
-        val h = pinHandler ?: return
-        dismissPinPopup()
-        val pinned = h.isPinned(index)
-        val row = LinearLayout(context)
-        row.orientation = LinearLayout.HORIZONTAL
-        row.background = GradientDrawable().apply {
-            setColor(palette.background)
-            cornerRadius = context.dpf(12f)
-            setStroke(context.dpi(1f), palette.textFaint)
-        }
-        row.addView(pinButton("\uD83D\uDCCC 固定", !pinned) {
-            dismissPinPopup()
-            h.onPin(index, true)
-        })
-        row.addView(pinButton("\u2715 取消固定", pinned) {
-            dismissPinPopup()
-            h.onPin(index, false)
-        })
-        popupAt(index, row)
-    }
-
-    /** 在候选栏上方弹出一行信息(长按候选看读音和笔画数)。和固定菜单共用一个弹窗:5 秒后自动收起,候选一变就收起。 */
+    /** 在候选栏上方弹出一行信息(长按候选看读音和笔画数)。5 秒后自动收起,候选一变就收起。 */
     fun showInfo(index: Int, text: String) {
         if (!targetVisible || index !in 0 until items.size) return
         dismissPinPopup()
