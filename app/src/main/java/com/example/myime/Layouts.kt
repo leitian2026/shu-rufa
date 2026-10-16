@@ -208,20 +208,16 @@ object Layouts {
         // 回车 / 清除 在第二格,「*」在最下一格(和以前对调)
         keys.add(enterKey(if (s.composing) "清除" else s.enterLabel).at(xr, 1f, rw, 1f))
         keys.add(KeySpec("*", ActionType.STROKE, value = "*", function = true).at(xr, 3f, rw, 1f))
-        // 「分字」:一个词的每个字各打一段笔画,段与段之间按它隔开(笔画组词)。宽屏下一直显示,没打字时按了没反应
+        // 「分字」:一个词的每个字各打一段笔画,段与段之间按它隔开(笔画组词)。只在打字时显示,占右列第三格(没打字时那一格是「符」/「123」)
         val sepKey = KeySpec("分字", ActionType.SEPARATOR, function = true)
-        // 「整字」:只要笔画数刚好等于输入的字(不然是前缀匹配,会带出一大堆更多画的字)。窄屏占「123」的位置,宽屏数字区在左边、占右列第三格
+        // 「整字」:只要笔画数刚好等于输入的字(不然是前缀匹配,会带出一大堆更多画的字)。在左下角:宽屏一直显示(没打字时按了没反应);
+        // 窄屏(手机)没打字时左下角仍是「符」,打了笔画才换成「整字」
         val exactKey = KeySpec("整字", ActionType.EXACT, function = true, active = s.exact)
-        val sym = if (s.composing) exactKey else symKey(if (wide) "符" else "123", if (wide) "symbol" else "number")
+        val sym = if (s.composing) sepKey else symKey(if (wide) "符" else "123", if (wide) "symbol" else "number")
         keys.add(sym.at(xr, 2f, rw, 1f))
 
-        if (wide) {
-            keys.add(sepKey.at(x1, 3f, 1f, 1f))
-            keys.add(spaceKey().at(x1 + 1f, 3f, 1f, 1f))
-        } else {
-            keys.add((if (s.composing) sepKey else symKey("符", "symbol")).at(x1, 3f, 1f, 1f))
-            keys.add(spaceKey().at(x1 + 1f, 3f, 1f, 1f))
-        }
+        keys.add((if (wide || s.composing) exactKey else symKey("符", "symbol")).at(x1, 3f, 1f, 1f))
+        keys.add(spaceKey().at(x1 + 1f, 3f, 1f, 1f))
         keys.add(langKey(false).at(x1 + 2f, 3f, 1f, 1f))
         // 宽屏下笔画页把左右留白收到和窄屏一样,让出的宽度分给各个键
         return Layout(xr + rw, 4f, if (wide) 10.5f else 5f, if (wide) 6.5f else 5f, keys, padX = 4f)
