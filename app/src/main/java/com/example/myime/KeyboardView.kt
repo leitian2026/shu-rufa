@@ -6,6 +6,8 @@ import android.graphics.CornerPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.Typeface
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -60,6 +62,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val funcPaint = centered()
     private val strokePaint = centered()
     private val multiPaint = centered()
+    // 键帽右上角的小字,三档:数字(大一号 + 粗体)、@ # $ % &(中粗)、其余符号(最粗)
+    private val hintNumPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.RIGHT }
+    private val hintMidPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.RIGHT }
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.RIGHT }       // 键帽上方标的数字/符号(长按打出),黑色(跟随主题的正文色),不用浅色
     private val richPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -134,6 +139,21 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         strokePaint.textSize = context.spf(if (wide) 26f else 21f)   // 和数字键一样大
         multiPaint.textSize = context.spf(if (wide) 20f else 17f)
         hintPaint.textSize = context.spf(if (wide) 14f else 11f)
+        hintMidPaint.textSize = hintPaint.textSize
+        hintNumPaint.textSize = context.spf(if (wide) 16f else 13f)   // 数字比符号大一号
+        hintNumPaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        hintNumPaint.isFakeBoldText = false
+        // 中粗:有字重支持(Android 9+)用 600,没有就用普通字体加一点描边
+        if (Build.VERSION.SDK_INT >= 28) {
+            hintMidPaint.typeface = Typeface.create(Typeface.DEFAULT, 600, false)
+            hintMidPaint.isFakeBoldText = false
+        } else {
+            hintMidPaint.typeface = Typeface.DEFAULT
+            hintMidPaint.isFakeBoldText = true
+        }
+        // 最粗:粗体再加一层
+        hintPaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        hintPaint.isFakeBoldText = true
         richPaint.textSize = context.spf(if (wide) 21f else 16f)
         iconPaint.strokeWidth = context.dpf(1.8f)
         iconPaint.pathEffect = CornerPathEffect(context.dpf(1.6f))
@@ -340,10 +360,15 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val hint = k.hold?.firstOrNull()
         if (hint != null) {
             // 小字在键帽右上角,字母保持居中原位
-            hintPaint.color = color
-            val hs = hintPaint.textSize
+            val hp = when {
+                hint[0].isDigit() -> hintNumPaint
+                hint[0] in "@#$%&" -> hintMidPaint
+                else -> hintPaint
+            }
+            hp.color = color
+            val hs = hp.textSize
             val hy = r.top + context.dpf(2f) + hs * 0.72f
-            canvas.drawText(hint, r.right - context.dpf(if (context.isWide()) 6f else 4f), hy, hintPaint)   // 右上角
+            canvas.drawText(hint, r.right - context.dpf(if (context.isWide()) 6f else 4f), hy, hp)   // 右上角
         }
         if (label == "符") {
             // 和旁边「中/英」一样大
