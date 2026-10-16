@@ -130,14 +130,36 @@ class DictManagerActivity : Activity() {
         learn.addView(
             smallButton("清除学习数据").apply {
                 setOnClickListener {
-                    AlertDialog.Builder(this@DictManagerActivity)
-                        .setMessage("拼音、笔画、英文的词频学习记录都会删除,无法恢复。")
-                        .setPositiveButton("清除") { _, _ ->
+                    val pad = dpi(16f)
+                    val box = LinearLayout(this@DictManagerActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(pad, pad / 2, pad, 0)
+                    }
+                    box.addView(label("拼音、笔画、英文的词频学习记录都会删除,无法恢复。\n确认要清除,请在下面输入「清除」两个字。", 14f))
+                    val input = EditText(this@DictManagerActivity).apply {
+                        hint = "清除"
+                        isSingleLine = true
+                        inputType = android.text.InputType.TYPE_CLASS_TEXT
+                    }
+                    box.addView(input)
+                    val dlg = AlertDialog.Builder(this@DictManagerActivity)
+                        .setView(box)
+                        .setPositiveButton("确认清除") { _, _ ->
                             UserData.clearAll(applicationContext)
                             refresh()
                         }
                         .setNegativeButton("取消", null)
                         .showPage()
+                    // 输入的正好是「清除」两个字,确认键才能按
+                    val ok = dlg.getButton(AlertDialog.BUTTON_POSITIVE)
+                    ok.isEnabled = false
+                    input.addTextChangedListener(object : android.text.TextWatcher {
+                        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                        override fun afterTextChanged(s: android.text.Editable?) {
+                            ok.isEnabled = s?.toString()?.trim() == "清除"
+                        }
+                    })
                 }
             },
             smallButtonParams(),
