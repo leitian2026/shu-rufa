@@ -82,6 +82,18 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             (e.inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT &&
             (e.imeOptions and EditorInfo.IME_MASK_ACTION) == EditorInfo.IME_ACTION_SEARCH
 
+    // 下载 / 历史记录 / 收藏夹页面顶部的搜索框:页面一打开就自动对焦、要求弹键盘,约 2 秒后 Edge 又自己收起。
+    // 这类框的第一次弹出要求一律不弹也不补弹;之后你点搜索框(框已对焦,系统会再要求一次)才弹出来。
+    @Volatile private var edgeQuietField = -1
+    @Volatile private var edgeQuietAt = 0L
+    @Volatile private var edgeQuietUser = false
+
+    private fun isEdgeListPageSearch(e: EditorInfo): Boolean {
+        val h = e.hintText?.toString()?.lowercase() ?: return false
+        return h.contains("下载") || h.contains("历史") || h.contains("收藏") ||
+            h.contains("download") || h.contains("history") || h.contains("favorite") || h.contains("bookmark")
+    }
+
     /** 返回 true = 这次弹出请求被拦下(onShowInputRequested 直接返回 false)。 */
     private fun edgeAutoShowBlocked(): Boolean {
         val e = currentInputEditorInfo ?: return false
@@ -93,6 +105,22 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             return true
         }
         if (SystemClock.elapsedRealtime() < edgeAllowUntil) return false    // 自己补弹的请求,放行
+        if (isEdgeSearchField(e) && isEdgeListPageSearch(e)) {              // 下载/历史/收藏页的搜索框:页面自己对焦,不补弹
+            val now = SystemClock.elapsedRealtime()
+            if (edgeQuietField != e.fieldId || edgeQuietAt == 0L) {         // 这个输入会话里的第一次要求 = 页面自动对焦,拦下
+                edgeQuietField = e.fieldId
+                edgeQuietAt = now
+                edgeQuietUser = false
+            } else if (edgeQuietUser || now - edgeQuietAt >= EDGE_TAP_GAP_MS) {
+                edgeQuietUser = true                                        // 之后又来要求(你点了已对焦的搜索框),放行
+                main.removeCallbacks(edgeShowLater)
+                if (diag) AppLog.d("MyIme", "edgeFilter: 列表页搜索框,用户再次点击,放行")
+                return false
+            }
+            main.removeCallbacks(edgeShowLater)
+            if (diag) AppLog.d("MyIme", "edgeFilter: 列表页搜索框自动对焦,不弹键盘(点一下搜索框才弹)")
+            return true
+        }
         if (!isEdgeSearchField(e)) return false
         main.removeCallbacks(edgeShowLater)
         main.postDelayed(edgeShowLater, EDGE_WAIT_MS)
@@ -268,6 +296,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         const val TRASH_MAX = 10          // 回收箱最多放几条
         const val EDGE_WAIT_MS = 120L     // Edge 搜索框要求弹键盘后先等多久(实测焦点转走用了 32~64ms)
         const val EDGE_ALLOW_MS = 800L    // 补弹键盘时放行多久
+        const val EDGE_TAP_GAP_MS = 400L  // 列表页搜索框:第一次要求之后隔这么久再来的要求,算用户点的
         const val CLIP_SAVE_DELAY_MS = 2000L   // 新复制/删除之后多久写一次盘(期间的改动合并)
         const val MAX_CLIP_CHARS = 5000   // 单条剪贴板最多保存的字数,更长的不收
         const val TRANS_DEBOUNCE_MS = 600L   // 翻译框停多久才去翻:越长请求越少越省电,越短译文越跟手
@@ -1168,6 +1197,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     override fun onFinishInput() {
         super.onFinishInput()
+        edgeQuietAt = 0L
+        edgeQuietUser = false
         exitAdjust(save = false)
         transReset(finishTarget = true)
         transUi()
