@@ -1031,7 +1031,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
             SettingsPanelView.ID_FLOAT -> toggleFloating()
             SettingsPanelView.ID_TRAD -> {
-                // 简 ↔ 繁:切换后自动回到键盘;繁体开着时拼音、笔画的候选都显示繁体
+                // 简 ↔ 繁:切换后自动回到键盘;繁体开着时拼音、笔画的候选都显示繁体,简体时都显示简体
                 DictConfig.setStrokeTradFirst(applicationContext, !DictConfig.strokeTradFirst(applicationContext))
                 applyStrokeConfig()
                 refreshTradKey()
@@ -1346,10 +1346,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     /** 笔画页字形偏好(简体优先 / 繁体优先):词库加载好时和每次弹出键盘时更新一次。 */
+    @Volatile private var tradReady = false   // 设置读过一次才开始转(没读之前不转,免得用了默认值)
     @Volatile private var tradOn = false   // 繁体优先的缓存值:每次出候选都读设置文件太浪费,只在这里更新
     private fun applyStrokeConfig() {
         tradOn = DictConfig.strokeTradFirst(applicationContext)
-        if (tradOn) worker.execute { TradConv.warm() }   // 转换表在后台线程提前装好
+        tradReady = true
+        val t = tradOn
+        worker.execute { TradConv.warm(t) }   // 转换表在后台线程提前装好
         (strokeEngine as? StrokeEngine)?.tradFirst = tradOn
         refreshTradKey()
     }
@@ -2017,8 +2020,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     private fun applyCandidates(code: String, list: List<Candidate>) {
         var shown = withEmoji(list)
-        // 繁体优先开着:拼音、笔画的候选都转成繁体显示(打简体、繁体笔画都行)
-        if ((mode == Mode.PINYIN || mode == Mode.STROKE) && tradOn) shown = TradConv.convert(shown)
+        // 拼音、笔画的候选统一成当前字形:繁体开着全显示繁体,关着全显示简体(打简体、繁体笔画都行)
+        if ((mode == Mode.PINYIN || mode == Mode.STROKE) && tradReady) shown = TradConv.convert(shown, tradOn)
         candidatesFor = code
         candidates = shown
         candidateBar?.setCandidates(shown.map { it.text })
