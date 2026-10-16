@@ -312,6 +312,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     // 笔画页的「整字」:开着时只要笔画数刚好等于输入的字(不是前缀匹配)。同样随这一段输入复位。
     private var exactOn = false
     private var candidates: List<Candidate> = emptyList()
+    @Volatile private var readingOn = false   // 「显示读音」开关的缓存值:每次出候选都读设置太浪费,只在弹出键盘和点开关时更新
     private var candidatesFor = ""
     @Volatile private var queryGen = 0   // 后台线程也要读:排队的旧查询靠它判断自己是否已过期
 
@@ -1013,6 +1014,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 leavePage()   // 点完自动回到键盘
                 if ((mode == Mode.STROKE || mode == Mode.PINYIN) && composing.isNotEmpty()) requery()   // 正在打字的话候选马上换成新字形
             }
+            SettingsPanelView.ID_READING -> {
+                // 候选上方的读音 开 ↔ 关:存下来、整格变色、自动回到键盘;正在打字的话候选马上带上 / 去掉读音
+                readingOn = !readingOn
+                DictConfig.setShowReading(applicationContext, readingOn)
+                if (!readingOn) ToneMap.release()   // 关了就把声调表放掉
+                refreshTradKey()
+                leavePage()
+                pushToBar(candidates)
+            }
             SettingsPanelView.ID_TRANS_MS -> {
                 onTransKey(Translator.MS)
                 leavePage()   // 点完翻译自动回到键盘
@@ -1077,6 +1087,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 s0 != KbSize.scale || h0 != KbSize.heightDp || w0 != KbSize.widthFrac
         }
         refreshDiag()   // 首页的开关改了以后,下次键盘弹出就生效
+        readingOn = DictConfig.showReading(applicationContext)
         if (diag) AppLog.d("MyIme", "show restarting=$restarting pinyin=${pinyinEngine != null} stroke=${strokeEngine != null} " + editorDesc(info))
         if (!restarting) captureClipboardNow(fromListener = false)   // 切到别的输入法期间复制的内容,回来时补进历史
 
@@ -1343,6 +1354,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         settingsPanel?.accentIds = setOfNotNull(
             if (KbSize.floating) SettingsPanelView.ID_FLOAT else null,
             if (trad) SettingsPanelView.ID_TRAD else null,
+            if (readingOn) SettingsPanelView.ID_READING else null,   // 显示读音开着:整格变蓝
         )
     }
 
@@ -1999,7 +2011,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if ((mode == Mode.PINYIN || mode == Mode.STROKE) && tradReady) shown = TradConv.convert(shown, tradOn)
         candidatesFor = code
         candidates = shown
-        candidateBar?.setCandidates(shown.map { it.text })
+        pushToBar(shown)
         candidateBar?.setHint(
             ErrorHint.get("query") ?: when (mode) {
                 Mode.PINYIN -> ErrorHint.get("pinyin") ?: if (filterQueryOn()) {
@@ -2013,6 +2025,67 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             } ?: ErrorHint.get("learn") ?: ErrorHint.get("clip") ?: ErrorHint.get("emoji"),
         )
         onComposingChanged()
+    }
+
+    /**
+     * 把候选交给候选栏。开了「显示读音」且是拼音 / 笔画时,先在查询线程(不占主线程)算好每个候选的读音,
+     * 再和候选一起交给候选栏,所以读音和候选同时出现、同时消失;没开就和以前一样当场交给候选栏。
+     */
+    private fun pushToBar(shown: List<Candidate>) {
+        val bar = candidateBar ?: return
+        val texts = shown.map { it.text }
+        val m = mode
+        if (!readingOn || shown.isEmpty() || (m != Mode.PINYIN && m != Mode.STROKE)) {
+            bar.setCandidates(texts)
+            return
+        }
+        val raw = composing.toString()
+        val pe = pinyinEngine as? PinyinEngine   // 只用已经加载好的拼音词库,笔画页不会为了读音去加载它
+        val ctx = applicationContext
+        worker.execute {
+            ToneMap.ensure(ctx)
+            val reads = ArrayList<String>(shown.size)
+            for (c in shown) reads.add(readingFor(c, m, raw, pe))
+            // 这期间候选又变了就丢掉这批
+            main.post { if (shown === candidates) candidateBar?.setCandidates(texts, readings = reads) }
+        }
+    }
+
+    /** 一个候选的读音(带声调)。表情、非汉字、太长的不显示。 */
+    private fun readingFor(c: Candidate, m: Mode, raw: String, pe: PinyinEngine?): String {
+        val text = c.text
+        if (c.kind == 3 || text.isEmpty() || text.length > 16) return ""
+        var han = false
+        for (ch in text) if (ch.code in 0x4E00..0x9FFF) { han = true; break }
+        if (!han) return ""
+        val sources = ArrayList<List<String>>(3)
+        if (m == Mode.PINYIN && c.kind != 2 && c.consumed > 0) {
+            typedSyllables(raw, c.consumed, text.length)?.let { sources.add(it) }   // 打的拼音最可信(长 zhang → zhǎng)
+        }
+        if (pe != null && pe.indexReady) {
+            val rs = try { pe.readings(text, 3) } catch (t: Throwable) { emptyList() }
+            for (r in rs) sources.add(r.split(' '))
+        }
+        return try { ToneMap.annotate(text, sources) } catch (t: Throwable) { "" }
+    }
+
+    /** 已输入的拼音前 consumed 个字符切成音节,正好 n 个才算(对得上这个候选的字数);切不开返回 null。 */
+    private fun typedSyllables(raw: String, consumed: Int, n: Int): List<String>? {
+        val part = raw.substring(0, minOf(consumed, raw.length))
+        val out = ArrayList<String>(n)
+        for (piece in part.split('\'')) {
+            if (piece.isEmpty()) continue
+            for (ch in piece) if (ch !in 'a'..'z') return null
+            val p = Syllabary.normalize(piece)
+            val ends = Syllabary.segment(p) ?: return null
+            var s = 0
+            for (e in ends) {
+                out.add(p.substring(s, e))
+                s = e
+            }
+            if (out.size > n) return null
+        }
+        return if (out.size == n) out else null
     }
 
     /**
@@ -2125,7 +2198,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     /**
      * 长按中文候选(拼音 / 笔画,含联想词):查这个字 / 词的读音(拼音词库)和笔画数、笔顺(笔画词库),弹在候选栏上方。
      * 查询放后台线程;没加载的词库这时才去加载(平时不用就不占内存、不耗电),加载好之前提示再长按一次。
-     * 读音是不带声调的拼音(词库里就是这样),多音字列出几个。
+     * 词库里的读音不带声调,这里用声调表补上(nǐ hǎo),多音字列出几个。
      */
     private fun requestInfo(index: Int): Boolean {
         if (mode != Mode.PINYIN && mode != Mode.STROKE) return false
@@ -2140,10 +2213,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val gen = queryGen
         worker.execute {
             val readings = try { pe?.readings(text) } catch (t: Throwable) { null }
+            ToneMap.ensure(applicationContext)
+            val toned = try { ToneMap.tonedList(text, readings) } catch (t: Throwable) { emptyList() }
             val info = try { se?.infoOf(text) } catch (t: Throwable) { null }
             val parts = ArrayList<String>()
             parts.add(text)
-            if (pe == null) parts.add("读音加载中,稍后再长按") else if (readings != null && readings.isNotEmpty()) parts.add(readings.joinToString(" / "))
+            if (toned.isNotEmpty()) parts.add(toned.joinToString(" / ")) else if (pe == null) parts.add("读音加载中,稍后再长按")
             if (se == null) {
                 parts.add("笔画加载中,稍后再长按")
             } else if (info != null) {
