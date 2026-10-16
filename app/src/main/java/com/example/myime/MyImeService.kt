@@ -1031,11 +1031,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
             SettingsPanelView.ID_FLOAT -> toggleFloating()
             SettingsPanelView.ID_TRAD -> {
-                // 简 ↔ 繁:留在功能页,按键颜色当场变;正在打笔画的话候选马上按新偏好重排
+                // 简 ↔ 繁:切换后自动回到键盘;繁体开着时拼音、笔画的候选都显示繁体
                 DictConfig.setStrokeTradFirst(applicationContext, !DictConfig.strokeTradFirst(applicationContext))
                 applyStrokeConfig()
                 refreshTradKey()
-                if (mode == Mode.STROKE && composing.isNotEmpty()) requery()
+                leavePage()   // 点完自动回到键盘
+                if ((mode == Mode.STROKE || mode == Mode.PINYIN) && composing.isNotEmpty()) requery()   // 正在打字的话候选马上换成新字形
             }
             SettingsPanelView.ID_TRANS_MS -> {
                 onTransKey(Translator.MS)
@@ -1345,8 +1346,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     /** 笔画页字形偏好(简体优先 / 繁体优先):词库加载好时和每次弹出键盘时更新一次。 */
+    @Volatile private var tradOn = false   // 繁体优先的缓存值:每次出候选都读设置文件太浪费,只在这里更新
     private fun applyStrokeConfig() {
-        (strokeEngine as? StrokeEngine)?.tradFirst = DictConfig.strokeTradFirst(applicationContext)
+        tradOn = DictConfig.strokeTradFirst(applicationContext)
+        if (tradOn) worker.execute { TradConv.warm() }   // 转换表在后台线程提前装好
+        (strokeEngine as? StrokeEngine)?.tradFirst = tradOn
         refreshTradKey()
     }
 
@@ -2012,7 +2016,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     private fun applyCandidates(code: String, list: List<Candidate>) {
-        val shown = withEmoji(list)
+        var shown = withEmoji(list)
+        // 繁体优先开着:拼音、笔画的候选都转成繁体显示(打简体、繁体笔画都行)
+        if ((mode == Mode.PINYIN || mode == Mode.STROKE) && tradOn) shown = TradConv.convert(shown)
         candidatesFor = code
         candidates = shown
         candidateBar?.setCandidates(shown.map { it.text })
