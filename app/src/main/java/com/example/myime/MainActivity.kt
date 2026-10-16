@@ -93,15 +93,7 @@ class MainActivity : Activity() {
         })
         root.addView(test, cardParams())
 
-        val scroll = ScrollView(this).apply { isFillViewport = true }
-        // 平板 / 横屏:内容限宽 640dp 居中,不拉满整个屏幕
-        val wideScreen = resources.configuration.screenWidthDp >= 680
-        val lp = FrameLayout.LayoutParams(
-            if (wideScreen) dpi(640f) else ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-        ).apply { gravity = Gravity.CENTER_HORIZONTAL }
-        scroll.addView(root, lp)
-        setContentView(scroll)
+        setContentView(pageScroll(root))
     }
 
     /** Edge 搜索框自动弹键盘的过滤开关:默认开,只对 Edge 生效。 */
