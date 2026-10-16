@@ -133,7 +133,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         funcPaint.textSize = context.spf(if (wide) 17f else 14f)
         strokePaint.textSize = context.spf(if (wide) 26f else 21f)   // 和数字键一样大
         multiPaint.textSize = context.spf(if (wide) 20f else 17f)
-        hintPaint.textSize = context.spf(if (wide) 15f else 12f)
+        hintPaint.textSize = context.spf(if (wide) 14f else 11f)
         richPaint.textSize = context.spf(if (wide) 21f else 16f)
         iconPaint.strokeWidth = context.dpf(1.8f)
         iconPaint.pathEffect = CornerPathEffect(context.dpf(1.6f))
@@ -338,9 +338,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val label = k.label
         if (label.isEmpty()) return
         val hint = k.hold?.firstOrNull()
+        var dy = 0f
         if (hint != null) {
+            // 小字贴在键帽顶部,字母整体往下让一点,两者不重叠
             hintPaint.color = color
-            canvas.drawText(hint, cx, r.top + r.height() * 0.24f + hintBase, hintPaint)
+            canvas.drawText(hint, cx, r.top + context.dpf(2f) - hintPaint.fontMetrics.ascent, hintPaint)
+            dy = context.dpf(if (context.isWide()) 4f else 3f)
         }
         if (label == "符") {
             // 和旁边「中/英」一样大
@@ -366,7 +369,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             base = letterBase
         }
         paint.color = color
-        canvas.drawText(label, cx, cy + base, paint)
+        canvas.drawText(label, cx, cy + base + dy, paint)
     }
 
     /** 「中/英」:当前语言加粗,另一个变淡。 */
