@@ -153,7 +153,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         lastShowAt = now
         return sb.toString()
     }
-    private val ioPool = Executors.newSingleThreadExecutor()    // 所有写文件(带 fsync,可能几十毫秒)都放这里,不会排在候选查询前面
+    // 所有写文件(带 fsync,可能几十毫秒)都放这里,不会排在候选查询前面。
+    // 线程降到后台优先级:系统会把它放到小核 / 后台 cgroup,不和打字的主线程、候选查询线程抢大核(写盘主要是等 IO,慢一点用户感觉不到)
+    private val ioPool = Executors.newSingleThreadExecutor { r ->
+        Thread({
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            r.run()
+        }, "myime-io")
+    }
 
     @Volatile private var pinyinEngine: Engine? = null
     @Volatile private var strokeEngine: Engine? = null
@@ -361,7 +368,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         while (trash.size > TRASH_MAX) trash.removeAt(trash.size - 1)
     }
 
-    // ------------------------------------------------------------ 词库:按需加载、闲置释放
+    // ------------------------------------------------------------ 词库:按需加载
+    // 词库加载后一直留在内存里,键盘收起、闲置、系统内存紧张时都不主动释放:放在内存里不耗电,
+    // 重新加载(读缓存、建索引)才耗 CPU。只有词库文件被换掉时才释放(见 releaseDicts)。
 
     /** 当前页面要用哪个词库,就加载哪个(只加载一次)。没用到的词库不读,不占内存。 */
     private fun warmUp() {
@@ -433,7 +442,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
-    /** 放掉所有词库:词库文件换了,或键盘隐藏很久 / 系统缺内存。下次用到时 warmUp 会重新加载。 */
+    /** 放掉所有词库:词库文件被下载 / 手动换过。下次用到时 warmUp 会重新加载。 */
     private fun releaseDicts() {
         dictGen++
         EmojiWords.release()
