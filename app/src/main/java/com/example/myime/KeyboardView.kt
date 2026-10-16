@@ -112,6 +112,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val popRect = RectF()
     private val holdRunnable = Runnable { startHold() }
 
+    // 长按气泡:按下带单字符备选的键时弹出,时长 = HOLD_MS,正好在长按触发、字符上屏的那一刻结束;
+    // 只是画一层,不改 HOLD_MS,所以长按出字的速度和以前完全一样。提前松手(当普通键打)就立刻撤掉
+    private var bubbleKey = -1
+    private var bubbleText = ""
+    private var bubbleStart = 0L
+
     init {
         applyMetrics()
     }
@@ -306,6 +312,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             drawLabel(canvas, k, r, onFace)
         }
         drawHoldPopup(canvas)
+        if (drawHoldBubble(canvas)) postInvalidateOnAnimation()
         if (fading) postInvalidateOnAnimation()
     }
 
@@ -331,6 +338,50 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 letterPaint.color = palette.text
             }
             canvas.drawText(opts[k], cx, holdTop + h / 2f + letterBase, letterPaint)
+        }
+    }
+
+    /** 长按气泡:前 55% 从键上弹大,后面渐隐,到 HOLD_MS 时恰好消失(此刻字符已上屏)。返回 true = 还要继续画。 */
+    private fun drawHoldBubble(canvas: Canvas): Boolean {
+        val i = bubbleKey
+        if (i < 0 || i >= rects.size) return false
+        val t = (SystemClock.uptimeMillis() - bubbleStart).toFloat() / HOLD_MS
+        if (t >= 1f) {
+            bubbleKey = -1
+            return false
+        }
+        val r = rects[i]
+        val popT = (t / 0.55f).coerceIn(0f, 1f)
+        val ease = 1f - (1f - popT) * (1f - popT)               // 先快后慢地弹出
+        val scale = 0.5f + 0.5f * ease
+        val alpha = if (t < 0.55f) 1f else 1f - (t - 0.55f) / 0.45f
+        val bw = r.width() * 0.9f * scale
+        val bh = r.height() * 0.9f * scale
+        val cx = r.centerX().coerceIn(bw / 2f, maxOf(bw / 2f, width - bw / 2f))
+        val bottom = r.top - context.dpf(4f) * ease
+        val top = maxOf(0f, bottom - bh)
+        popRect.set(cx - bw / 2f, top, cx + bw / 2f, top + bh)
+        val a = (alpha * 255).toInt().coerceIn(0, 255)
+        val oldFill = fill.color
+        val oldText = letterPaint.color
+        fill.color = palette.accent
+        fill.alpha = a
+        canvas.drawRoundRect(popRect, radius * 1.3f, radius * 1.3f, fill)
+        letterPaint.color = palette.onAccent
+        letterPaint.alpha = a
+        val oldSize = letterPaint.textSize
+        letterPaint.textSize = oldSize * scale
+        canvas.drawText(bubbleText, popRect.centerX(), popRect.centerY() + baseline(letterPaint), letterPaint)
+        letterPaint.textSize = oldSize
+        fill.color = oldFill
+        letterPaint.color = oldText
+        return true
+    }
+
+    private fun stopBubble() {
+        if (bubbleKey >= 0) {
+            bubbleKey = -1
+            invalidate()
         }
     }
 
@@ -551,6 +602,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private fun flushPendingHold() {
         if (holdOptions != null || holdPending.size() == 0) return
         uiHandler.removeCallbacks(holdRunnable)
+        bubbleKey = -1
         val list = ArrayList<KeySpec>(holdPending.size())
         for (j in 0 until holdPending.size()) list.add(holdPending.valueAt(j))
         holdPending.clear()
@@ -565,6 +617,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val i = pointerKey.get(id, -1)
         if (i < 0 || i >= rects.size) return
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        bubbleKey = -1   // 气泡到点了,和字符上屏同一刻收掉
         if (opts.size == 1) {
             // 只有一个备选:长按直接打出来,松手不再重复
             holdPending.remove(id)
@@ -614,6 +667,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         holdKey = -1
         holdOptions = null
         holdSel = 0
+        bubbleKey = -1
     }
 
     private fun pointerDown(id: Int, x: Float, y: Float) {
@@ -630,6 +684,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             holdPending.put(id, spec)
             holdPointer = id
             holdDownX = x
+            val only = holdOpts.singleOrNull()
+            if (only != null) {
+                bubbleKey = i
+                bubbleText = only
+                bubbleStart = SystemClock.uptimeMillis()
+            }
             uiHandler.postDelayed(holdRunnable, HOLD_MS)
             invalidate()
             return
@@ -659,6 +719,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val pend = holdPending.get(id)
         if (pend != null) {
             uiHandler.removeCallbacks(holdRunnable)
+            stopBubble()
             val opts = holdOptions
             fire = if (opts != null) {
                 val alt = opts[holdSel.coerceIn(0, opts.size - 1)]
