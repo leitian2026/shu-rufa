@@ -59,7 +59,6 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pressPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val letterPaint = centered()
-    private val letterBoldPaint = centered()   // 字母键上的字母:粗体
     private val funcPaint = centered()
     private val strokePaint = centered()
     private val multiPaint = centered()
@@ -143,8 +142,6 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         iconH = context.dpf(if (wide) 9f else 8f)
 
         letterPaint.textSize = context.spf(if (wide) 26f else 21f)
-        letterBoldPaint.textSize = letterPaint.textSize
-        letterBoldPaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         funcPaint.textSize = context.spf(if (wide) 17f else 14f)
         strokePaint.textSize = context.spf(if (wide) 26f else 21f)   // 和数字键一样大
         multiPaint.textSize = context.spf(if (wide) 20f else 17f)
@@ -262,7 +259,11 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     // ---------------------------------------------------------------- 绘制
 
     override fun onDraw(canvas: Canvas) {
+        // 父布局关了裁剪(为了让气泡能盖住候选栏),drawColor 会铺满无限大,把别的视图(工具栏图标)全盖住:只填自己的范围
+        canvas.save()
+        canvas.clipRect(0f, 0f, width.toFloat(), height.toFloat())
         canvas.drawColor(palette.keyboardBackground)
+        canvas.restore()
         val now = drawingTime
         var fading = false
         for (i in keys.indices) {
@@ -313,9 +314,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             drawLabel(canvas, k, r, onFace)
         }
         drawHoldPopup(canvas)
-        // 气泡只在这 330ms 里动:限到约 30 帧/秒,并且只重绘气泡那一小块(不跟屏幕 60/120Hz 走,也不重画整个键盘)
+        // 气泡动画跟随屏幕刷新率(60/90/120Hz):每个 vsync 重绘一次,只重绘气泡那一小块
         if (drawHoldBubble(canvas)) {
-            postInvalidateDelayed(BUBBLE_FRAME_MS, bubbleDirty.left, bubbleDirty.top, bubbleDirty.right, bubbleDirty.bottom)
+            postInvalidateOnAnimation(bubbleDirty.left, bubbleDirty.top, bubbleDirty.right, bubbleDirty.bottom)
         }
         if (fading) postInvalidateOnAnimation()
     }
@@ -439,7 +440,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 hint[0] in "@#$%&" -> hintMidPaint
                 else -> hintPaint
             }
-            hp.color = color
+            hp.color = palette.hintText   // 浅黑
             val hs = hp.textSize
             val hy = r.top + context.dpf(2f) + hs * 0.72f
             canvas.drawText(hint, r.right - context.dpf(if (context.isWide()) 6f else 4f), hy, hp)   // 右上角
@@ -464,8 +465,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             paint = funcPaint
             base = funcBase
         } else {
-            // 字母键上的字母加粗;数字、标点还是普通字重
-            paint = if (k.type == ActionType.CHAR && label.length == 1 && label[0].isLetter()) letterBoldPaint else letterPaint
+            paint = letterPaint
             base = letterBase
         }
         paint.color = color
@@ -494,7 +494,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     }
 
     private fun drawIcon(canvas: Canvas, kind: Int, cx: Float, cy: Float, color: Int) {
+        iconPaint.style = Paint.Style.STROKE
+        iconPaint.strokeWidth = context.dpf(1.8f)
         iconPaint.color = color
+        iconPaint.alpha = 255
         val w = iconW
         val h = iconH
         path.reset()
@@ -806,7 +809,6 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         const val REPEAT_DELAY_MS = 420L
         const val REPEAT_INTERVAL_MS = 55L
         const val HOLD_MS = 330L
-        const val BUBBLE_FRAME_MS = 33L
         const val BUBBLE_GAP = 0.09f      // 气泡离键帽的间距 / 键高
         const val BUBBLE_CORNER = 0.25f   // 圆角 / 气泡短边
         const val BUBBLE_TEXT = 0.66f     // 字号 / 气泡短边
