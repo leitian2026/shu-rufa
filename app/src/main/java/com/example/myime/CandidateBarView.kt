@@ -37,6 +37,7 @@ class CandidateBarView(
     private var palette = Palette(context)
 
     private var items: List<String> = emptyList()
+    private var reads: List<String> = emptyList()   // 每个候选上方的读音(带声调);空 = 没开「显示读音」,候选栏和以前一模一样
     private var xs = FloatArray(1)
     private var contentWidth = 0f
     private var offset = 0f
@@ -46,8 +47,7 @@ class CandidateBarView(
      * 结果稍后由调用方用 showInfo 显示(查询在后台线程,词库没加载好时还要等)。
      */
     var infoHandler: ((Int) -> Boolean)? = null
-    private var pinPopup: PopupWindow? = null
-    private val pinAutoDismiss = Runnable { dismissPinPopup() }
+    private var pinPopup: PopupWindow? = null   // 长按弹出的信息条:不会自己消失,只在候选变了 / 点别处 / 键盘收起时收起
 
     private var composing = ""
     private var hint: String? = null   // 出错原因(小红字,显示在预览行右边)
@@ -68,6 +68,8 @@ class CandidateBarView(
 
     private val candPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private val composePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
+    private val readPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
+    private var readBase = 0f
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.RIGHT
         color = 0xFFE5484D.toInt()
@@ -174,6 +176,8 @@ class CandidateBarView(
         composeBase = baseline(composePaint)
         hintPaint.textSize = context.spf(if (wide) 14f else 12f)
         hintBase = baseline(hintPaint)
+        readPaint.textSize = context.spf(if (wide) 12f else 10.5f)
+        readBase = baseline(readPaint)
     }
 
     private fun maxOffset(): Float = (contentWidth + inset + closeW - width).coerceAtLeast(0f)
@@ -211,7 +215,7 @@ class CandidateBarView(
         invalidate()
     }
 
-    fun setCandidates(list: List<String>, animate: Boolean = true) {
+    fun setCandidates(list: List<String>, animate: Boolean = true, readings: List<String>? = null) {
         if (pinPopup != null && list != items) dismissPinPopup()   // 候选变了,弹出的菜单对应的词已经不对了
         if (list.isEmpty()) {
             if (!targetVisible && items.isEmpty()) return
@@ -219,6 +223,7 @@ class CandidateBarView(
             if (animate && contentAlpha > 0f) {
                 fadeTo(0f) {
                     items = emptyList()
+                    reads = emptyList()
                     relayout()
                     invalidate()
                 }
@@ -226,15 +231,19 @@ class CandidateBarView(
                 animator?.cancel()
                 contentAlpha = 0f
                 items = emptyList()
+                reads = emptyList()
                 relayout()
                 invalidate()
             }
             return
         }
 
+        // 读音和候选一起换:个数对不上、或全是空的就当没有读音
+        val rd = if (readings != null && readings.size == list.size && readings.any { it.isNotEmpty() }) readings else emptyList()
         // 内容没变就不重排、不重画、不回滚到开头(也少做一次无谓的绘制)
-        if (targetVisible && list == items) return
+        if (targetVisible && list == items && rd == reads) return
         items = list
+        reads = rd
         relayout()
         scroller.forceFinished(true)
         offset = 0f
@@ -259,12 +268,21 @@ class CandidateBarView(
         onEnd?.invoke()
     }
 
+    /** 有读音时每个候选左右留的空白小一点(读音比字宽,不然候选栏一屏放不下几个)。 */
+    private fun padNow(): Float = if (reads.isEmpty()) itemPad else itemPad * 0.75f
+
     private fun relayout() {
         xs = FloatArray(items.size + 1)
         var x = 0f
+        val pad = padNow()
         for (i in items.indices) {
             xs[i] = x
-            x += candPaint.measureText(items[i]) + itemPad * 2
+            var w = candPaint.measureText(items[i])
+            if (reads.isNotEmpty()) {
+                val r = reads[i]
+                if (r.isNotEmpty()) w = maxOf(w, readPaint.measureText(r))
+            }
+            x += w + pad * 2
         }
         xs[items.size] = x
         contentWidth = x
@@ -322,14 +340,29 @@ class CandidateBarView(
     private fun drawCandidates(canvas: Canvas) {
         val left = offset - inset
         val right = left + width
-        val y = stripH + rowH / 2f + candBase
+        val hasReads = reads.isNotEmpty()
+        // 有读音:读音在上、字在下,两行一起居中;没有读音和以前完全一样
+        val y = stripH + rowH * (if (hasReads) 0.68f else 0.5f) + candBase
+        val ry = stripH + rowH * 0.27f + readBase
         val a = (contentAlpha * 255f).toInt()
         for (i in items.indices) {
             if (xs[i + 1] < left) continue
             if (xs[i] > right) break
-            candPaint.color = if (i == 0) palette.accent else palette.text
+            val w = xs[i + 1] - xs[i]
+            val first = i == 0
+            candPaint.color = if (first) palette.accent else palette.text
             candPaint.alpha = a
-            canvas.drawText(items[i], inset + xs[i] - offset + itemPad, y, candPaint)
+            val tw = candPaint.measureText(items[i])
+            canvas.drawText(items[i], inset + xs[i] - offset + (w - tw) / 2f, y, candPaint)
+            if (hasReads) {
+                val r = reads[i]
+                if (r.isNotEmpty()) {
+                    readPaint.color = if (first) palette.accent else palette.icon
+                    readPaint.alpha = a
+                    val rw = readPaint.measureText(r)
+                    canvas.drawText(r, inset + xs[i] - offset + (w - rw) / 2f, ry, readPaint)
+                }
+            }
         }
     }
 
@@ -442,7 +475,7 @@ class CandidateBarView(
         return if (x >= inset && idx in 0 until TOOLS) idx else -1
     }
 
-    /** 在候选栏上方弹出一行信息(长按候选看读音和笔画数)。5 秒后自动收起,候选一变就收起。 */
+    /** 在候选栏上方弹出一行信息(长按候选看读音和笔画数)。不会自动消失;候选一变、点到别处、键盘收起时才收起。 */
     fun showInfo(index: Int, text: String) {
         if (!targetVisible || index !in 0 until items.size) return
         dismissPinPopup()
@@ -476,7 +509,6 @@ class CandidateBarView(
         pw.elevation = context.dpf(6f)
         pw.setOnDismissListener {
             pinPopup = null
-            removeCallbacks(pinAutoDismiss)
         }
         val loc = IntArray(2)
         getLocationOnScreen(loc)
@@ -491,7 +523,6 @@ class CandidateBarView(
         try {
             pw.showAsDropDown(this, xoff, yoff, Gravity.NO_GRAVITY)
             pinPopup = pw
-            postDelayed(pinAutoDismiss, 5000)
         } catch (e: Exception) {
             pinPopup = null
         }
@@ -500,7 +531,6 @@ class CandidateBarView(
     fun dismissPinPopup() {
         val pw = pinPopup ?: return
         pinPopup = null
-        removeCallbacks(pinAutoDismiss)
         try {
             pw.dismiss()
         } catch (e: Exception) {
