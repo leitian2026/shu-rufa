@@ -125,6 +125,16 @@ object DictConfig {
         p(ctx).edit().putBoolean("stroke_trad_first", v).apply()
     }
 
+    /**
+     * 候选区每个候选上方显示带声调的读音(功能页「显示读音」键,默认关)。
+     * 关着时候选栏和以前完全一样,也不读声调表、不多做任何查询。
+     */
+    fun showReading(ctx: Context): Boolean = p(ctx).getBoolean("show_reading", false)
+
+    fun setShowReading(ctx: Context, v: Boolean) {
+        p(ctx).edit().putBoolean("show_reading", v).apply()
+    }
+
     /** 拼音每次最多给几个词候选(15 / 30 / 50 / 80 四档,默认 30)。 */
     fun candidates(ctx: Context): Int = p(ctx).getInt("cands", 30).coerceIn(10, 100)
 
