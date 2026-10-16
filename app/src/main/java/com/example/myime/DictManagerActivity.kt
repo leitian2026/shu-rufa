@@ -43,13 +43,14 @@ class DictManagerActivity : Activity() {
         super.onCreate(savedInstanceState)
         active = this
         applyPageBackground()
+        val pal = Palette(this)
         val pad = dpi(16f)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad * 2, pad, pad * 2)
+            setPadding(pad, dpi(28f), pad, dpi(36f))
         }
 
-        root.addView(label("词库管理", 24f, bold = true))
+        root.addView(label("词库管理", 28f, bold = true))
         root.addView(
             foldNote(
                 "词库存放的文件夹(可手动部署,见下):\n" + DictStore.root(this).absolutePath + "\n\n" +
@@ -57,9 +58,11 @@ class DictManagerActivity : Activity() {
                     "或把原始文件放进其中的 raw/ 子文件夹后点「下载并安装」(下载失败时会用 raw/ 里已有的文件转换)。" +
                     "装好后回到输入框,键盘会自动重新加载。没装时拼音/笔画用内置小样本,英文页没有补全。",
                 selectable = true,
-            ).apply { setPadding(0, pad / 2, 0, pad) },
+            ).apply { setPadding(0, dpi(4f), 0, 0) },
         )
 
+        // ---- 词库
+        root.addView(sectionHeader("词库"))
         addCard(
             root, DictPacks.STROKE, "笔画词库",
             "rime-stroke 笔画字表(含繁体和扩展区生僻字),字频取自雾凇 8105 字表。",
@@ -72,60 +75,59 @@ class DictManagerActivity : Activity() {
         capButton = smallButton().apply {
             setOnClickListener { cycleCap() }
         }
-        root.addView(capButton, smallButtonParams())
+        val capCard = settingsCard()
+        capCard.addView(capButton, smallButtonParams())
+        root.addView(capCard, cardParams().apply { bottomMargin = dpi(10f) })
         addCard(
             root, DictPacks.ENGLISH, "英文词库",
             "Norvig 整理的谷歌语料词频:单词(前缀补全、纠错)+ 双词(下一个词联想),约 10 MB。",
         )
 
         // ---- 网络
-        root.addView(label("网络", 18f, bold = true).apply { setPadding(0, pad, 0, pad / 2) })
-        root.addView(foldNote("下载地址在 GitHub / norvig.com。连不上时可以填一个镜像前缀(会先试 前缀+原地址,再直连),留空 = 直连。"))
+        root.addView(sectionHeader("网络"))
+        val net = settingsCard()
+        net.addView(foldNote("下载地址在 GitHub / norvig.com。连不上时可以填一个镜像前缀(会先试 前缀+原地址,再直连),留空 = 直连。"))
         val mirror = EditText(this).apply {
             hint = "镜像前缀,例如 https://你的镜像/"
             setText(DictConfig.mirror(this@DictManagerActivity))
             setSingleLine(true)
+            textSize = 14f
+            setTextColor(pal.text)
+            setHintTextColor(pal.textFaint)
+            background = fieldBackground()
+            setPadding(dpi(12f), dpi(10f), dpi(12f), dpi(10f))
         }
-        root.addView(mirror)
-        root.addView(
-            smallButton("保存镜像前缀").apply {
+        net.addView(mirror)
+        net.addView(
+            primaryButton("保存镜像前缀").apply {
                 setOnClickListener {
                     DictConfig.setMirror(this@DictManagerActivity, mirror.text.toString())
                     Toast.makeText(this@DictManagerActivity, "已保存", Toast.LENGTH_SHORT).show()
                 }
             },
-            smallButtonParams(),
+            smallButtonParams().apply { topMargin = dpi(10f) },
         )
+        root.addView(net, cardParams())
 
         // ---- 学习
-        root.addView(label("词频学习", 18f, bold = true).apply { setPadding(0, pad, 0, pad / 2) })
-        root.addView(
+        root.addView(sectionHeader("词频学习"))
+        val learn = settingsCard()
+        learn.addView(
             foldNote(
                 "选过的候选会排得更靠前;英文还会记住你常打的新词和词的先后顺序。只存在本机应用私有目录,不上传。" +
                     "密码框、网址/邮箱框,以及应用声明不要建议/个性化学习的输入框里不记录。",
             ),
         )
-        root.addView(
-            CheckBox(this).apply {
-                text = "记录并使用我的用词"
-                textSize = 15f
-                minHeight = dpi(48f)
-                isChecked = DictConfig.learn(this@DictManagerActivity)
-                setOnCheckedChangeListener { _, v -> DictConfig.setLearn(this@DictManagerActivity, v) }
+        learn.addView(switchRow("记录并使用我的用词", DictConfig.learn(this)) { v -> DictConfig.setLearn(this, v) })
+        learn.addView(rowDivider())
+        learn.addView(
+            switchRow("英文:按空格时自动改正拼错的词", DictConfig.autoCorrect(this), "默认只在候选里给出") { v ->
+                DictConfig.setAutoCorrect(this, v)
             },
         )
-        root.addView(
-            CheckBox(this).apply {
-                text = "英文:按空格时自动改正拼错的词(默认只在候选里给出)"
-                textSize = 15f
-                minHeight = dpi(48f)
-                isChecked = DictConfig.autoCorrect(this@DictManagerActivity)
-                setOnCheckedChangeListener { _, v -> DictConfig.setAutoCorrect(this@DictManagerActivity, v) }
-            },
-        )
-        userInfo = label("", 13f, alpha = 0.7f)
-        root.addView(userInfo)
-        root.addView(
+        userInfo = label("", 13f, alpha = 0.7f).apply { setPadding(0, dpi(8f), 0, dpi(4f)) }
+        learn.addView(userInfo)
+        learn.addView(
             smallButton("清除学习数据").apply {
                 setOnClickListener {
                     AlertDialog.Builder(this@DictManagerActivity)
@@ -140,10 +142,12 @@ class DictManagerActivity : Activity() {
             },
             smallButtonParams(),
         )
+        root.addView(learn, cardParams())
 
         // ---- 候选数量
-        root.addView(label("候选数量", 18f, bold = true).apply { setPadding(0, pad, 0, pad / 2) })
-        root.addView(
+        root.addView(sectionHeader("候选数量"))
+        val cand = settingsCard()
+        cand.addView(
             foldNote(
                 "拼音每次最多给出多少个词候选(整句、联想、表情不算在内)。少一点:查词和候选栏都少做事,更省电;" +
                     "多一点:能翻到更靠后的词。默认 30,下次弹出键盘生效。笔画和英文不受影响。",
@@ -157,6 +161,7 @@ class DictManagerActivity : Activity() {
                     id = View.generateViewId()
                     text = if (n == 30) "30(默认)" else "$n"
                     textSize = 15f
+                    setTextColor(pal.text)
                     minHeight = dpi(48f)
                     isChecked = n == candNow
                     setOnCheckedChangeListener { _, v ->
@@ -165,11 +170,13 @@ class DictManagerActivity : Activity() {
                 },
             )
         }
-        root.addView(candGroup)
+        cand.addView(candGroup)
+        root.addView(cand, cardParams())
 
         // ---- 模糊音
-        root.addView(label("模糊音", 18f, bold = true).apply { setPadding(0, pad, 0, pad / 2) })
-        root.addView(
+        root.addView(sectionHeader("模糊音"))
+        val fz = settingsCard()
+        fz.addView(
             foldNote(
                 "勾选后,打成相近的音也能出候选,例如勾了 z / zh,打 zi 也能找到「知」。" +
                     "勾的越多候选越杂,只勾你真的会混的。第一次用时会在后台花一两秒建一份索引,多占一点内存;全不勾就没有任何开销。" +
@@ -187,21 +194,17 @@ class DictManagerActivity : Activity() {
             "f / h(fu ≈ hu)" to Fuzzy.FH,
         )
         for ((name, bit) in fuzzyItems) {
-            root.addView(
-                CheckBox(this).apply {
-                    text = name
-                    textSize = 15f
-                    minHeight = dpi(48f)
-                    isChecked = (DictConfig.fuzzy(this@DictManagerActivity) and bit) != 0
-                    setOnCheckedChangeListener { _, v ->
-                        val cur = DictConfig.fuzzy(this@DictManagerActivity)
-                        DictConfig.setFuzzy(this@DictManagerActivity, if (v) cur or bit else cur and bit.inv())
-                    }
+            fz.addView(rowDivider())
+            fz.addView(
+                switchRow(name, (DictConfig.fuzzy(this) and bit) != 0) { v ->
+                    val cur = DictConfig.fuzzy(this)
+                    DictConfig.setFuzzy(this, if (v) cur or bit else cur and bit.inv())
                 },
             )
         }
+        root.addView(fz, cardParams())
 
-        setContentView(ScrollView(this).apply { addView(root) })
+        setContentView(pageScroll(root))
         refresh()
     }
 
@@ -224,20 +227,13 @@ class DictManagerActivity : Activity() {
             this.text = text
             textSize = sp
             this.alpha = alpha
+            setTextColor(Palette(this@DictManagerActivity).text)
             if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
         }
 
     private fun addCard(root: LinearLayout, pack: String, title: String, desc: String) {
         val card = Card(pack)
-        val pad = dpi(12f)
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-            background = GradientDrawable().apply {
-                cornerRadius = dpf(12f)
-                setStroke(dpi(1f), 0x44888888)
-            }
-        }
+        val box = settingsCard().apply { setPadding(dpi(16f), dpi(14f), dpi(16f), dpi(8f)) }
         box.addView(label(title, 17f, bold = true))
         box.addView(foldNote(desc))
         card.status = label("", 14f)
@@ -251,7 +247,7 @@ class DictManagerActivity : Activity() {
         box.addView(card.bar)
 
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        card.install = smallButton().apply { setOnClickListener { onInstallClick(pack) } }
+        card.install = primaryButton("").apply { setOnClickListener { onInstallClick(pack) } }
         card.delete = smallButton("删除").apply {
             setOnClickListener {
                 if (busyPack == null) {
