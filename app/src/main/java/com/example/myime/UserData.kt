@@ -194,7 +194,7 @@ object UserData {
     private var englishData: UserEnglish? = null
     private var chainData: UserChain? = null
     private var wordsData: UserWords? = null
-    private var pinsData: EnglishPins? = null
+    private var pickData: UserFreq? = null
 
     private fun dir(ctx: Context): File {
         val d = File(ctx.applicationContext.filesDir, "user")
@@ -222,13 +222,14 @@ object UserData {
     fun words(ctx: Context): UserWords =
         wordsData ?: UserWords(File(dir(ctx), "words.txt")).also { wordsData = it }
 
+    /** 英文:点选过哪个候选(和拼音 / 笔画同一套「选过的排前面」规则)。只在本机,不参与多机同步。 */
     @Synchronized
-    fun pins(ctx: Context): EnglishPins =
-        pinsData ?: EnglishPins(File(dir(ctx), "english_pins.txt")).also { pinsData = it }
+    fun englishPick(ctx: Context): UserFreq =
+        pickData ?: UserFreq(File(dir(ctx), "english_pick.txt")).also { pickData = it }
 
     @Synchronized
     fun saveAll() {
-        pinsData?.saveIfDirty()
+        pickData?.saveIfDirty()
         pinyinFreq?.saveIfDirty()
         strokeFreq?.saveIfDirty()
         englishData?.saveIfDirty()
@@ -240,6 +241,7 @@ object UserData {
         pinyin(ctx).clear()
         stroke(ctx).clear()
         english(ctx).clear()
+        englishPick(ctx).clear()
         chain(ctx).clear()
         words(ctx).clear()
         LearnSync.noteCleared(ctx)   // 多机同步:清除只清本机,清除之前的记录也不会被别的手机再同步回来
