@@ -178,7 +178,7 @@ class SettingsPanelView(
             val cx = x + cellW / 2f
             glyphPaint.color = if (filled) palette.onAccent else if (sel) palette.accent else palette.text
             canvas.drawText(items[i].glyph, cx, y + cellH * 0.38f + glyphBase, glyphPaint)
-            labelPaint.color = if (filled) palette.onAccent else if (sel) palette.accent else palette.textFaint
+            labelPaint.color = if (filled) palette.onAccent else if (sel) palette.accent else palette.text   // 小字和大字一样黑
             canvas.drawText(items[i].label, cx, y + cellH * 0.78f + labelBase, labelPaint)
         }
     }
@@ -216,6 +216,7 @@ class SettingsPanelView(
             GridItem(ID_TRANS_GOOGLE, "谷", "翻译谷歌"),
             GridItem(ID_FLOAT, "浮", "悬浮键盘"),
             GridItem(ID_TRAD, "简", "简体优先"),
+            GridItem(ID_READING, "音", "显示读音"),
             GridItem(ID_ADJUST, "↔↕", "键盘调节"),
             GridItem(ID_DICT, "库", "词库管理"),
             GridItem(ID_APP, "设", "输入法设置"),
@@ -244,6 +245,7 @@ class SettingsPanelView(
         const val ID_TRANS_MS = 14       // 用微软翻译:点一下打开(绿色),再点关闭
         const val ID_TRANS_GOOGLE = 15   // 用谷歌翻译:点一下打开(绿色),再点关闭;正开着微软时点它 = 直接换成谷歌
         const val ID_TRAD = 16           // 笔画页字形:简体优先(默认)↔ 繁体优先,开着(繁)时整格变蓝
+        const val ID_READING = 17        // 候选上方显示读音:点一下开 / 关,开着时整格变蓝,点完自动回键盘
         const val ID_PINYIN = 21
         const val ID_STROKE = 22
         const val ID_ENGLISH = 23
