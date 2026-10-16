@@ -744,6 +744,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         floatHandle = handle
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false   // 顶排长按的小气泡要能画到键盘视图上方,盖住候选栏
             addView(
                 handle,
                 LinearLayout.LayoutParams(
@@ -777,6 +778,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         // box 是整个键盘(候选栏 + 键盘/面板 + 调节遮罩),宽度、左边距、离底距离由「键盘调节」决定
         val box = FrameLayout(this).apply {
+            clipChildren = false
             addView(
                 col,
                 FrameLayout.LayoutParams(
@@ -794,6 +796,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         boxView = box
         val root = FrameLayout(this).apply {
+            clipChildren = false
             addView(
                 box,
                 FrameLayout.LayoutParams(
