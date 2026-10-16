@@ -295,7 +295,11 @@ class CandidateBarView(
     }
 
     override fun onDraw(canvas: Canvas) {
+        // 父布局关了裁剪(为了让气泡能盖住候选栏),drawColor 会铺满无限大,把别的视图(工具栏图标)全盖住:只填自己的范围
+        canvas.save()
+        canvas.clipRect(0f, 0f, width.toFloat(), height.toFloat())
         canvas.drawColor(palette.topBar)
+        canvas.restore()
 
         // 上条:预览文字
         if (composing.isNotEmpty()) {
