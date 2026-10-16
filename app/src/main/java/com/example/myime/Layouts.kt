@@ -147,12 +147,8 @@ object Layouts {
         'o' to listOf("9"),
     )
 
-    /** 长按备选现在只有数字/符号一个;保留大写转换以防以后再加字母备选(ß 没有单字符大写,保持原样)。 */
-    private fun holdFor(c: Char, upper: Boolean): List<String>? {
-        val l = HOLD[c] ?: return null
-        if (!upper) return l
-        return l.map { if (it[0].isLetter() && it != "ß") it.uppercase() else it }
-    }
+    /** 长按备选现在每键只有一个数字/符号,不随大小写变化,直接用常量列表(换布局时不再新建列表)。 */
+    private fun holdFor(c: Char): List<String>? = HOLD[c]
 
     private val numpad = listOf("1", "2", "3", "+", "4", "5", "6", "-", "7", "8", "9", "/", ",", "0", ".", ":")
 
@@ -174,7 +170,7 @@ object Layouts {
                     // 笔筛开着:这五个键位置不动,换成笔画(和笔画页同样的一 丨 丿 丶 ㄥ);其余字母照常继续打拼音
                     keys.add(KeySpec(STROKE_SHOWN[glyph].toString(), ActionType.STROKE, value = c.toString()).at(startX[r] + i, r.toFloat()))
                 } else {
-                    val hold = if (english) holdFor(c, s.shift) else null
+                    val hold = if (english) holdFor(c) else null
                     keys.add(KeySpec(label, ActionType.CHAR, value = value, hold = hold).at(startX[r] + i, r.toFloat()))
                 }
             }
