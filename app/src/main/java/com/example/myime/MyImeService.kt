@@ -266,6 +266,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             field = v
             englishEngine?.prev = v
         }
+    // 英文:自动改正后按退格还原、标点吃掉点候选时自动补的空格、双击空格打句号
+    private class AutoFix(val typed: String, val fixed: String, var tail: String)
+    private var autoFix: AutoFix? = null        // 刚刚自动改正的这一次(typed 打的 → fixed 改成的,tail 是紧跟着的空格/标点)
+    private var noAutoWord: String? = null      // 退格还原出来的原词:再提交时不要又改回去
+    private var softSpace = false               // 点候选后自动补的空格还在光标前(下一个键是标点就吃掉它)
+    private var softSpaceNow = false            // 本次按键开始时 softSpace 的值(onKey 里取走)
+    private var lastSpaceAt = 0L                // 上一次按空格键的时间,双击打句号用
     private var prevChinese2: String? = null  // 再上一个词(两词上下文,更准)
     // 造词:同一次输入里连续选了几段拼音候选,记下每一段,选完时拼成新词(见 PinyinEngine.makeWord)
     private val wordCodes = ArrayList<String>()
@@ -1223,6 +1230,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             transUi()
             refreshLayout(animate = false)   // 回车键上的「完成」标签收回去
         }
+        if ((newSelStart != oldSelStart || newSelEnd != oldSelEnd) && SystemClock.uptimeMillis() - lastOwnEditAt > 500) {
+            // 光标不是我们挪的:光标前的空格/刚改正的词不一定还是我们留下的那个
+            softSpace = false
+            autoFix = null
+            lastSpaceAt = 0L
+        }
         if (composing.isNotEmpty() && candidatesStart >= 0 &&
             (newSelEnd < candidatesStart || newSelEnd > candidatesEnd)
         ) {
@@ -1249,6 +1262,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     // ------------------------------------------------------------ 按键分发
 
     override fun onKey(spec: KeySpec) {
+        softSpaceNow = softSpace
+        softSpace = false
+        if (spec.type != ActionType.BACKSPACE) autoFix = null   // 只有紧跟着的那一下退格能还原
+        if (spec.type != ActionType.SPACE) lastSpaceAt = 0L
         when (spec.type) {
             ActionType.CHAR -> typeChar(spec.value)
             ActionType.STROKE -> typeStroke(spec.value[0])
@@ -1292,7 +1309,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         if (englishActive()) {
             val ch = if (t.length == 1) t[0] else ' '
-            val isLetter = ch in 'a'..'z' || ch in 'A'..'Z'
+            val isLetter = ch.isLetter()   // 含带重音的字母(长按 e 出的 é 等),和前面的字母连成一个词
             if (isLetter || (ch == '\'' && composing.isNotEmpty())) {
                 main.removeCallbacks(assocClear)
                 composing.append(t)
@@ -1303,8 +1320,21 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
         }
         ic.beginBatchEdit()
-        flushComposition(ic)
+        if (englishActive() && composing.isNotEmpty() && t.length == 1 && t[0].isDigit()) {
+            // 词后面紧跟数字(mp3、v2):前面的字母原样上屏,不自动改正
+            commitEnglishWord(ic, auto = false, trailing = "")
+            clearCandidates()
+        } else {
+            flushComposition(ic)
+        }
+        // 点候选后自动补的空格还在:接着打标点,把那个空格吃掉(word , → word,)
+        if (englishActive() && softSpaceNow && t.length == 1 && t[0] in ",.!?;:)") {
+            val b = ic.getTextBeforeCursor(1, 0)
+            if (b != null && b.length == 1 && b[0] == ' ') ic.deleteSurroundingText(1, 0)
+        }
         commitTo(ic, t)
+        // 刚在这个标点前自动改正了词:标点也算进还原的范围
+        if (t.length == 1 && !t[0].isLetterOrDigit()) autoFix?.let { it.tail += t }
         ic.endBatchEdit()
         if (mode != Mode.ENGLISH) breakAssoc()
         if (mode == Mode.ENGLISH) {
@@ -1456,6 +1486,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             requery()
             if (mode == Mode.ENGLISH) afterCommit()
         } else {
+            if (mode == Mode.ENGLISH && undoAutoFix()) return
             if (mode == Mode.ENGLISH) {
                 prevWord = null
                 main.removeCallbacks(assocClear)
@@ -1468,8 +1499,50 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
+    /**
+     * 刚自动改正完(空格 / 标点触发)马上按退格:把改正后的词(连同后面的空格或标点)删掉,
+     * 换回原来打的字母,放回组合区继续编辑,且这次不再自动改正。光标前的文字对不上就不处理,当普通退格。
+     */
+    private fun undoAutoFix(): Boolean {
+        val fx = autoFix ?: return false
+        autoFix = null
+        val ic = currentInputConnection ?: return false
+        val want = fx.fixed + fx.tail
+        val before = ic.getTextBeforeCursor(want.length, 0)?.toString()
+        if (before != want) return false
+        ic.beginBatchEdit()
+        lastOwnEditAt = SystemClock.uptimeMillis()
+        ic.deleteSurroundingText(want.length, 0)
+        composing.clear()
+        composing.append(fx.typed)
+        noAutoWord = fx.typed
+        showComposing()
+        ic.endBatchEdit()
+        requery()
+        afterCommit()
+        return true
+    }
+
     private fun space() {
         val ic = currentInputConnection ?: return
+        val now = SystemClock.uptimeMillis()
+        // 双击空格:把刚打的那个空格换成「. 」(前一个字符得是字母或数字)
+        if (englishActive() && composing.isEmpty() && lastSpaceAt != 0L && now - lastSpaceAt < 450L) {
+            val b = ic.getTextBeforeCursor(2, 0)
+            if (b != null && b.length == 2 && b[1] == ' ' && b[0].isLetterOrDigit()) {
+                ic.beginBatchEdit()
+                ic.deleteSurroundingText(1, 0)
+                commitTo(ic, ". ")
+                ic.endBatchEdit()
+                lastSpaceAt = 0L
+                prevWord = null
+                main.removeCallbacks(assocClear)
+                clearCandidates()
+                afterCommit()
+                return
+            }
+        }
+        if (mode == Mode.ENGLISH) lastSpaceAt = now
         if (composing.isNotEmpty() && mode == Mode.ENGLISH) {
             ic.beginBatchEdit()
             commitEnglishWord(ic, auto = true, trailing = " ")
@@ -2311,16 +2384,26 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun commitEnglishWord(ic: InputConnection, auto: Boolean, trailing: String) {
         val typed = composing.toString()
         var text = typed
+        val skipAuto = noAutoWord == typed   // 刚退格还原出来的原词,这次保持原样
+        noAutoWord = null
+        var fixed = false
         if (candidatesFor == typed && candidates.isNotEmpty()) {
             val first = candidates[0]
             if (first.kind == 0) text = first.text
-            if (auto && typed.length >= 3 && DictConfig.autoCorrect(applicationContext)) {
+            // 带重音的词(café)不在纠错范围内,免得被改回 cafe
+            if (auto && !skipAuto && typed.length >= 3 && typed.all { it.code < 128 } &&
+                DictConfig.autoCorrect(applicationContext)
+            ) {
                 val fix = candidates.firstOrNull { it.kind == 1 }
                 val known = englishEngine?.isKnown(typed.lowercase()) ?: true
-                if (fix != null && !known) text = fix.text
+                if (fix != null && !known) {
+                    text = fix.text
+                    fixed = text != typed
+                }
             }
         }
         commitTo(ic, text + trailing)
+        autoFix = if (fixed) AutoFix(typed, text, trailing) else null
         composing.clear()
         learnEnglish(text)
         candidates = emptyList()
@@ -2340,6 +2423,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         candidatesFor = ""
         queryGen++
         ic.endBatchEdit()
+        softSpace = true   // 这个空格是我们补的:下一个键是标点就吃掉它
         showNextWords()
         afterCommit()
     }
