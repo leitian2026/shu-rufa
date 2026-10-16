@@ -61,7 +61,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val funcPaint = centered()
     private val strokePaint = centered()
     private val multiPaint = centered()
-    private val hintPaint = centered()       // 键帽上方标的数字/符号(长按打出),黑色(跟随主题的正文色),不用浅色
+    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.RIGHT }       // 键帽上方标的数字/符号(长按打出),黑色(跟随主题的正文色),不用浅色
     private val richPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -347,7 +347,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             hintPaint.color = color
             val hs = hintPaint.textSize
             val hy = r.top + context.dpf(2f) + hs * 0.72f
-            canvas.drawText(hint, cx, hy, hintPaint)
+            canvas.drawText(hint, r.right - context.dpf(if (context.isWide()) 6f else 4f), hy, hintPaint)   // 右上角
             val ls = letterPaint.textSize
             val need = hy + hs * 0.2f + context.dpf(4f) + ls * 0.76f
             val maxY = r.bottom - context.dpf(1.5f) - ls * 0.22f   // 别让 g j p q y 的下伸部分出键
