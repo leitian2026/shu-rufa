@@ -205,22 +205,19 @@ object Layouts {
 
         val xr = x1 + 3f
         keys.add(backspace().at(xr, 0f, rw, 1f))
-        keys.add(KeySpec("*", ActionType.STROKE, value = "*", function = true).at(xr, 1f, rw, 1f))
-        // 打了笔画后「符」换成「分字」:一个词的每个字各打一段笔画,段与段之间按它隔开(笔画组词)
+        // 回车 / 清除 在第二格,「*」在最下一格(和以前对调)
+        keys.add(enterKey(if (s.composing) "清除" else s.enterLabel).at(xr, 1f, rw, 1f))
+        keys.add(KeySpec("*", ActionType.STROKE, value = "*", function = true).at(xr, 3f, rw, 1f))
+        // 「分字」:一个词的每个字各打一段笔画,段与段之间按它隔开(笔画组词)。宽屏下一直显示,没打字时按了没反应
         val sepKey = KeySpec("分字", ActionType.SEPARATOR, function = true)
-        // 「整字」:只要笔画数刚好等于输入的字(不然是前缀匹配,会带出一大堆更多画的字)。窄屏占「123」的位置,宽屏数字区在左边、占空格的一半
+        // 「整字」:只要笔画数刚好等于输入的字(不然是前缀匹配,会带出一大堆更多画的字)。窄屏占「123」的位置,宽屏数字区在左边、占右列第三格
         val exactKey = KeySpec("整字", ActionType.EXACT, function = true, active = s.exact)
-        val sym = if (wide) (if (s.composing) sepKey else symKey("符", "symbol")) else (if (s.composing) exactKey else symKey("123", "number"))
+        val sym = if (s.composing) exactKey else symKey(if (wide) "符" else "123", if (wide) "symbol" else "number")
         keys.add(sym.at(xr, 2f, rw, 1f))
-        keys.add(enterKey(if (s.composing) "清除" else s.enterLabel).at(xr, 3f, rw, 1f))
 
         if (wide) {
-            if (s.composing) {
-                keys.add(spaceKey().at(x1, 3f, 1f, 1f))
-                keys.add(exactKey.at(x1 + 1f, 3f, 1f, 1f))
-            } else {
-                keys.add(spaceKey().at(x1, 3f, 2f, 1f))
-            }
+            keys.add(sepKey.at(x1, 3f, 1f, 1f))
+            keys.add(spaceKey().at(x1 + 1f, 3f, 1f, 1f))
         } else {
             keys.add((if (s.composing) sepKey else symKey("符", "symbol")).at(x1, 3f, 1f, 1f))
             keys.add(spaceKey().at(x1 + 1f, 3f, 1f, 1f))
