@@ -60,6 +60,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val funcPaint = centered()
     private val strokePaint = centered()
     private val multiPaint = centered()
+    private val hintPaint = centered()       // 键帽上方标的数字/符号(长按打出),黑色(跟随主题的正文色),不用浅色
     private val richPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -70,6 +71,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private var funcBase = 0f
     private var strokeBase = 0f
     private var multiBase = 0f
+    private var hintBase = 0f
     private var richBase = 0f
     private var richZ = 0f
     private var richS = 0f
@@ -131,6 +133,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         funcPaint.textSize = context.spf(if (wide) 17f else 14f)
         strokePaint.textSize = context.spf(if (wide) 26f else 21f)   // 和数字键一样大
         multiPaint.textSize = context.spf(if (wide) 20f else 17f)
+        hintPaint.textSize = context.spf(if (wide) 15f else 12f)
         richPaint.textSize = context.spf(if (wide) 21f else 16f)
         iconPaint.strokeWidth = context.dpf(1.8f)
         iconPaint.pathEffect = CornerPathEffect(context.dpf(1.6f))
@@ -139,6 +142,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         funcBase = baseline(funcPaint)
         strokeBase = baseline(strokePaint)
         multiBase = baseline(multiPaint)
+        hintBase = baseline(hintPaint)
         richBase = baseline(richPaint)
         richPaint.isFakeBoldText = false
         richZ = richPaint.measureText("中")
@@ -333,6 +337,11 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         }
         val label = k.label
         if (label.isEmpty()) return
+        val hint = k.hold?.firstOrNull()
+        if (hint != null) {
+            hintPaint.color = color
+            canvas.drawText(hint, cx, r.top + r.height() * 0.24f + hintBase, hintPaint)
+        }
         if (label == "符") {
             // 和旁边「中/英」一样大
             richPaint.isFakeBoldText = false
