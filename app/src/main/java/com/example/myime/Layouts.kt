@@ -117,8 +117,13 @@ object Layouts {
     private const val FILTER_GLYPHS = "hspnz"      // 笔画键对应的字母
     private const val STROKE_SHOWN = "一丨丿丶ㄥ"       // 和上面一一对应的显示符号(和笔画页一样)
 
-    // 英文字母键长按的备选:先是常用符号(和符号页的排布一致),后面是带重音的字母。没列出的字母键不弹。
+    // 英文字母键长按的备选:第一个是键帽上标出的数字/符号(上排 1-0,中下排常用符号,和符号页排布一致),后面是带重音的字母。
     private val HOLD = mapOf(
+        'q' to listOf("1"),
+        'w' to listOf("2"),
+        'r' to listOf("4"),
+        't' to listOf("5"),
+        'p' to listOf("0"),
         'a' to listOf("@", "à", "á", "â", "ä", "ã", "å", "æ"),
         's' to listOf("#", "ß", "ś", "š"),
         'd' to listOf("$"),
@@ -135,11 +140,11 @@ object Layouts {
         'b' to listOf(";"),
         'n' to listOf("!", "ñ", "ń"),
         'm' to listOf("?"),
-        'e' to listOf("é", "è", "ê", "ë", "ē"),
-        'u' to listOf("ü", "ú", "ù", "û", "ū"),
-        'i' to listOf("í", "ì", "î", "ï"),
-        'o' to listOf("ó", "ò", "ô", "ö", "õ", "ø", "œ"),
-        'y' to listOf("ý", "ÿ"),
+        'e' to listOf("3", "é", "è", "ê", "ë", "ē"),
+        'y' to listOf("6", "ý", "ÿ"),
+        'u' to listOf("7", "ü", "ú", "ù", "û", "ū"),
+        'i' to listOf("8", "í", "ì", "î", "ï"),
+        'o' to listOf("9", "ó", "ò", "ô", "ö", "õ", "ø", "œ"),
     )
 
     /** 大写状态下重音字母也出大写(ß 没有单字符大写,保持原样)。 */
@@ -148,8 +153,6 @@ object Layouts {
         if (!upper) return l
         return l.map { if (it[0].isLetter() && it != "ß") it.uppercase() else it }
     }
-
-    private const val NUM_ROW_H = 0.7f   // 英文页顶上的数字行,比字母行矮一点
 
     private val numpad = listOf("1", "2", "3", "+", "4", "5", "6", "-", "7", "8", "9", "/", ",", "0", ".", ":")
 
@@ -161,11 +164,6 @@ object Layouts {
         val keys = ArrayList<KeySpec>()
         val rows = arrayOf("qwertyuiop", "asdfghjkl", "zxcvbnm")
         val startX = floatArrayOf(0f, 0.5f, 1.5f)
-        // 英文页:字母上方多一行数字,整体高度不变(其余行相应压矮一点)
-        val top = if (english) NUM_ROW_H else 0f
-        if (english) {
-            for (i in 0..9) keys.add(ch("1234567890"[i].toString()).at(i.toFloat(), 0f, 1f, top))
-        }
         for (r in rows.indices) {
             for (i in rows[r].indices) {
                 val c = rows[r][i]
@@ -177,7 +175,7 @@ object Layouts {
                     keys.add(KeySpec(STROKE_SHOWN[glyph].toString(), ActionType.STROKE, value = c.toString()).at(startX[r] + i, r.toFloat()))
                 } else {
                     val hold = if (english) holdFor(c, s.shift) else null
-                    keys.add(KeySpec(label, ActionType.CHAR, value = value, hold = hold).at(startX[r] + i, r.toFloat() + top))
+                    keys.add(KeySpec(label, ActionType.CHAR, value = value, hold = hold).at(startX[r] + i, r.toFloat()))
                 }
             }
         }
@@ -193,23 +191,23 @@ object Layouts {
             s.composing -> KeySpec("分词", ActionType.SEPARATOR, function = true)
             else -> KeySpec("笔画", ActionType.METHOD, function = true)
         }
-        keys.add(left.at(0f, 2f + top, 1.5f))
-        keys.add(backspace().at(8.5f, 2f + top, 1.5f))
+        keys.add(left.at(0f, 2f, 1.5f))
+        keys.add(backspace().at(8.5f, 2f, 1.5f))
 
         val cn = !english
-        keys.add(symKey("123", "number").at(0f, 3f + top, 1.4f))
+        keys.add(symKey("123", "number").at(0f, 3f, 1.4f))
         // 拼音输入中「符」换成「笔筛」:音形混输,打完拼音再按几笔把同音字筛出来。打完这一段就换回去
         if (cn && s.composing) {
-            keys.add(KeySpec("笔筛", ActionType.FILTER, function = true, active = s.filter).at(1.4f, 3f + top, 1.4f))
+            keys.add(KeySpec("笔筛", ActionType.FILTER, function = true, active = s.filter).at(1.4f, 3f, 1.4f))
         } else {
-            keys.add(symKey("符", "symbol").at(1.4f, 3f + top, 1.4f))
+            keys.add(symKey("符", "symbol").at(1.4f, 3f, 1.4f))
         }
-        keys.add(ch(if (cn) "，" else ",").at(2.8f, 3f + top, 1f))
-        keys.add(spaceKey().at(3.8f, 3f + top, 2.4f))
-        keys.add(ch(if (cn) "。" else ".").at(6.2f, 3f + top, 1f))
-        keys.add(langKey(english).at(7.2f, 3f + top, 1.4f))
-        keys.add(enterKey(s.enterLabel).at(8.6f, 3f + top, 1.4f))
-        return Layout(10f, 4f + top, if (wide) 10.5f else 5f, if (wide) 13f else 8f, keys)
+        keys.add(ch(if (cn) "，" else ",").at(2.8f, 3f, 1f))
+        keys.add(spaceKey().at(3.8f, 3f, 2.4f))
+        keys.add(ch(if (cn) "。" else ".").at(6.2f, 3f, 1f))
+        keys.add(langKey(english).at(7.2f, 3f, 1.4f))
+        keys.add(enterKey(s.enterLabel).at(8.6f, 3f, 1.4f))
+        return Layout(10f, 4f, if (wide) 10.5f else 5f, if (wide) 13f else 8f, keys)
     }
 
     // ---------------------------------------------------------------- 笔画
