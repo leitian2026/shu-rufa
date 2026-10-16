@@ -117,37 +117,37 @@ object Layouts {
     private const val FILTER_GLYPHS = "hspnz"      // 笔画键对应的字母
     private const val STROKE_SHOWN = "一丨丿丶ㄥ"       // 和上面一一对应的显示符号(和笔画页一样)
 
-    // 英文字母键长按的备选:第一个是键帽上标出的数字/符号(上排 1-0,中下排常用符号,和符号页排布一致),后面是带重音的字母。
+    // 英文字母键长按打出的数字/符号(上排 1-0,中下排常用符号,和符号页排布一致)。带重音的字母不再长按弹出,统一放在符号页的「重音」分类里。
     private val HOLD = mapOf(
         'q' to listOf("1"),
         'w' to listOf("2"),
         'r' to listOf("4"),
         't' to listOf("5"),
         'p' to listOf("0"),
-        'a' to listOf("@", "à", "á", "â", "ä", "ã", "å", "æ"),
-        's' to listOf("#", "ß", "ś", "š"),
+        'a' to listOf("@"),
+        's' to listOf("#"),
         'd' to listOf("$"),
         'f' to listOf("%"),
         'g' to listOf("&"),
         'h' to listOf("-"),
         'j' to listOf("+"),
         'k' to listOf("("),
-        'l' to listOf(")", "ł"),
-        'z' to listOf("*", "ž", "ź", "ż"),
+        'l' to listOf(")"),
+        'z' to listOf("*"),
         'x' to listOf("\""),
-        'c' to listOf("'", "ç", "ć", "č"),
+        'c' to listOf("'"),
         'v' to listOf(":"),
         'b' to listOf(";"),
-        'n' to listOf("!", "ñ", "ń"),
+        'n' to listOf("!"),
         'm' to listOf("?"),
-        'e' to listOf("3", "é", "è", "ê", "ë", "ē"),
-        'y' to listOf("6", "ý", "ÿ"),
-        'u' to listOf("7", "ü", "ú", "ù", "û", "ū"),
-        'i' to listOf("8", "í", "ì", "î", "ï"),
-        'o' to listOf("9", "ó", "ò", "ô", "ö", "õ", "ø", "œ"),
+        'e' to listOf("3"),
+        'y' to listOf("6"),
+        'u' to listOf("7"),
+        'i' to listOf("8"),
+        'o' to listOf("9"),
     )
 
-    /** 大写状态下重音字母也出大写(ß 没有单字符大写,保持原样)。 */
+    /** 长按备选现在只有数字/符号一个;保留大写转换以防以后再加字母备选(ß 没有单字符大写,保持原样)。 */
     private fun holdFor(c: Char, upper: Boolean): List<String>? {
         val l = HOLD[c] ?: return null
         if (!upper) return l
