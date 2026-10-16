@@ -446,7 +446,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                         else -> {
                             val en = engine as EnglishEngine?
                             en?.prev = prevWord
-                            en?.pins = UserData.pins(applicationContext)
+                            en?.pick = UserData.englishPick(applicationContext)
                             englishEngine = en
                         }
                     }
@@ -705,31 +705,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         settings.visibility = View.GONE
         choice.visibility = View.GONE
         overlay.visibility = View.GONE
-        bar.pinHandler = object : CandidateBarView.PinHandler {
-            private fun wordAt(index: Int): String? {
-                if (mode != Mode.ENGLISH || englishEngine == null) return null
-                if (candidatesFor != composing.toString()) return null   // 过期的候选
-                val c = candidates.getOrNull(index) ?: return null
-                if (c.kind == 3 || c.text.isEmpty()) return null
-                for (ch in c.text) if (!(ch in 'a'..'z' || ch in 'A'..'Z' || ch == '\'')) return null
-                return c.text
-            }
-
-            override fun canPin(index: Int) = wordAt(index) != null
-
-            override fun isPinned(index: Int): Boolean {
-                val w = wordAt(index) ?: return false
-                return (englishEngine as? EnglishEngine)?.isPinned(w.lowercase()) == true
-            }
-
-            override fun onPin(index: Int, pin: Boolean) {
-                val w = wordAt(index) ?: return
-                val eng = englishEngine as? EnglishEngine ?: return
-                if (pin) eng.pin(w) else eng.unpin(w)
-                ioPool.execute { UserData.pins(applicationContext).saveIfDirty() }
-                if (composing.isNotEmpty()) requery() else showNextWords()   // 立刻按新的固定重排候选
-            }
-        }
         bar.infoHandler = { index -> requestInfo(index) }
         candidateBar = bar
         keyboardView = kb
@@ -2035,7 +2010,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 Mode.STROKE -> ErrorHint.get("stroke")
                 Mode.ENGLISH -> ErrorHint.get("english")
                 else -> null
-            } ?: ErrorHint.get("learn") ?: ErrorHint.get("pins") ?: ErrorHint.get("clip") ?: ErrorHint.get("emoji"),
+            } ?: ErrorHint.get("learn") ?: ErrorHint.get("clip") ?: ErrorHint.get("emoji"),
         )
         onComposingChanged()
     }
@@ -2280,16 +2255,28 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     /** 点了英文候选(补全、纠错或联想):上屏并跟一个空格,然后给出下一个词的联想。 */
     private fun pickEnglish(ic: InputConnection, c: Candidate) {
+        val typedCode = composing.toString().lowercase()
         ic.beginBatchEdit()
         commitTo(ic, c.text + " ")
         composing.clear()
         learnEnglish(c.text)
+        learnEnglishPick(typedCode, c.text)
         candidates = emptyList()
         candidatesFor = ""
         queryGen++
         ic.endBatchEdit()
         showNextWords()
         afterCommit()
+    }
+
+    /**
+     * 点选了英文候选:记下"打了 typedCode、选了这个词",下次打同样的前缀,选过的词排在最前面(和拼音 / 笔画一样)。
+     * 只记点选的补全 / 改正(联想没有输入前缀,不记);密码框、不让学习的输入框不记。
+     */
+    private fun learnEnglishPick(typedCode: String, word: String) {
+        if (!allowLearn || typedCode.isEmpty() || word.isEmpty()) return
+        for (ch in word) if (!(ch in 'a'..'z' || ch in 'A'..'Z' || ch == '\'')) return
+        UserData.englishPick(applicationContext).learn(typedCode, word.lowercase())
     }
 
     /** 记录这个词(和它跟在上一个词后面这件事),并把它记为"上一个词"。非字母内容会让联想断开。 */
