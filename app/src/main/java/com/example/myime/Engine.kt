@@ -291,7 +291,13 @@ class PinyinEngine(
     /** 提前把联想要用的排序下标建好(在后台线程调用),第一次联想就不用现场排序。 */
     fun prepareFollowers() {
         textKeys.size
+        indexReady = true
     }
+
+    /** 按词排序的下标建好了:候选上方的读音才去查词库(没建好就不查,免得在查询线程上现场排序,拖慢候选)。 */
+    @Volatile
+    var indexReady = false
+        private set
 
     /**
      * 词库里以 prefix 开头的词,去掉 prefix 后剩下的部分:我打过的在前(最近打的最靠前),其余按词频从高到低(最多 max 个,去重)。
