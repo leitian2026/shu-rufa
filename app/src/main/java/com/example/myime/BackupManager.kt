@@ -34,7 +34,7 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 /**
- * 加密备份:把学习数据、固定词、各项设置(可选再加词库包)打成一个压缩包,用 BackupCrypto 加密成单个 .mybk 文件。
+ * 加密备份:把学习数据、各项设置(可选再加词库包)打成一个压缩包,用 BackupCrypto 加密成单个 .mybk 文件。
  * 只有两种去处:
  *   1) 本地:用系统的「新建文件」选择器存到手机上任意位置(exportToUri);
  *   2) 坚果云:通过 WebDAV 上传(backupToCloud,联网权限本来就有;WebDAV 客户端见 WebDavClient)。
