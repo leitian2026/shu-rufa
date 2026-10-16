@@ -7,12 +7,14 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.graphics.drawable.GradientDrawable
 import android.text.InputType
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import java.io.FileInputStream
@@ -32,9 +34,9 @@ class BackupActivity : Activity() {
     private val ui = Handler(Looper.getMainLooper())
     private lateinit var status: TextView
     private lateinit var result: TextView
-    private lateinit var autoBox: CheckBox
-    private lateinit var dictsBox: CheckBox
-    private lateinit var syncBox: CheckBox
+    private lateinit var autoBox: Switch
+    private lateinit var dictsBox: Switch
+    private lateinit var syncBox: Switch
     private var busy = false
 
     private companion object {
@@ -47,26 +49,33 @@ class BackupActivity : Activity() {
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         title = "备份与还原"
         applyPageBackground()
+        val pal = Palette(this)
         val pad = dpi(16f)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
+            setPadding(pad, dpi(28f), pad, dpi(36f))
         }
-        setContentView(ScrollView(this).apply { addView(root) })
+        setContentView(pageScroll(root))
 
-        root.addView(label("备份与还原", 22f, bold = true))
+        root.addView(label("备份与还原", 28f, bold = true))
         root.addView(
             foldNote(
                 "把学习数据、固定词、各项设置打成一个加密压缩包(.mybk),可以备份到手机本地,也可以备份到坚果云。" +
                     "自动加密(AES-256-GCM),不用设密码、不用记。每次备份完会马上读回来解密校验,确认真的能还原。剪贴板历史和回收箱会一起备份(备份包是加密的)。",
-            ).apply { setPadding(0, pad / 2, 0, pad / 2) },
+            ).apply { setPadding(0, dpi(4f), 0, 0) },
         )
 
-        status = label("", 14f)
-        root.addView(status)
+        // ---- 当前状态
+        root.addView(sectionHeader("当前状态"))
+        status = label("", 14f).apply { setLineSpacing(0f, 1.25f) }
+        val statusCard = settingsCard().apply { setPadding(dpi(16f), dpi(14f), dpi(16f), dpi(14f)) }
+        statusCard.addView(status)
+        root.addView(statusCard, cardParams())
 
-        root.addView(section("1. 坚果云账号"))
-        root.addView(
+        // ---- 1. 坚果云账号
+        root.addView(sectionHeader("1. 坚果云账号"))
+        val acct = settingsCard()
+        acct.addView(
             foldNote(
                 "要先在坚果云网页端:账户信息 → 安全选项 → 第三方应用管理 → 添加应用,生成一个「应用密码」(不是登录密码)。" +
                     "账号填坚果云登录邮箱。备份会放在你指定的文件夹里(默认 myime,不存在会自动创建;" +
@@ -75,40 +84,49 @@ class BackupActivity : Activity() {
             ),
         )
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(smallButton("设置坚果云账号").apply { setOnClickListener { askDav() } }, smallButtonParams())
+        row.addView(primaryButton("设置坚果云账号").apply { setOnClickListener { askDav() } }, smallButtonParams())
         row.addView(smallButton("测试连接").apply { setOnClickListener { testDav() } }, smallButtonParams())
         row.addView(smallButton("清除").apply { setOnClickListener { BackupConfig.clearDav(this@BackupActivity); refresh() } }, smallButtonParams())
-        root.addView(row)
-        autoBox = CheckBox(this).apply {
-            text = "每天自动备份到坚果云一次(仅在 Wi-Fi 下;键盘收起时检查,数据有变化才备份;不含词库包)"
-            isChecked = BackupConfig.auto(this@BackupActivity)
-            setOnCheckedChangeListener { _, v -> BackupConfig.setAuto(this@BackupActivity, v) }
-        }
-        root.addView(autoBox)
+        acct.addView(row)
+        acct.addView(rowDivider())
+        autoBox = styledSwitch(BackupConfig.auto(this)) { v -> BackupConfig.setAuto(this, v) }
+        acct.addView(switchRowFor("每天自动备份到坚果云", "仅在 Wi-Fi 下;键盘收起时检查,数据有变化才备份;不含词库包", autoBox))
+        root.addView(acct, cardParams())
 
-        root.addView(section("2. 备份"))
-        dictsBox = CheckBox(this).apply { text = "手动备份时包含词库包(文件大很多,上传慢)" }
-        root.addView(dictsBox)
-        root.addView(smallButton("备份到本地…").apply { setOnClickListener { startLocalBackup() } }, smallButtonParams())
-        root.addView(smallButton("备份到坚果云").apply { setOnClickListener { startCloudBackup() } }, smallButtonParams())
-        root.addView(
+        // ---- 2. 备份
+        root.addView(sectionHeader("2. 备份"))
+        val bak = settingsCard()
+        dictsBox = styledSwitch(false) { }
+        bak.addView(switchRowFor("手动备份时包含词库包", "文件大很多,上传慢", dictsBox))
+        bak.addView(rowDivider())
+        bak.addView(settingsRow("备份到本地…", "存成一个加密压缩包,位置自己选") { startLocalBackup() })
+        bak.addView(rowDivider())
+        bak.addView(settingsRow("备份到坚果云", "自动上传,云端每台设备各保留最近 7 份") { startCloudBackup() })
+        bak.addView(
             foldNote(
                 "本地:选一个位置存成单个加密压缩包(手机上任意文件夹都行)。坚果云:自动上传,云端每台设备各保留最近 7 份。",
             ),
         )
+        root.addView(bak, cardParams())
 
-        root.addView(section("3. 还原"))
-        root.addView(smallButton("从本地压缩包还原…").apply { setOnClickListener { pickFile(REQ_RESTORE_PICK) } }, smallButtonParams())
-        root.addView(smallButton("从坚果云还原…").apply { setOnClickListener { startCloudRestore() } }, smallButtonParams())
-        root.addView(
+        // ---- 3. 还原
+        root.addView(sectionHeader("3. 还原"))
+        val res = settingsCard()
+        res.addView(settingsRow("从本地压缩包还原…", "选一个 .mybk 备份文件") { pickFile(REQ_RESTORE_PICK) })
+        res.addView(rowDivider())
+        res.addView(settingsRow("从坚果云还原…", "在列表里选一台设备的备份") { startCloudRestore() })
+        res.addView(
             foldNote(
                 "会用备份里的内容替换现在的数据和设置,完成后输入法会重启一次;还原前的数据会在应用内留一份。" +
                     "换手机时先设置好坚果云账号,再点「从坚果云还原」,在列表里选旧手机的备份(列表里本机的排第一并预选;新手机没有本机备份,要自己点选)。",
             ),
         )
+        root.addView(res, cardParams())
 
-        root.addView(section("4. 多台手机同步学习数据"))
-        root.addView(
+        // ---- 4. 多台手机同步学习数据
+        root.addView(sectionHeader("4. 多台手机同步学习数据"))
+        val sync = settingsCard()
+        sync.addView(
             foldNote(
                 "几台都是你自己的手机,可以共享选词记录(拼音、笔画)和联想词,打得越多越准。只同步这些;剪贴板、回收箱、设置、英文用词都不会同步。" +
                     "用上面的坚果云账号,每台手机只写自己的一个加密文件(自动加密,不用设密码)。要求几台手机装的是同一个构建,并且都设好了坚果云账号。" +
@@ -116,26 +134,31 @@ class BackupActivity : Activity() {
                     "在一台手机上清除学习数据只清这一台,不会清掉别的手机。",
             ),
         )
-        syncBox = CheckBox(this).apply {
-            text = "自动同步学习数据"
-            isChecked = LearnSync.enabled(this@BackupActivity)
-            setOnCheckedChangeListener { _, v -> LearnSync.setEnabled(this@BackupActivity, v) }
-        }
-        root.addView(syncBox)
-        root.addView(
-            smallButton("立即同步学习数据").apply {
-                setOnClickListener {
-                    runBg("正在同步学习数据(第一次要多等几秒)…") {
-                        val r = LearnSync.syncNow(this@BackupActivity)
-                        ui.post { say(r.msg) }
-                    }
-                }
-            },
-            smallButtonParams(),
-        )
+        syncBox = styledSwitch(LearnSync.enabled(this)) { v -> LearnSync.setEnabled(this, v) }
+        sync.addView(switchRowFor("自动同步学习数据", "键盘收起 / 弹出时自动检查,Wi-Fi 和流量都可以", syncBox))
+        sync.addView(rowDivider())
+        sync.addView(settingsRow("立即同步学习数据", null) {
+            runBg("正在同步学习数据(第一次要多等几秒)…") {
+                val r = LearnSync.syncNow(this@BackupActivity)
+                ui.post { say(r.msg) }
+            }
+        })
+        root.addView(sync, cardParams())
 
-        result = label("", 14f).apply { setPadding(0, pad, 0, 0) }
-        root.addView(result)
+        // ---- 操作结果(有内容时才显示)
+        result = label("", 14f).apply {
+            background = GradientDrawable().apply {
+                cornerRadius = dpf(16f)
+                setColor(pal.topBar)
+            }
+            setPadding(dpi(16f), dpi(14f), dpi(16f), dpi(14f))
+            visibility = View.GONE
+        }
+        root.addView(
+            result,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dpi(16f) },
+        )
         refresh()
     }
 
@@ -146,10 +169,9 @@ class BackupActivity : Activity() {
             this.text = text
             textSize = sp
             this.alpha = alpha
+            setTextColor(Palette(this@BackupActivity).text)
             if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
         }
-
-    private fun section(text: String): TextView = label(text, 17f, bold = true).apply { setPadding(0, dpi(18f), 0, dpi(4f)) }
 
     private fun fmt(t: Long): String =
         if (t <= 0L) "还没有成功过" else SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(t))
@@ -183,6 +205,7 @@ class BackupActivity : Activity() {
 
     private fun say(msg: String) {
         result.text = msg
+        result.visibility = if (msg.isBlank()) View.GONE else View.VISIBLE
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
