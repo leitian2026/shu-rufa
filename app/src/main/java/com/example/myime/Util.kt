@@ -4,13 +4,17 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.graphics.drawable.StateListDrawable
+import android.os.Build
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -213,9 +217,51 @@ fun Context.smallButton(label: String? = null): Button = Button(this).apply {
     )
 }
 
-/** 设置页统一的页面底色(和键盘底色一致)。在 setContentView 之前或之后调用都行。 */
+/**
+ * 设置页统一的外观:页面底色(和键盘面板底色一致)+ 沉浸式状态栏 / 导航栏。
+ * 去掉系统自带的深色标题栏(各页自己有大标题),状态栏和导航栏透明,页面底色一直铺到屏幕边缘;
+ * 状态栏 / 导航栏的图标按浅色 / 深色模式自动换深浅。内容用系统栏(和输入法弹出时)的高度做内边距,不会被盖住。
+ * 在 setContentView 之前调用(各页 onCreate 里 super.onCreate 之后)。
+ */
 fun Activity.applyPageBackground() {
-    window.setBackgroundDrawable(ColorDrawable(Palette(this).background))
+    val pal = Palette(this)
+    window.setBackgroundDrawable(ColorDrawable(pal.background))
+    actionBar?.hide()
+    window.statusBarColor = Color.TRANSPARENT
+    window.navigationBarColor = Color.TRANSPARENT
+    if (Build.VERSION.SDK_INT >= 29) {
+        window.isStatusBarContrastEnforced = false
+        window.isNavigationBarContrastEnforced = false
+    }
+    if (Build.VERSION.SDK_INT >= 30) {
+        window.setDecorFitsSystemWindows(false)
+        val bars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        window.insetsController?.setSystemBarsAppearance(if (pal.dark) 0 else bars, bars)
+    } else {
+        var f = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULL_SCREEN or
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        if (!pal.dark) {
+            f = f or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+            f = f or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        }
+        window.decorView.systemUiVisibility = f
+    }
+    val content = findViewById<View>(android.R.id.content)
+    content.setOnApplyWindowInsetsListener { v, insets ->
+        if (Build.VERSION.SDK_INT >= 30) {
+            val b = insets.getInsets(
+                WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime(),
+            )
+            v.setPadding(b.left, b.top, b.right, b.bottom)
+        } else {
+            v.setPadding(
+                insets.systemWindowInsetLeft, insets.systemWindowInsetTop,
+                insets.systemWindowInsetRight, insets.systemWindowInsetBottom,
+            )
+        }
+        insets
+    }
+    content.requestApplyInsets()
 }
 
 /** 对话框也用同一个底色(圆角)。必须在 show() 之前调用。 */
