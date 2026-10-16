@@ -6,6 +6,7 @@ import android.graphics.CornerPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -134,6 +135,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         strokePaint.textSize = context.spf(if (wide) 26f else 21f)   // 和数字键一样大
         multiPaint.textSize = context.spf(if (wide) 20f else 17f)
         hintPaint.textSize = context.spf(if (wide) 14f else 11f)
+        hintPaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        hintPaint.isFakeBoldText = true   // 最粗:在系统粗体上再加粗一层
         richPaint.textSize = context.spf(if (wide) 21f else 16f)
         iconPaint.strokeWidth = context.dpf(1.8f)
         iconPaint.pathEffect = CornerPathEffect(context.dpf(1.6f))
@@ -338,12 +341,17 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val label = k.label
         if (label.isEmpty()) return
         val hint = k.hold?.firstOrNull()
-        var dy = 0f
+        var letterY = Float.NaN
         if (hint != null) {
-            // 小字贴在键帽顶部,字母整体往下让一点,两者不重叠
+            // 小字贴在键帽顶部;字母的基线按「小字底部 + 间隙 + 字母最高处(b d f h k l 的竖笔)」算出来,保证不重叠
             hintPaint.color = color
-            canvas.drawText(hint, cx, r.top + context.dpf(2f) - hintPaint.fontMetrics.ascent, hintPaint)
-            dy = context.dpf(if (context.isWide()) 4f else 3f)
+            val hs = hintPaint.textSize
+            val hy = r.top + context.dpf(2f) + hs * 0.72f
+            canvas.drawText(hint, cx, hy, hintPaint)
+            val ls = letterPaint.textSize
+            val need = hy + hs * 0.2f + context.dpf(4f) + ls * 0.76f
+            val maxY = r.bottom - context.dpf(1.5f) - ls * 0.22f   // 别让 g j p q y 的下伸部分出键
+            letterY = minOf(need, maxY)
         }
         if (label == "符") {
             // 和旁边「中/英」一样大
@@ -369,7 +377,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             base = letterBase
         }
         paint.color = color
-        canvas.drawText(label, cx, cy + base + dy, paint)
+        val y = if (letterY.isNaN()) cy + base else maxOf(cy + base, letterY)
+        canvas.drawText(label, cx, y, paint)
     }
 
     /** 「中/英」:当前语言加粗,另一个变淡。 */
