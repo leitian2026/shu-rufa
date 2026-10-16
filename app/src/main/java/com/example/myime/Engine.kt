@@ -158,9 +158,12 @@ class PinyinEngine(
         val cur = fuzzyIdx
         if (cur != null && cur.mask == mask) return cur
         if (!fuzzyFailed && !lowPower && !fuzzyBuilding.get()) {
-            Thread { buildFuzzy(mask) }.apply {
+            Thread {
+                // Thread.MIN_PRIORITY 在安卓上基本不起作用;这个索引现在不急着用(建好之前查询照常不用模糊音),放到后台 cgroup 去建
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+                buildFuzzy(mask)
+            }.apply {
                 isDaemon = true
-                priority = Thread.MIN_PRIORITY
             }.start()
         }
         return null
