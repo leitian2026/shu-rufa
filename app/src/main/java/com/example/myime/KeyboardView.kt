@@ -59,6 +59,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pressPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val letterPaint = centered()
+    private val letterBoldPaint = centered()   // 字母键上的字母:粗体
     private val funcPaint = centered()
     private val strokePaint = centered()
     private val multiPaint = centered()
@@ -135,6 +136,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         iconH = context.dpf(if (wide) 9f else 8f)
 
         letterPaint.textSize = context.spf(if (wide) 26f else 21f)
+        letterBoldPaint.textSize = letterPaint.textSize
+        letterBoldPaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         funcPaint.textSize = context.spf(if (wide) 17f else 14f)
         strokePaint.textSize = context.spf(if (wide) 26f else 21f)   // 和数字键一样大
         multiPaint.textSize = context.spf(if (wide) 20f else 17f)
@@ -390,7 +393,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             paint = funcPaint
             base = funcBase
         } else {
-            paint = letterPaint
+            // 字母键上的字母加粗;数字、标点还是普通字重
+            paint = if (k.type == ActionType.CHAR && label.length == 1 && label[0].isLetter()) letterBoldPaint else letterPaint
             base = letterBase
         }
         paint.color = color
