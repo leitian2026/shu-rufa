@@ -9,6 +9,7 @@ import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.SparseArray
 import android.util.SparseIntArray
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
@@ -89,6 +90,20 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         }
     }
 
+    // 长按弹出备选:有 hold 的键按下时先不上屏,松手(没长按)才当普通键打出;长按够久弹出备选,滑到哪个松手就打哪个
+    private val holdPending = SparseArray<KeySpec>()   // 指针 id -> 等着松手再上屏的键
+    private var holdPointer = -1
+    private var holdKey = -1
+    private var holdOptions: List<String>? = null       // 非空 = 备选条正显示
+    private var holdSel = 0
+    private var holdDownX = 0f
+    private var holdLeft = 0f
+    private var holdCell = 0f
+    private var holdTop = 0f
+    private var holdFlip = false                        // 键在右半边:备选条向左展开,第一个备选在最右(贴着键)
+    private val popRect = RectF()
+    private val holdRunnable = Runnable { startHold() }
+
     init {
         applyMetrics()
     }
@@ -157,6 +172,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         }
 
         stopRepeat()
+        clearHold()
         layout = l
         keys = l.keys.toTypedArray()
         rects = Array(keys.size) { RectF() }
@@ -262,7 +278,33 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             }
             drawLabel(canvas, k, r, onFace)
         }
+        drawHoldPopup(canvas)
         if (fading) postInvalidateOnAnimation()
+    }
+
+    private fun drawHoldPopup(canvas: Canvas) {
+        val opts = holdOptions ?: return
+        val n = opts.size
+        val h = if (holdKey in rects.indices) rects[holdKey].height() else return
+        popRect.set(holdLeft, holdTop + shadowH, holdLeft + holdCell * n, holdTop + h + shadowH)
+        fill.color = palette.functionShadow
+        canvas.drawRoundRect(popRect, radius, radius, fill)
+        popRect.set(holdLeft, holdTop, holdLeft + holdCell * n, holdTop + h)
+        fill.color = palette.functionKey
+        canvas.drawRoundRect(popRect, radius, radius, fill)
+        for (j in 0 until n) {
+            val k = if (holdFlip) n - 1 - j else j
+            val cx = holdLeft + holdCell * (j + 0.5f)
+            if (k == holdSel) {
+                popRect.set(holdLeft + holdCell * j, holdTop, holdLeft + holdCell * (j + 1), holdTop + h)
+                fill.color = palette.accent
+                canvas.drawRoundRect(popRect, radius, radius, fill)
+                letterPaint.color = palette.onAccent
+            } else {
+                letterPaint.color = palette.text
+            }
+            canvas.drawText(opts[k], cx, holdTop + h / 2f + letterBase, letterPaint)
+        }
     }
 
     /** 按下时高亮,松手立刻恢复,没有渐隐动画。 */
@@ -438,6 +480,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 val idx = e.actionIndex
                 pointerDown(e.getPointerId(idx), e.getX(idx), e.getY(idx))
             }
+            MotionEvent.ACTION_MOVE -> {
+                if (holdOptions != null) {
+                    val idx = e.findPointerIndex(holdPointer)
+                    if (idx >= 0) moveHold(e.getX(idx))
+                }
+            }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
                 pointerUp(e.getPointerId(e.actionIndex))
             }
@@ -458,10 +506,93 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         return -1
     }
 
+    /** 又按下了别的键:前一个还在等松手的字母立刻按普通键打出,保证先后顺序不乱(备选条显示时不动)。 */
+    private fun flushPendingHold() {
+        if (holdOptions != null || holdPending.size() == 0) return
+        uiHandler.removeCallbacks(holdRunnable)
+        val list = ArrayList<KeySpec>(holdPending.size())
+        for (j in 0 until holdPending.size()) list.add(holdPending.valueAt(j))
+        holdPending.clear()
+        holdPointer = -1
+        for (sp in list) listener.onKey(sp)
+    }
+
+    private fun startHold() {
+        val id = holdPointer
+        val spec = holdPending.get(id) ?: return
+        val opts = spec.hold ?: return
+        val i = pointerKey.get(id, -1)
+        if (i < 0 || i >= rects.size) return
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        if (opts.size == 1) {
+            // 只有一个备选:长按直接打出来,松手不再重复
+            holdPending.remove(id)
+            holdPointer = -1
+            val alt = opts[0]
+            listener.onKey(KeySpec(alt, ActionType.CHAR, value = alt))
+            invalidate()
+            return
+        }
+        val r = rects[i]
+        val n = opts.size
+        holdKey = i
+        holdOptions = opts
+        holdSel = 0
+        holdCell = r.width()
+        holdFlip = r.centerX() > width / 2f
+        var left = if (holdFlip) r.right - holdCell * n else r.left
+        left = left.coerceIn(0f, maxOf(0f, width - holdCell * n))
+        holdLeft = left
+        holdTop = maxOf(0f, r.top - r.height() - context.dpf(6f))
+        invalidate()
+    }
+
+    private fun moveHold(x: Float) {
+        val opts = holdOptions ?: return
+        if (kotlin.math.abs(x - holdDownX) < context.dpf(6f)) {
+            if (holdSel != 0) {
+                holdSel = 0
+                invalidate()
+            }
+            return
+        }
+        val n = opts.size
+        val j = ((x - holdLeft) / holdCell).toInt().coerceIn(0, n - 1)
+        val k = if (holdFlip) n - 1 - j else j
+        if (k != holdSel) {
+            holdSel = k
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            invalidate()
+        }
+    }
+
+    private fun clearHold() {
+        uiHandler.removeCallbacks(holdRunnable)
+        holdPending.clear()
+        holdPointer = -1
+        holdKey = -1
+        holdOptions = null
+        holdSel = 0
+    }
+
     private fun pointerDown(id: Int, x: Float, y: Float) {
         val i = hit(x, y)
         if (i < 0) return
+        flushPendingHold()
         var spec = keys[i]
+        val holdOpts = spec.hold
+        if (holdOpts != null && spec.multi == null) {
+            isDown[i] = true
+            releasedAt[i] = -1L
+            pointerKey.put(id, i)
+            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            holdPending.put(id, spec)
+            holdPointer = id
+            holdDownX = x
+            uiHandler.postDelayed(holdRunnable, HOLD_MS)
+            invalidate()
+            return
+        }
         val multi = spec.multi
         if (multi != null) {
             val r = rects[i]
@@ -482,8 +613,29 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     private fun pointerUp(id: Int) {
         if (repeatPointer == id) stopRepeat() // 先停连发,不能被下面的提前 return 跳过
+        // 带备选的键:松手时才上屏。备选条开着 = 打选中的那个;没长按 = 打键本身
+        var fire: KeySpec? = null
+        val pend = holdPending.get(id)
+        if (pend != null) {
+            uiHandler.removeCallbacks(holdRunnable)
+            val opts = holdOptions
+            fire = if (opts != null) {
+                val alt = opts[holdSel.coerceIn(0, opts.size - 1)]
+                KeySpec(alt, ActionType.CHAR, value = alt)
+            } else {
+                pend
+            }
+            holdPending.remove(id)
+            holdOptions = null
+            holdKey = -1
+            holdPointer = -1
+            holdSel = 0
+        }
         val i = pointerKey.get(id, -1)
-        if (i < 0) return
+        if (i < 0) {
+            fire?.let { listener.onKey(it) }
+            return
+        }
         pointerKey.delete(id)
         if (i < isDown.size) {
             isDown[i] = false
@@ -491,9 +643,11 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         }
         if (repeatPointer == id) stopRepeat()
         postInvalidateOnAnimation()
+        fire?.let { listener.onKey(it) }   // 放最后:onKey 可能触发 setLayout,会重置上面的按压状态
     }
 
     private fun releaseAll() {
+        clearHold()
         val now = SystemClock.uptimeMillis()
         for (i in isDown.indices) {
             if (isDown[i]) {
@@ -521,11 +675,13 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     override fun onDetachedFromWindow() {
         stopRepeat()
+        clearHold()
         super.onDetachedFromWindow()
     }
 
     private companion object {
         const val REPEAT_DELAY_MS = 420L
         const val REPEAT_INTERVAL_MS = 55L
+        const val HOLD_MS = 330L
     }
 }
