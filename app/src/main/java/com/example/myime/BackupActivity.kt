@@ -60,7 +60,7 @@ class BackupActivity : Activity() {
         root.addView(label("备份与还原", 28f, bold = true))
         root.addView(
             foldNote(
-                "把学习数据、固定词、各项设置打成一个加密压缩包(.mybk),可以备份到手机本地,也可以备份到坚果云。" +
+                "把学习数据、各项设置打成一个加密压缩包(.mybk),可以备份到手机本地,也可以备份到坚果云。" +
                     "自动加密(AES-256-GCM),不用设密码、不用记。每次备份完会马上读回来解密校验,确认真的能还原。剪贴板历史和回收箱会一起备份(备份包是加密的)。",
             ).apply { setPadding(0, dpi(4f), 0, 0) },
         )
