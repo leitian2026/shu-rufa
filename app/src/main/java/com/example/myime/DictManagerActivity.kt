@@ -333,6 +333,7 @@ class DictManagerActivity : Activity() {
         capButton.isEnabled = busy == null
         userInfo.text = "已学习:拼音 ${UserData.pinyin(this).count()} 个 · 笔画 ${UserData.stroke(this).count()} 个 · " +
             "英文 ${UserData.english(this).count()} 个词 · 联想 ${UserData.chain(this).count()} 条" +
+            "\n用过的不同汉字:${UserData.absorbChars(this)} 个" +
             (ErrorHint.all()?.let { "\n最近错误:\n$it" } ?: "")
     }
 
