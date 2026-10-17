@@ -688,6 +688,7 @@ class PinyinEngine(
             }
             if (size == maxC && key <= bestKey[maxC - 1]) continue
             if (accept != null && !accept.accept(texts[id])) continue   // 先比分数再问过滤:池子满了以后大部分词连问都不用问
+            if (!GlyphFilter.accepts(texts[id])) continue   // 系统字体没有字形的字不占名额(显示出来只是方框),后面有字形的才补得上来
             var pos = if (size < maxC) size else maxC - 1
             while (pos > 0 && bestKey[pos - 1] < key) {
                 bestKey[pos] = bestKey[pos - 1]
@@ -832,6 +833,7 @@ class StrokeEngine(
                 StrokeRank.key(freqs[id], if (tfq != null) tfq[id] else 0, trad, len == code.length, len)
             }
             if (size == SLOTS && key <= bestKey[SLOTS - 1]) return
+            if (!GlyphFilter.accepts(texts[id])) return   // 系统字体没有字形的字不占名额,后面有字形的才补得上来
             var pos = if (size < SLOTS) size else SLOTS - 1
             while (pos > 0 && bestKey[pos - 1] < key) {
                 bestKey[pos] = bestKey[pos - 1]
@@ -901,7 +903,14 @@ class StrokeEngine(
             }
             val firsts = ArrayList<String>(chars.size)
             for (c in chars) firsts.add(c.text)
-            val words = dict.pickWords(firsts, StrokeWords.accept(charIndex, segs.toTypedArray(), exact), score, WORD_MAX, WORD_SCAN_CAP)
+            val words = run {
+                val base = StrokeWords.accept(charIndex, segs.toTypedArray(), exact)
+                dict.pickWords(
+                    firsts,
+                    object : TextFilter { override fun accept(text: String): Boolean = base.accept(text) && GlyphFilter.accepts(text) },
+                    score, WORD_MAX, WORD_SCAN_CAP,
+                )
+            }
             for (t in words) out.add(Candidate(t, code.length))
         }
         val consumed = first.length + 1
