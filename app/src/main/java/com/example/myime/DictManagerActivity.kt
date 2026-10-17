@@ -109,6 +109,14 @@ class DictManagerActivity : Activity() {
         )
         root.addView(net, cardParams())
 
+        // ---- 按键
+        root.addView(sectionHeader("按键"))
+        val keys = settingsCard()
+        keys.addView(
+            switchRow("按键震动", DictConfig.haptic(this), "关掉可省电") { v -> DictConfig.setHaptic(this, v) },
+        )
+        root.addView(keys, cardParams())
+
         // ---- 学习
         root.addView(sectionHeader("词频学习"))
         val learn = settingsCard()
