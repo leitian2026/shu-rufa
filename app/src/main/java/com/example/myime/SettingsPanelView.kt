@@ -33,6 +33,8 @@ class SettingsPanelView(
         textAlign = Paint.Align.LEFT
         isFakeBoldText = true
     }
+    // 标题旁边的小字:字号和颜色跟格子里下面那行小字(翻译微软 / 悬浮键盘……)一样
+    private val infoPaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val tmp = RectF()
     private var glyphBase = 0f
@@ -50,6 +52,14 @@ class SettingsPanelView(
 
     /** 功能页里「翻译微软 / 翻译谷歌」正在起作用的那一格(整格绿底白字),-1 表示都没开。 */
     var filledId = -1
+        set(v) {
+            if (field == v) return
+            field = v
+            invalidate()
+        }
+
+    /** 标题(「功能」)旁边显示的一行小字,null = 不显示。功能页用来显示「已用过不同汉字 N 个」。 */
+    var headerInfo: String? = null
         set(v) {
             if (field == v) return
             field = v
@@ -104,6 +114,15 @@ class SettingsPanelView(
         if (title == null) return
         titlePaint.color = palette.text
         canvas.drawText(title, left, centerY + titleBase, titlePaint)
+        val info = headerInfo ?: return
+        // 标题右边、按键条左边之间的空地;放不下就把小字截短(末尾 …),不压到「返回」
+        val gapX = context.dpf(10f)
+        val x = left + titlePaint.measureText(title) + gapX
+        val room = barLeftEdge() - x - context.dpf(6f)
+        if (room <= 0f) return
+        infoPaint.color = palette.text   // 和格子里的小字一样黑(深色模式自动变浅,免得看不见)
+        val shown = android.text.TextUtils.ellipsize(info, infoPaint, room, android.text.TextUtils.TruncateAt.END)
+        canvas.drawText(shown, 0, shown.length, x, centerY + baseline(infoPaint), infoPaint)
     }
 
     /** 开着的开关(悬浮键盘、繁体优先):整格蓝底白字,一眼看出现在是开的;空 = 都没开。 */
@@ -127,6 +146,7 @@ class SettingsPanelView(
         val wide = context.isWide()
         glyphPaint.textSize = context.spf(if (wide) 24f else 20f)
         labelPaint.textSize = context.spf(if (wide) 14f else 12f)
+        infoPaint.textSize = labelPaint.textSize
         glyphBase = baseline(glyphPaint)
         labelBase = baseline(labelPaint)
         titlePaint.textSize = context.spf(if (wide) 18f else 16f)
