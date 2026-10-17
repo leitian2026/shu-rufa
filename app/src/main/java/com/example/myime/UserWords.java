@@ -325,6 +325,12 @@ public final class UserWords {
         return changed;
     }
 
+    /** 逐个给出自己造过的词和时间(统计「不同的字」用)。 */
+    public synchronized void forEachWord(java.util.function.BiConsumer<String, Long> f) {
+        ensureLoaded();
+        for (Entry e : map.values()) f.accept(e.text, e.ts);
+    }
+
     /** 可用的词有多少个。 */
     public synchronized int count() {
         ensureLoaded();
