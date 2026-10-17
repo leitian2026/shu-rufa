@@ -1681,6 +1681,20 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         selecting = false
         mode = target
         refreshLayout(animate = true)
+        if (target == Mode.SETTINGS) refreshCharCount()
+    }
+
+    /** 功能页标题旁边的「已用过不同汉字 N 个」:每次打开功能页在后台线程算一次(读几张表,几毫秒到几十毫秒),算完再显示。上次的数先留着,不闪。 */
+    private fun refreshCharCount() {
+        val app = applicationContext
+        ioPool.execute {
+            val n = try {
+                UserData.absorbChars(app)
+            } catch (e: Exception) {
+                return@execute
+            }
+            main.post { settingsPanel?.headerInfo = "已用过不同汉字 $n 个" }
+        }
     }
 
     private fun leavePage() {
