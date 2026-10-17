@@ -163,7 +163,7 @@ object LearnSync {
     }
 
     private fun hasData(app: Context): Boolean =
-        UserData.pinyin(app).hasLearned() || UserData.stroke(app).hasLearned() || UserData.chain(app).count() > 0 || UserData.words(app).count() > 0
+        UserData.pinyin(app).hasLearned() || UserData.stroke(app).hasLearned() || UserData.chain(app).count() > 0 || UserData.words(app).count() > 0 || UserData.chars(app).count() > 0
 
     /** 有网就行(Wi-Fi 和移动流量都可以)。 */
     private fun online(app: Context): Boolean {
@@ -202,9 +202,10 @@ object LearnSync {
                 override fun floor(): Long = p.getLong(K_FLOOR, 0L)
             }
             val now = System.currentTimeMillis()
+            UserData.absorbChars(app)   // 先把几张表里的汉字补进字集,上传的字集才是完整的
             val r = LearnSyncCore.run(
                 client, folder, deviceId(app), k.first, k.second,
-                UserData.pinyin(app), UserData.stroke(app), UserData.chain(app), UserData.words(app),
+                UserData.pinyin(app), UserData.stroke(app), UserData.chain(app), UserData.words(app), UserData.chars(app),
                 app.cacheDir, state, push, now,
             ) { UserData.saveAll() }
             val e = p.edit().putLong(K_PULL, now).putLong(K_OK, now)
