@@ -272,17 +272,17 @@ class PinyinEngine(
     internal val initialIds: IntArray
 
     init {
-        val c = compactOrder ?: texts.indices.sortedBy { compact[it] }.toIntArray()
+        val c = compactOrder ?: IdxSort.by(texts.size) { compact[it] }
         compactIds = c
         compactKeys = Array(c.size) { compact[c[it]] }
-        val i = initialOrder ?: texts.indices.sortedBy { initials[it] }.toIntArray()
+        val i = initialOrder ?: IdxSort.by(texts.size) { initials[it] }
         initialIds = i
         initialKeys = Array(i.size) { initials[i[it]] }
     }
 
 
     // 联想用:按词本身排序的下标。第一次要联想时才在后台算一次,不用联想就不占内存
-    private val textOrder: IntArray by lazy { texts.indices.sortedBy { texts[it] }.toIntArray() }
+    private val textOrder: IntArray by lazy { IdxSort.by(texts.size) { texts[it] } }
     private val textKeys: Array<String> by lazy {
         val o = textOrder
         Array(o.size) { texts[o[it]] }
@@ -770,7 +770,7 @@ class StrokeEngine(
     internal val ids: IntArray
 
     init {
-        val s = order ?: texts.indices.sortedBy { codeOf[it] }.toIntArray()
+        val s = order ?: IdxSort.by(texts.size) { codeOf[it] }
         ids = s
         keys = Array(s.size) { codeOf[s[it]] }
     }
