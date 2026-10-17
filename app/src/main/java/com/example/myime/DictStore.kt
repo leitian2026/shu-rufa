@@ -108,6 +108,14 @@ object DictConfig {
         p(ctx).edit().putBoolean("edge_filter", v).apply()
     }
 
+    /** 按键震动(默认开,和以前一样)。关掉后键盘按键、长按都不再震动,省电。 */
+    fun haptic(ctx: Context): Boolean = p(ctx).getBoolean("haptic", true)
+
+    fun setHaptic(ctx: Context, v: Boolean) {
+        p(ctx).edit().putBoolean("haptic", v).apply()
+        Haptics.enabled = v
+    }
+
     /** 记录并使用我的用词(词频学习)。 */
     fun learn(ctx: Context): Boolean = p(ctx).getBoolean("learn", true)
 
