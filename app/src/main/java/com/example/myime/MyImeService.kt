@@ -3138,6 +3138,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     private fun capsWanted(info: EditorInfo?): Boolean {
         if (info == null || secureField) return false
+        // 正在打一个词:字母不在输入框里(只在预览条),光标前的文字还是上一句的样子,不能据此判断,否则打一个字母后会一直保持大写
+        if (composing.isNotEmpty()) return false
         val ic = currentInputConnection ?: return false
         // 输入框是空的(或光标在最前面)不自动大写;只在打完一句话之后下一个字母才自动大写
         if (ic.getTextBeforeCursor(1, 0).isNullOrEmpty()) return false
