@@ -195,6 +195,7 @@ object UserData {
     private var chainData: UserChain? = null
     private var wordsData: UserWords? = null
     private var pickData: UserFreq? = null
+    private var charsData: UserChars? = null
 
     private fun dir(ctx: Context): File {
         val d = File(ctx.applicationContext.filesDir, "user")
@@ -222,6 +223,26 @@ object UserData {
     fun words(ctx: Context): UserWords =
         wordsData ?: UserWords(File(dir(ctx), "words.txt")).also { wordsData = it }
 
+    /** 用过的不同汉字(只增不减,清除学习数据才清空)。多机同步会合并。 */
+    @Synchronized
+    fun chars(ctx: Context): UserChars =
+        charsData ?: UserChars(File(dir(ctx), "chars.txt")) { TradConv.simplify(it) }.also { charsData = it }
+
+    /**
+     * 把拼音 / 笔画 / 联想 / 造词几张表里出现过的汉字补进字集(时间用各条记录自己的),返回字集里不同汉字的总数。
+     * 字集里已有的不重复记。这样第一次启用时就能数出「之前用过多少个」,别的手机合并进表里的词也会被补进来。
+     * 要读几张表(一两万条),几毫秒到几十毫秒;只在打开词库管理页和同步前调用,别放在打字的路径上。
+     */
+    fun absorbChars(ctx: Context): Int {
+        val c = chars(ctx)
+        val now = System.currentTimeMillis()
+        pinyin(ctx).forEachText { t, ts -> c.absorb(t, ts, now) }
+        stroke(ctx).forEachText { t, ts -> c.absorb(t, ts, now) }
+        chain(ctx).forEachWord { t, ts -> c.absorb(t, ts, now) }
+        words(ctx).forEachWord { t, ts -> c.absorb(t, ts, now) }
+        return c.count()
+    }
+
     /** 英文:点选过哪个候选(和拼音 / 笔画同一套「选过的排前面」规则)。只在本机,不参与多机同步。 */
     @Synchronized
     fun englishPick(ctx: Context): UserFreq =
@@ -235,6 +256,7 @@ object UserData {
         englishData?.saveIfDirty()
         chainData?.saveIfDirty()
         wordsData?.saveIfDirty()
+        charsData?.saveIfDirty()
     }
 
     fun clearAll(ctx: Context) {
@@ -244,6 +266,7 @@ object UserData {
         englishPick(ctx).clear()
         chain(ctx).clear()
         words(ctx).clear()
+        chars(ctx).clear()
         LearnSync.noteCleared(ctx)   // 多机同步:清除只清本机,清除之前的记录也不会被别的手机再同步回来
     }
 }
