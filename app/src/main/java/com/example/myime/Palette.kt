@@ -27,6 +27,10 @@ class Palette(context: Context) {
     val topBar = if (dark) 0xFF222529.toInt() else 0xFFFFFFFF.toInt()
 
     // 普通键:白色,底部一条较深的阴影
+    // 剪贴板页:列表底色比面板深,白色卡片一块一块凸出来;左边竖线隔条换两种颜色,相邻两条一眼分得开
+    val clipListBg = if (dark) 0xFF0E1012.toInt() else 0xFFD3D8E1.toInt()
+    val clipBarA = if (dark) 0xFF4C8DFF.toInt() else 0xFF2468F2.toInt()
+    val clipBarB = if (dark) 0xFFF2B24A.toInt() else 0xFFF29A1F.toInt()
     val key = if (dark) 0xFF3A3E45.toInt() else 0xFFFFFFFF.toInt()
     val keyShadow = if (dark) 0xFF0E0F11.toInt() else 0xFFBCC3CF.toInt()
 
