@@ -194,7 +194,7 @@ class SymbolPanelView(
                     val lx = e.x - stripLeft() + tabScroll
                     for (i in tabX.indices) {
                         if (lx >= tabX[i] - 1f && lx <= tabX[i] + tabW[i] + 1f) {
-                            performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+                            Haptics.tap(this@SymbolPanelView, android.view.HapticFeedbackConstants.KEYBOARD_TAP)
                             selectCat(i)
                             break
                         }
