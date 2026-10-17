@@ -461,6 +461,12 @@ public final class UserFreq {
         return byText.size();
     }
 
+    /** 逐条给出选过的词和它最近一次选的时间(统计「不同的字」用)。 */
+    public synchronized void forEachText(java.util.function.BiConsumer<String, Long> f) {
+        ensureLoaded();
+        for (Map.Entry<String, Long> e : byText.entrySet()) f.accept(e.getKey(), e.getValue());
+    }
+
     public synchronized void saveIfDirty() {
         if (!dirty) return;
         try {
