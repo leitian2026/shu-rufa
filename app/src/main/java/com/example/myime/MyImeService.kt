@@ -314,6 +314,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         const val EDGE_TAP_GAP_MS = 400L  // 列表页搜索框:第一次要求之后隔这么久再来的要求,算用户点的
         const val CLIP_SAVE_DELAY_MS = 2000L   // 新复制/删除之后多久写一次盘(期间的改动合并)
         const val MAX_CLIP_CHARS = 10000   // 单条剪贴板最多保存的字数,更长的不收
+        const val MAX_CLIP_TOTAL = 300_000   // 剪贴板历史所有条目加起来最多多少字,超了挤掉最旧的(上锁的不挤)
         const val MAX_COPY_WORDS = 300     // 一次复制最多把多少个不同的英文词记成「选过的词」(防止整篇文章把真正选过的挤掉)
         const val TRANS_DEBOUNCE_MS = 600L   // 翻译框停多久才去翻:越长请求越少越省电,越短译文越跟手
     }
@@ -3169,6 +3170,16 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             // 挤掉最旧的没上锁的;500 条全上了锁就只好不收这一条
             val i = clips.indexOfLast { it !in locked }
             clips.removeAt(if (i >= 0) i else 0)
+        }
+        // 总字数也有上限:历史整份加密重写,字数太多每次保存都费电、费内存。超了就从最旧的、没上锁的开始挤掉;
+        // 只剩最新这一条(或剩下的全上了锁)就不再挤
+        var total = 0
+        for (c in clips) total += c.length
+        while (total > MAX_CLIP_TOTAL) {
+            val i = clips.indexOfLast { it !in locked }
+            if (i <= 0) break
+            total -= clips[i].length
+            clips.removeAt(i)
         }
         markClips(clipsChanged = true, trashChanged = false, urgent = true)
         if (mode == Mode.CLIPBOARD) clipPanel?.setItems(clips.toList())
