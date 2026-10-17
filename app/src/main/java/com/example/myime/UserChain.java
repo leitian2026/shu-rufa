@@ -243,6 +243,28 @@ public final class UserChain {
         return n;
     }
 
+    /** 逐个给出联想里出现过的词(上文里的词、两词上下文里的两个词、接着的词)和对应记录的时间(统计「不同的字」用)。 */
+    public synchronized void forEachWord(java.util.function.BiConsumer<String, Long> f) {
+        ensureLoaded();
+        for (Map.Entry<String, ConcurrentHashMap<String, Long>> a : map.entrySet()) {
+            String ctx = a.getKey();
+            long newest = 0L;
+            for (Map.Entry<String, Long> b : a.getValue().entrySet()) {
+                f.accept(b.getKey(), b.getValue());
+                if (b.getValue() > newest) newest = b.getValue();
+            }
+            if (newest > 0L) {
+                int i = ctx.indexOf(SEP);
+                if (i < 0) {
+                    f.accept(ctx, newest);
+                } else {
+                    f.accept(ctx.substring(0, i), newest);
+                    f.accept(ctx.substring(i + 1), newest);
+                }
+            }
+        }
+    }
+
     public synchronized void saveIfDirty() {
         if (!dirty) return;
         try {
