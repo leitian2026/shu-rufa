@@ -58,6 +58,7 @@ class ClipboardPanelView(
     private var lineH = 0f
     private var cardPad = 0f
     private var cardGap = 0f
+    private var accentW = 0f   // 卡片左边竖线的宽度
     private var curPad = 0f      // 实际用的卡片上下内边距、间距:短内容一屏放 9 条,按屏高调整(字体不变)
     private var curGap = 0f
     private var checkW = 0f      // 多选时每条左边圆圈占的宽度
@@ -148,7 +149,8 @@ class ClipboardPanelView(
         ring.strokeWidth = context.dpf(1.8f)
         lineH = textPaint.fontSpacing
         cardPad = context.dpf(if (wide) 14f else 10f)
-        cardGap = context.dpf(if (wide) 10f else 6f)
+        cardGap = context.dpf(if (wide) 22f else 14f)   // 条与条之间的缝隙(以前 10 / 6),长条才分得开
+        accentW = context.dpf(4f)
         checkW = context.dpf(if (wide) 40f else 34f)
         lockW = context.dpf(if (wide) 48f else 42f)
         textBase = baseline(textPaint)
@@ -242,7 +244,7 @@ class ClipboardPanelView(
 
     private fun relayout() {
         if (width == 0) return
-        val baseTextW = width - 2 * padX - 2 * cardPad - (if (selecting) checkW else 0f)
+        val baseTextW = width - 2 * padX - 2 * cardPad - accentW - (if (selecting) checkW else 0f)
         // 一屏正好 9 个位置(第 1 个到第 9 个刚好铺满内容区,不留空):间距固定,每个位置的高度按比例拉高,字体不动。
         // 剪贴板页第 1 个位置给常驻小字,所以只放 8 条;回收箱 9 条。
         val total = contentBottom() - (padTop + barH + barGap)
@@ -253,7 +255,9 @@ class ClipboardPanelView(
             hintH = 0f
             hintTop = 0f
         } else {
-            curGap = if (2 * cardPad + lineH + cardGap <= total / ROWS_PER_SCREEN) cardGap else minOf(cardGap, context.dpf(3f))
+            // 缝隙尽量用大的(cardGap);屏幕矮、一屏 9 个位置挤不下时才收小,但每条上下至少留 5dp
+            val maxGap = (total - ROWS_PER_SCREEN * (lineH + 2 * context.dpf(5f))) / (n - 1)
+            curGap = minOf(cardGap, maxGap).coerceAtLeast(context.dpf(3f))
             val h = (total - curGap * (n - 1)) / ROWS_PER_SCREEN
             curPad = ((h - lineH) / 2f).coerceAtLeast(context.dpf(2f))
             hintH = if (inTrash) 0f else h
@@ -335,6 +339,9 @@ class ClipboardPanelView(
     }
 
     override fun drawContent(canvas: Canvas, visTop: Float, visBottom: Float) {
+        // 列表底色比面板深:白色卡片凸出来,边缘一眼就看得出
+        fill.color = palette.clipListBg
+        canvas.drawRect(0f, visTop, width.toFloat(), visBottom, fill)
         if (items.isEmpty()) {
             hintPaint.color = palette.textFaint
             val cy = viewportHeight() / 2f
@@ -349,15 +356,18 @@ class ClipboardPanelView(
         val left = padX
         val right = width - padX
         val cardR = context.dpf(4f)   // 小圆角
-        val textLeft = left + cardPad + (if (selecting) checkW else 0f)
+        val textLeft = left + accentW + cardPad + (if (selecting) checkW else 0f)
         for (i in items.indices) {
             val top = tops[i]
             val h = cardH[i]
             if (top + h < visTop) continue
             if (top > visBottom) break
 
-            // 扁平:不画下方的立体阴影,只画一块纯色圆角底
+            // 扁平:不画下方的立体阴影。先画一整块竖线颜色的圆角底(隔条换色),再把白色卡片从竖线右边盖上去,左边就留出一条细竖线
             tmp.set(left, top, right, top + h)
+            fill.color = if (i % 2 == 0) palette.clipBarA else palette.clipBarB
+            canvas.drawRoundRect(tmp, cardR, cardR, fill)
+            tmp.left = left + accentW
             fill.color = palette.key
             canvas.drawRoundRect(tmp, cardR, cardR, fill)
 
@@ -377,7 +387,7 @@ class ClipboardPanelView(
             }
 
             if (selecting && items[i] !in locked) {   // 上了锁的选不了,不画圆圈
-                val cx = left + cardPad + checkW * 0.4f
+                val cx = left + accentW + cardPad + checkW * 0.4f
                 val cy = top + h / 2f
                 val r = context.dpf(10f)
                 if (items[i] in selected) {
