@@ -1919,6 +1919,17 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun commitTo(ic: InputConnection, text: String) {
         lastOwnEditAt = SystemClock.uptimeMillis()
         ic.commitText(text, 1)
+        noteChars(text)
+    }
+
+    /** 上屏的文字里有汉字:记进「用过的不同汉字」(密码框等不记录学习的输入框不记)。在后台线程做,别在打字的线程里读文件。 */
+    private fun noteChars(text: String) {
+        if (!allowLearn) return
+        var han = false
+        for (ch in text) if (ch.code >= 0x2E80) { han = true; break }   // 纯字母 / 标点 / 空格不用起任务
+        if (!han) return
+        val app = applicationContext
+        ioPool.execute { UserData.chars(app).note(text) }
     }
 
     // ------------------------------------------------------------ 中文联想
