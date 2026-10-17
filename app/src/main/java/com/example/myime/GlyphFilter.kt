@@ -24,6 +24,9 @@ object GlyphFilter {
         return ok
     }
 
+    /** 引擎挑候选时用:这个字(词)在系统字体里是不是每个字都有字形。 */
+    fun accepts(text: String): Boolean = ok(text)
+
     private fun ok(text: String): Boolean {
         var i = 0
         while (i < text.length) {
