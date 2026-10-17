@@ -24,6 +24,7 @@ public class BackupSelfTest {
     }
 
     public static void main(String[] a) throws Exception {
+        SafeFile.setDurableGapForTest(0);   // 测试里每次保存都当完整保存(刷盘 + 更新 .bak)
         int iter = 100_000;   // 测试用最低值,加快速度
         byte[] salt = BackupCrypto.newSalt();
         long t0 = System.nanoTime();
