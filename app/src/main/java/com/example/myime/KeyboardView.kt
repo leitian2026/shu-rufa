@@ -440,7 +440,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 hint[0] in "@#$%&" -> hintMidPaint
                 else -> hintPaint
             }
-            hp.color = palette.hintText   // 浅黑
+            hp.color = if (hint[0].isDigit()) palette.hintText else palette.hintSym   // 数字稍浅,符号更深
             val hs = hp.textSize
             val hy = r.top + context.dpf(2f) + hs * 0.72f
             canvas.drawText(hint, r.right - context.dpf(if (context.isWide()) 6f else 4f), hy, hp)   // 右上角
