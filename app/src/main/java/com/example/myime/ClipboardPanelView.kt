@@ -297,7 +297,7 @@ class ClipboardPanelView(
 
     /** 最多两行,放不下时第二行末尾加省略号。 */
     private fun wrap(text: String, maxW: Float): List<String> {
-        // 一条最长 5000 字,但只画两行:只取开头一段来处理,不然 500 条每次重排版都要把全部文字扫一遍
+        // 一条最长 10000 字,但只画两行:只取开头一段来处理,不然 500 条每次重排版都要把全部文字扫一遍
         val truncated = text.length > PREVIEW_CHARS
         val t = (if (truncated) text.substring(0, PREVIEW_CHARS) else text).replace('\n', ' ').replace('\t', ' ').trim()
         val out = ArrayList<String>(2)
