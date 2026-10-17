@@ -37,7 +37,7 @@ class EnglishEngine(
     var pick: UserFreq? = null
 
     init {
-        val ord = order ?: words.indices.sortedBy { lowerById[it] }.toIntArray()
+        val ord = order ?: IdxSort.by(words.size) { lowerById[it] }
         ids = ord
         keys = Array(ord.size) { lowerById[ord[it]] }
         for (i in words.indices) exact[lowerById[i]] = i
