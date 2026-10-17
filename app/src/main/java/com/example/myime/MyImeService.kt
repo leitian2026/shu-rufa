@@ -243,7 +243,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     // 回收箱:剪贴板里删掉的内容先放这里,最多 10 条;最新删的在最前(界面最上面),满了挤掉最后一条(最旧的)。同样会落盘。
     private val trash = ArrayList<String>()
-    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClipboardNow() }
+    private var ownClipClearAt = 0L   // 我们自己清空系统剪贴板的时刻:清空会再触发一次回调,那次不用再读
+    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
+        val t = ownClipClearAt
+        if (t != 0L) {
+            ownClipClearAt = 0L
+            if (SystemClock.uptimeMillis() - t < 1500L) return@OnPrimaryClipChangedListener
+        }
+        captureClipboardNow()
+    }
 
     // 总开关「清空系统剪贴板」:开(默认)= 收进历史后清空系统剪贴板,别的 app 读不到;关 = 只收进历史,系统剪贴板照常可用。
     // 存在 clipcfg 设置里(会随备份还原)。进程里只有这一份,切换时同步更新。
@@ -305,7 +313,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         const val EDGE_ALLOW_MS = 800L    // 补弹键盘时放行多久
         const val EDGE_TAP_GAP_MS = 400L  // 列表页搜索框:第一次要求之后隔这么久再来的要求,算用户点的
         const val CLIP_SAVE_DELAY_MS = 2000L   // 新复制/删除之后多久写一次盘(期间的改动合并)
-        const val MAX_CLIP_CHARS = 5000   // 单条剪贴板最多保存的字数,更长的不收
+        const val MAX_CLIP_CHARS = 10000   // 单条剪贴板最多保存的字数,更长的不收
+        const val MAX_COPY_WORDS = 300     // 一次复制最多把多少个不同的英文词记成「选过的词」(防止整篇文章把真正选过的挤掉)
         const val TRANS_DEBOUNCE_MS = 600L   // 翻译框停多久才去翻:越长请求越少越省电,越短译文越跟手
     }
 
@@ -502,6 +511,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         transFinishing = false
         unwatchNetwork()
         main.removeCallbacks(assocClear)
+        capsPending = false
+        main.removeCallbacks(capsFallback)
         flushClips()   // 剪贴板有没写的改动,和下面的学习数据一起落盘
         ioPool.execute {
             UserData.saveAll()                          // 学习数据只在键盘隐藏时落盘,打字过程中不写文件
@@ -520,12 +531,25 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
+    /** 系统要回收内存了(进程可能随后被杀):还没写出去的学习数据和剪贴板先落盘,不靠 onDestroy(被杀时不会走到)。 */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level < android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) return
+        try {
+            flushClips()
+            ioPool.execute { UserData.saveAll() }
+        } catch (e: Exception) {
+            // 服务正在销毁:onDestroy 里会同步写
+        }
+    }
+
     override fun onDestroy() {
         try {
             (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).removePrimaryClipChangedListener(clipListener)
         } catch (e: Exception) {
         }
         main.removeCallbacks(assocClear)
+        main.removeCallbacks(capsFallback)
         main.removeCallbacks(transRun)
         main.removeCallbacks(edgeShowLater)
         unwatchNetwork()
@@ -1097,6 +1121,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 s0 != KbSize.scale || h0 != KbSize.heightDp || w0 != KbSize.widthFrac
         }
         refreshDiag()   // 首页的开关改了以后,下次键盘弹出就生效
+        Haptics.enabled = DictConfig.haptic(applicationContext)
         readingOn = DictConfig.showReading(applicationContext)
         if (diag) AppLog.d("MyIme", "show restarting=$restarting pinyin=${pinyinEngine != null} stroke=${strokeEngine != null} " + editorDesc(info))
         if (!restarting) captureClipboardNow(fromListener = false)   // 切到别的输入法期间复制的内容,回来时补进历史
@@ -1260,6 +1285,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
             if (assocKey != null && composing.isEmpty()) breakAssoc()
         }
+        // 上屏之后要不要自动大写:等输入框自己通知"文字/光标变了"再问它一次(这时它的内容是最新的),不在上屏的同一刻问
+        if (capsPending) evalCaps()
     }
 
     // ------------------------------------------------------------ 按键分发
@@ -1305,6 +1332,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val ic = currentInputConnection ?: return
         if (mode == Mode.PINYIN && t.length == 1 && t[0] in 'a'..'z') {
             if (composing.isEmpty()) resetFilter()   // 新的一段输入,上一段留下的筛选不带过来
+            lastOwnEditAt = SystemClock.uptimeMillis()   // 正在打字:这段时间网页迟到的光标回调不能清掉预览条里的词
             composing.append(t)
             showComposing()
             requery()
@@ -1315,6 +1343,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             val isLetter = ch.isLetter()   // 含带重音的字母(长按 e 出的 é 等),和前面的字母连成一个词
             if (isLetter || (ch == '\'' && composing.isNotEmpty())) {
                 main.removeCallbacks(assocClear)
+                lastOwnEditAt = SystemClock.uptimeMillis()   // 同上
                 composing.append(t)
                 showComposing()
                 requery()
@@ -3072,20 +3101,34 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     /** 系统剪贴板当前的文字(跳过非文字、被标记为敏感的内容如密码管理器复制的密码、空白和超长的);读不到返回 null。 */
-    private fun readClipText(): String? {
+    private fun readClipText(notify: Boolean = false): String? {
         try {
             val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
             val clip = cm.primaryClip ?: return null
             if (clip.itemCount == 0) return null
             val desc = clip.description
             if (!desc.hasMimeType("text/*")) return null
-            if (desc.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true) return null
+            if (desc.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true) {
+                if (notify) clipNotice("这次复制被来源应用标记为敏感内容(如密码),没有收进剪贴板历史")
+                return null
+            }
             val text = clip.getItemAt(0).coerceToText(this)?.toString() ?: return null
-            if (text.isBlank() || text.length > MAX_CLIP_CHARS) return null
+            if (text.isBlank()) return null
+            if (text.length > MAX_CLIP_CHARS) {
+                // 以前这里一声不响地丢掉;现在告诉你实际有多少字(网页里选一大片,字数常比看上去多得多)
+                if (notify) clipNotice("这段文字有 ${text.length} 字,超过 $MAX_CLIP_CHARS 字的上限,没有收进剪贴板历史")
+                return null
+            }
             return text
         } catch (e: Exception) {
+            if (notify) clipNotice("读取剪贴板失败:" + (e.message ?: e.javaClass.simpleName).take(60))
             return null   // 没有读取权限(例如当前不是默认输入法)时直接忽略
         }
+    }
+
+    private fun clipNotice(msg: String) {
+        if (diag) AppLog.d("MyIme", "clip rejected: $msg")
+        android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show()
     }
 
     /**
@@ -3094,8 +3137,22 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
      * 只有你在剪贴板页点那一条,才会输入到当前输入框。
      * 只清空确实收进来的文字;密码管理器标记为敏感的、超长的、非文字的内容不动(我们没存,清掉就丢了)。
      */
+    private var lastClipTs = 0L   // 上次读过的那份系统剪贴板的时间戳
+
+    /** 系统剪贴板当前这份内容的时间戳(只读描述信息,不读正文,很轻);没有内容或读不到返回 0。 */
+    private fun clipStamp(): Long = try {
+        (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).primaryClipDescription?.timestamp ?: 0L
+    } catch (e: Exception) {
+        0L
+    }
+
     private fun captureClipboardNow(fromListener: Boolean = true) {
-        val text = readClipText() ?: return
+        val ts = clipStamp()
+        // 键盘弹出时的补读:剪贴板自上次读过之后没变(时间戳一样),就不去读正文了;切到别的输入法期间复制过的,时间戳不同,照样补进来
+        if (!fromListener && ts != 0L && ts == lastClipTs) return
+        val text = readClipText(notify = fromListener)
+        if (ts != 0L) lastClipTs = ts   // 被拒收(太长 / 敏感)的也记下,免得每次弹出都再读一遍
+        if (text == null) return
         if (!clipWipe && !fromListener && text == lastSysClip) return   // 开关关着:系统剪贴板里还是上次收过的,别又顶到最前
         lastSysClip = if (clipWipe) null else text
         addClip(text)
@@ -3107,6 +3164,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (clips.firstOrNull() == text) return
         clips.remove(text)
         clips.add(0, text)
+        learnCopiedEnglish(text)
         while (clips.size > 500) {
             // 挤掉最旧的没上锁的;500 条全上了锁就只好不收这一条
             val i = clips.indexOfLast { it !in locked }
@@ -3116,8 +3174,43 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (mode == Mode.CLIPBOARD) clipPanel?.setItems(clips.toList())
     }
 
+    private val enWordRe = Regex("(?<![A-Za-z0-9_'])[A-Za-z]+(?:'[A-Za-z]+)*(?![A-Za-z0-9_])")
+
+    /**
+     * 复制了英文:里面的英文词当作「我选过的词」,以后打英文补全时排在前面(和点选候选同一套规则,记在 englishPick)。
+     * 只在复制那一刻做一次(后台线程),不碰输入框。网址 / 邮箱、带数字的串、驼峰或乱码样的串不收;
+     * 「记录并使用我的用词」关着不记;密码管理器标了敏感的内容在 readClipText 里就已经不收了。
+     */
+    private fun learnCopiedEnglish(text: String) {
+        val app = applicationContext
+        if (!DictConfig.learn(app)) return
+        if (text.contains("://") || text.contains('@')) return
+        ioPool.execute {
+            try {
+                val pick = UserData.englishPick(app)
+                val seen = HashSet<String>()
+                for (m in enWordRe.findAll(text)) {
+                    val w = m.value
+                    if (w.length < 2 || w.length > 32) continue
+                    var odd = false
+                    for (i in 1 until w.length) {
+                        if (w[i].isUpperCase() && w[i - 1].isLowerCase()) { odd = true; break }
+                    }
+                    if (odd) continue
+                    val lw = w.lowercase()
+                    if (!seen.add(lw)) continue
+                    pick.learn(lw, lw)
+                    if (seen.size >= MAX_COPY_WORDS) break
+                }
+            } catch (e: Exception) {
+                // 学不进去不影响复制
+            }
+        }
+    }
+
     private fun wipeSystemClip() {
         try {
+            ownClipClearAt = SystemClock.uptimeMillis()
             val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
             if (android.os.Build.VERSION.SDK_INT >= 28) cm.clearPrimaryClip()
             else cm.setPrimaryClip(android.content.ClipData.newPlainText("", ""))   // 清空后系统会再通知一次,读到的是空白,不会重复收录
@@ -3126,9 +3219,33 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
+    // 自动大写:上屏后不立刻问输入框(网页输入框的文字是异步更新的,立刻问会拿到旧内容)。
+    // 标记「待判断」,等输入框回调 onUpdateSelection 时再判断一次;个别输入框不回调,150ms 后兜底判断一次(一次性,不循环)。
+    private var capsPending = false
+    private val capsFallback = Runnable { evalCaps() }
+
     private fun afterCommit() {
         if (mode != Mode.ENGLISH) return
         if (shiftLock) return   // 锁定大写:一直大写,不自动变回
+        if (composing.isNotEmpty() || secureField) {
+            // 正在打词(字母在预览条里)或密码框:不用问输入框,直接是小写
+            capsPending = false
+            main.removeCallbacks(capsFallback)
+            if (shift) {
+                shift = false
+                refreshLayout(animate = false)
+            }
+            return
+        }
+        capsPending = true
+        main.removeCallbacks(capsFallback)
+        main.postDelayed(capsFallback, 150L)
+    }
+
+    private fun evalCaps() {
+        capsPending = false
+        main.removeCallbacks(capsFallback)
+        if (mode != Mode.ENGLISH || shiftLock) return
         val want = capsWanted(currentInputEditorInfo)
         if (want != shift) {
             shift = want
