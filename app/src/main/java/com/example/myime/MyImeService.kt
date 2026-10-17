@@ -2336,7 +2336,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     /**
      * 候选栏右边的关闭键:收起候选区。
-     * 正在打的拼音/笔画直接放弃;英文正在打的词按原样留在输入框里;联想词就是收起并断开联想。
+     * 正在打的拼音/笔画/英文词都直接放弃(不会上屏到输入框,也不记进用词习惯);联想词就是收起并断开联想。
      */
     private fun closeCandidates() {
         val ic = currentInputConnection
@@ -2344,7 +2344,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (composing.isNotEmpty() && ic != null) {
             ic.beginBatchEdit()
             if (mode == Mode.ENGLISH) {
-                commitEnglishWord(ic, auto = false, trailing = "")
+                // 放弃正在打的英文词:不上屏、不学习。其余收尾(清候选、查询代数)和上屏时一样
+                composing.clear()
+                autoFix = null
+                candidates = emptyList()
+                candidatesFor = ""
+                queryGen++
             } else {
                 ic.finishComposingText()
                 composing.clear()
