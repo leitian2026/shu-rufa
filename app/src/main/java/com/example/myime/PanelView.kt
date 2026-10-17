@@ -155,7 +155,7 @@ abstract class PanelView(context: Context) : View(context) {
 
         override fun onLongPress(e: MotionEvent) {
             if (e.y < contentTop() || e.y > contentBottom()) return
-            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            Haptics.tap(this@PanelView, HapticFeedbackConstants.LONG_PRESS)
             onContentLongPress(e.x, e.y - contentTop() + offsetY)
         }
 
@@ -166,7 +166,7 @@ abstract class PanelView(context: Context) : View(context) {
                 return true
             }
             if (onContentTap(e.x, e.y - contentTop() + offsetY)) {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                Haptics.tap(this@PanelView, HapticFeedbackConstants.KEYBOARD_TAP)
             } else {
                 onBlankTap()
             }
@@ -435,7 +435,7 @@ abstract class PanelView(context: Context) : View(context) {
                     barDown = i
                     barIsDown[i] = true
                     barReleasedAt[i] = -1L
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    Haptics.tap(this@PanelView, HapticFeedbackConstants.KEYBOARD_TAP)
                     val k = barKeys[i]
                     onBarKey(k.id)
                     if (k.repeatable) {
