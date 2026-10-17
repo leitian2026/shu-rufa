@@ -43,6 +43,19 @@ public final class SafeFile {
      */
     private static final java.util.Map<String, long[]> KNOWN = new java.util.concurrent.ConcurrentHashMap<>();
 
+    /**
+     * 每个文件上次"完整保存"(刷盘 + 更新 .bak)的时间。平时的保存只写临时文件再原子改名:
+     * 进程被杀不会丢(数据已经交给系统,系统会自己落盘),不会写坏;fsync 和复制备份是防整机断电 / 内核崩溃的,
+     * 又耗电又磨闪存,所以每个文件隔 DURABLE_GAP_MS 才做一次(进程里第一次保存也做)。
+     */
+    private static final java.util.Map<String, Long> LAST_DURABLE = new java.util.concurrent.ConcurrentHashMap<>();
+    private static volatile long durableGapMs = 6L * 60 * 60 * 1000;
+
+    /** 测试用:把"完整保存"的间隔改小(0 = 每次都刷盘并更新备份)。 */
+    public static void setDurableGapForTest(long ms) {
+        durableGapMs = ms;
+    }
+
     private static boolean knownValid(File f) {
         long[] k = KNOWN.get(f.getPath());
         return k != null && k[0] == f.length() && k[1] == f.lastModified();
@@ -99,20 +112,23 @@ public final class SafeFile {
         if (dir != null && !dir.isDirectory()) //noinspection ResultOfMethodCallIgnored
             dir.mkdirs();
         File tmp = new File(dir, file.getName() + ".tmp");
+        long nowMs = System.currentTimeMillis();
+        Long lastD = LAST_DURABLE.get(file.getPath());
+        boolean durable = lastD == null || nowMs < lastD || nowMs - lastD >= durableGapMs;
         try (FileOutputStream fos = new FileOutputStream(tmp)) {
             Writer w = new BufferedWriter(new OutputStreamWriter(fos, StandardCharsets.UTF_8));
             w.write("#v" + VERSION + "\n");
             body.write(w);
             w.write(TRAILER + "\n");
             w.flush();
-            fos.getFD().sync();
+            if (durable) fos.getFD().sync();
         } catch (IOException e) {
             //noinspection ResultOfMethodCallIgnored
             tmp.delete();
             throw e;
         }
         // 只在现在的主文件确认完好时才更新备份,免得把一个坏文件复制过去、盖掉唯一的好备份
-        if (file.isFile() && file.length() > 0 && (knownValid(file) || isValid(file))) {
+        if (durable && file.isFile() && file.length() > 0 && (knownValid(file) || isValid(file))) {
             try {
                 Files.copy(file.toPath(), backupOf(file).toPath(), StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException ignored) {
@@ -125,6 +141,7 @@ public final class SafeFile {
             Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
         }
         KNOWN.put(file.getPath(), new long[]{file.length(), file.lastModified()});
+        if (durable) LAST_DURABLE.put(file.getPath(), nowMs);
     }
 
     /** 「清除」用:主文件、备份、临时文件、损坏留底都删掉,免得清除后又被备份恢复出来。 */
