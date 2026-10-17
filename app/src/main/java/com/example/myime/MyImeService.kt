@@ -2140,6 +2140,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         var shown = withEmoji(list)
         // 拼音、笔画的候选统一成当前字形:繁体开着全显示繁体,关着全显示简体(打简体、繁体笔画都行)
         if ((mode == Mode.PINYIN || mode == Mode.STROKE) && tradReady) shown = TradConv.convert(shown, tradOn)
+        // 系统字体里没有字形的生僻字(显示成 NO GLYPH 方框)不放进候选
+        if (mode == Mode.PINYIN || mode == Mode.STROKE) shown = GlyphFilter.filter(shown)
         candidatesFor = code
         candidates = shown
         pushToBar(shown)
