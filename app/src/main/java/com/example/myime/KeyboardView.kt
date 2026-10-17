@@ -639,7 +639,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val opts = spec.hold ?: return
         val i = pointerKey.get(id, -1)
         if (i < 0 || i >= rects.size) return
-        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        Haptics.tap(this@KeyboardView, HapticFeedbackConstants.LONG_PRESS)
         stopBubble()   // 气泡到点了,和字符上屏同一刻收掉
         if (opts.size == 1) {
             // 只有一个备选:长按直接打出来,松手不再重复
@@ -678,7 +678,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val k = if (holdFlip) n - 1 - j else j
         if (k != holdSel) {
             holdSel = k
-            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            Haptics.tap(this@KeyboardView, HapticFeedbackConstants.CLOCK_TICK)
             invalidate()
         }
     }
@@ -703,7 +703,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             isDown[i] = true
             releasedAt[i] = -1L
             pointerKey.put(id, i)
-            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            Haptics.tap(this@KeyboardView, HapticFeedbackConstants.KEYBOARD_TAP)
             holdPending.put(id, spec)
             holdPointer = id
             holdDownX = x
@@ -728,7 +728,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         isDown[i] = true
         releasedAt[i] = -1L
         pointerKey.put(id, i)
-        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        Haptics.tap(this@KeyboardView, HapticFeedbackConstants.KEYBOARD_TAP)
         listener.onKey(spec) // 可能触发 setLayout,会重置上面的状态
         // onKey 可能触发 setLayout 把按压状态清空;这时手指已不在跟踪里,抬起时收不到停止信号,
         // 连删会停不下来(把打的字全删光),所以只在仍被跟踪时才启动连发
