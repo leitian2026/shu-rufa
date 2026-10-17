@@ -100,6 +100,13 @@ public final class LearnSyncCore {
     public static Result run(WebDavClient client, List<String> folder, String deviceId, byte[] master, byte[] salt,
                              UserFreq pinyin, UserFreq stroke, UserChain chain, UserWords words, File tmpDir, State state,
                              boolean push, long now, Runnable flush) throws IOException {
+        return run(client, folder, deviceId, master, salt, pinyin, stroke, chain, words, null, tmpDir, state, push, now, flush);
+    }
+
+    /** 同上,chars 不为 null 时也同步用过的不同汉字。 */
+    public static Result run(WebDavClient client, List<String> folder, String deviceId, byte[] master, byte[] salt,
+                             UserFreq pinyin, UserFreq stroke, UserChain chain, UserWords words, UserChars chars, File tmpDir, State state,
+                             boolean push, long now, Runnable flush) throws IOException {
         String own = fileNameOf(deviceId);
         List<WebDavClient.Entry> entries = client.list(folder);
 
@@ -124,7 +131,7 @@ public final class LearnSyncCore {
                 try (InputStream fi = new BufferedInputStream(new FileInputStream(dl), 1 << 16);
                      InputStream dec = BackupCrypto.decryptWithMaster(fi, master);
                      InputStream in = new GZIPInputStream(dec, 1 << 16)) {
-                    changed += LearnShare.merge(in, pinyin, stroke, chain, words, now, floor);
+                    changed += LearnShare.merge(in, pinyin, stroke, chain, words, chars, now, floor);
                     merged++;
                 } catch (IOException ex) {
                     skipped++;   // 解不开 / 太新 / 损坏:跳过
@@ -139,14 +146,14 @@ public final class LearnSyncCore {
 
         boolean pushed = false;
         if (push) {
-            upload(client, folder, own, master, salt, pinyin, stroke, chain, words, tmpDir);
+            upload(client, folder, own, master, salt, pinyin, stroke, chain, words, chars, tmpDir);
             pushed = true;
         }
         return new Result(merged, skipped, changed, pushed);
     }
 
     private static void upload(WebDavClient client, List<String> folder, String own, byte[] master, byte[] salt,
-                               UserFreq pinyin, UserFreq stroke, UserChain chain, UserWords words, File tmpDir) throws IOException {
+                               UserFreq pinyin, UserFreq stroke, UserChain chain, UserWords words, UserChars chars, File tmpDir) throws IOException {
         File up = new File(tmpDir, "learn_upload.tmp");
         try {
             up.delete();
@@ -158,7 +165,7 @@ public final class LearnSyncCore {
                     }
                 };
                 try (Writer w = new OutputStreamWriter(gz, StandardCharsets.UTF_8)) {
-                    LearnShare.write(w, pinyin, stroke, chain, words);
+                    LearnShare.write(w, pinyin, stroke, chain, words, chars);
                 }
             }
             // 读回来整个解密 + 解压一遍(每个块的认证标签都会校验),确认真的能被别的手机读出来
