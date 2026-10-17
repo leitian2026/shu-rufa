@@ -1252,8 +1252,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         } else if ((newSelStart != oldSelStart || newSelEnd != oldSelEnd) &&
             SystemClock.uptimeMillis() - lastOwnEditAt > 500
         ) {
-            // 不是我们自己改的、光标却变了。笔画的组合区不在输入框里(没有 candidatesStart 可比),这里一并处理
-            if (mode == Mode.STROKE && composing.isNotEmpty()) {
+            // 不是我们自己改的、光标却变了。组合字母都不在输入框里(没有 candidatesStart 可比),这里一并处理
+            if (composing.isNotEmpty()) {
                 composing.clear()
                 queryGen++
                 applyCandidates("", emptyList())
@@ -2016,9 +2016,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     private fun showComposing() {
-        // 笔画不放进输入框(光标处什么都不显示),只在候选栏上方显示;拼音和英文仍用输入框的组合区
-        if (mode == Mode.STROKE) return
-        currentInputConnection?.setComposingText(displayComposing(), 1)
+        // 正在打的拼音 / 笔画 / 英文字母都不放进目标输入框(光标处什么都不显示),只在候选栏上方的预览条里显示;
+        // 选中候选或按空格后才一次性上屏
+        return
     }
 
     /** 组合内容变了:更新预览条;「分词/笔画」「清除/回车」这类键的文字也随之切换。 */
@@ -2321,7 +2321,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             if (mode == Mode.ENGLISH) {
                 commitEnglishWord(ic, auto = false, trailing = "")
             } else {
-                if (mode == Mode.PINYIN) ic.setComposingText("", 1)   // 拼音字母在输入框的组合区里,一起删掉
                 ic.finishComposingText()
                 composing.clear()
             }
@@ -2414,11 +2413,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         queryGen++
     }
 
-    /** 点了英文候选(补全、纠错或联想):上屏并跟一个空格,然后给出下一个词的联想。 */
+    /** 点了英文候选(补全、纠错或联想):上屏(不补空格),然后给出下一个词的联想。 */
     private fun pickEnglish(ic: InputConnection, c: Candidate) {
         val typedCode = composing.toString().lowercase()
         ic.beginBatchEdit()
-        commitTo(ic, c.text + " ")
+        commitTo(ic, c.text)   // 选完不自动补空格,要空格自己按
         composing.clear()
         learnEnglish(c.text)
         learnEnglishPick(typedCode, c.text)
@@ -2426,7 +2425,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         candidatesFor = ""
         queryGen++
         ic.endBatchEdit()
-        softSpace = true   // 这个空格是我们补的:下一个键是标点就吃掉它
+        softSpace = false
         showNextWords()
         afterCommit()
     }
