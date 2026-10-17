@@ -47,7 +47,7 @@ run_test() {
   fi
 }
 
-PIN="Syllabary SafeFile LearnShare UserFreq UserChain UserWords"
+PIN="Syllabary SafeFile LearnShare UserFreq UserChain UserWords UserChars"
 
 run_test BackupNamesSelfTest "BackupNames"
 run_test BackupSelfTest "SafeFile BackupCrypto BackupScope"
@@ -62,6 +62,7 @@ run_test SentenceSelfTest "$PIN Fuzzy SentenceDecoder"
 run_test FuzzySelfTest "$PIN Fuzzy SentenceDecoder"
 run_test UserWordsSelfTest "$PIN Fuzzy SentenceDecoder" "" SentenceSelfTest
 run_test WordsSyncSelfTest "$PIN"
+run_test CharsSelfTest "$PIN"
 run_test PerfSelfTest "$PIN Fuzzy Typo SentenceDecoder" "" SentenceSelfTest
 
 
