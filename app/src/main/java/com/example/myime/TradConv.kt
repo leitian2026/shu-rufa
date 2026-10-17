@@ -36,6 +36,9 @@ object TradConv {
         return false
     }
 
+    /** 把一段文字转成简体(统计「用过的不同汉字」把繁简归成一个字用)。系统没有转换表就原样返回。 */
+    fun simplify(s: String): String = toSimpDir.conv(s)
+
     /** 提前把转换表装好(在后台线程调用):第一次装要读系统数据,不要让它落在打字的那一下。 */
     fun warm(trad: Boolean) {
         val d = if (trad) toTradDir else toSimpDir
