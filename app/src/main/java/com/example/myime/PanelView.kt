@@ -88,9 +88,6 @@ abstract class PanelView(context: Context) : View(context) {
     /** true:顶部按键条画成扁平的(没有底色和阴影,只有图标/文字,按下时才有一块淡色底)。 */
     protected open val flatBar: Boolean get() = false
 
-    /** 标题行右边那一组按键最左边的 x(没有按键就是整行右边);标题旁边加字时用来判断还剩多少地方。 */
-    protected fun barLeftEdge(): Float = barRects.firstOrNull()?.left ?: width.toFloat()
-
     /** 画标题。left 是标题的左边,centerY 是这一行的竖直中心。只有 titledHeader 为 true 时才会调用。 */
     protected open fun drawHeaderTitle(canvas: Canvas, left: Float, centerY: Float) {}
 
