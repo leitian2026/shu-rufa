@@ -3,7 +3,7 @@
 // 在工程根目录执行:
 //   D=app/src/main/java/com/example/myime
 //   javac -encoding UTF-8 -d /tmp/perftest $D/Syllabary.java $D/SafeFile.java $D/LearnShare.java $D/UserFreq.java $D/UserChain.java \
-//         $D/UserWords.java $D/Fuzzy.java $D/Typo.java $D/SentenceDecoder.java tools/stub/com/example/myime/ErrorHint.java \
+//         $D/UserWords.java $D/Fuzzy.java $D/Typo.java $D/GramPack.java $D/SentenceDecoder.java tools/stub/com/example/myime/ErrorHint.java \
 //         tools/SentenceSelfTest.java tools/PerfSelfTest.java
 //   java -Dstdout.encoding=UTF-8 -cp /tmp/perftest PerfSelfTest
 // 词库是 20 万条随机词条(每个位置都有很多同音词,比真实词库更难),数字是电脑上的,手机会慢几倍;
