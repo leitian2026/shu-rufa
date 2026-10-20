@@ -11,6 +11,7 @@ import java.io.File
  *       stroke.txt                 笔画字表
  *       english.txt                英文词表  词<Tab>词频
  *       english_bigram.txt         英文联想  前词<Tab>后词<Tab>词频
+ *       gram.bin                   搭配模型(整句转换用的「哪些字经常连着出现」),二进制,见 GramPack
  *       raw/                       下载来的原始文件(Rime *.dict.yaml、Norvig 词频表),留着可离线重新转换
  *
  * 运行时优先读这个文件夹里的文件;没有就用 assets 里的内置小样本(英文没有样本,不装就没有补全)。
@@ -22,8 +23,9 @@ object DictStore {
     const val STROKE_FILE = "stroke.txt"
     const val ENGLISH_FILE = "english.txt"
     const val ENGLISH_BIGRAM_FILE = "english_bigram.txt"
+    const val GRAM_FILE = "gram.bin"
 
-    val ALL_FILES = listOf(PINYIN_FILE, STROKE_FILE, ENGLISH_FILE, ENGLISH_BIGRAM_FILE)
+    val ALL_FILES = listOf(PINYIN_FILE, STROKE_FILE, ENGLISH_FILE, ENGLISH_BIGRAM_FILE, GRAM_FILE)
 
     fun root(ctx: Context): File {
         val base = ctx.getExternalFilesDir(null) ?: ctx.filesDir
