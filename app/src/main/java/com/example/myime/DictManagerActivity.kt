@@ -54,7 +54,7 @@ class DictManagerActivity : Activity() {
         root.addView(
             foldNote(
                 "词库存放的文件夹(可手动部署,见下):\n" + DictStore.root(this).absolutePath + "\n\n" +
-                    "手动部署:把转换好的 pinyin.txt / stroke.txt / english.txt / english_bigram.txt 直接放进这个文件夹," +
+                    "手动部署:把转换好的 pinyin.txt / stroke.txt / english.txt / english_bigram.txt / gram.bin 直接放进这个文件夹," +
                     "或把原始文件放进其中的 raw/ 子文件夹后点「下载并安装」(下载失败时会用 raw/ 里已有的文件转换)。" +
                     "装好后回到输入框,键盘会自动重新加载。没装时拼音/笔画用内置小样本,英文页没有补全。",
                 selectable = true,
@@ -81,6 +81,12 @@ class DictManagerActivity : Activity() {
         addCard(
             root, DictPacks.ENGLISH, "英文词库",
             "Norvig 整理的谷歌语料词频:单词(前缀补全、纠错)+ 双词(下一个词联想),约 10 MB。",
+        )
+        addCard(
+            root, DictPacks.GRAM, "搭配模型(整句更准)",
+            "记录哪些字经常连在一起(数据:万象语法模型,CC BY 4.0,精简到前 5000 个常用词的搭配)。" +
+                "装了以后,长句拼音里 在建/再见、的/得 这类同音词会按上下文选对。没有默认下载地址," +
+                "请点「自定义来源」填入 gram.bin 的地址,或把 gram.bin 直接放进词库文件夹。",
         )
 
         // ---- 网络
@@ -317,6 +323,8 @@ class DictManagerActivity : Activity() {
             "已安装$c · ${sizeText(f.length())} · $date"
         } else if (pack == DictPacks.ENGLISH) {
             "未安装(英文页没有补全)"
+        } else if (pack == DictPacks.GRAM) {
+            "未安装(整句只按词频选词)"
         } else {
             "未安装(使用内置小样本)"
         }
@@ -348,6 +356,8 @@ class DictManagerActivity : Activity() {
     private fun customHint(pack: String): String = when (pack) {
         DictPacks.PINYIN ->
             "每行一个地址(http/https),按顺序合并。每个文件是 Rime 的 *.dict.yaml,或「词<Tab>拼音(音节空格分开)<Tab>词频」文本。"
+        DictPacks.GRAM ->
+            "填一行:搭配模型包 gram.bin 的下载地址(http/https)。文件头不对会被拒绝,不会覆盖现有的。"
         DictPacks.STROKE ->
             "第 1 行:笔画字表(Rime stroke.dict.yaml 格式)。\n第 2 行(可选):字频表(Rime 格式,用来决定常用字排前面)。\n第 3 行(可选):繁体字频表(Rime 格式,如朙月拼音,用来让常用的繁体字排前面)。"
         else ->
