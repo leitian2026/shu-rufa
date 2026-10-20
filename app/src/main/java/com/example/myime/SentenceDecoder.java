@@ -50,6 +50,9 @@ public final class SentenceDecoder {
     private static final double USER_BONUS = 3.0;     // 我打过的词
     private static final double CTX_BONUS = 2.0;      // 我常接在上一个词后面的词(只给第一个词)
     private static final double CHAIN_BONUS = 1.5;    // 整句里,后一个词是我常接在前一个词后面的
+    private static final double GRAM_WEIGHT = 0.4;    // 搭配模型(GramPack)给相邻两个词的分,乘上这个权重再加进整句分
+    private static final int GRAM_CAP = 12;           // 有搭配模型时,每个位置保留几条路径(上一个词不同,搭配分就不同)
+    private static final int GRAM_PER = 4;            // 有搭配模型时,每条边保留同音的几个词(的/得/地 都要留着比)
     private static final double NEG = -1e18;
     private static final String[] NO_ALTS = new String[0];
 
@@ -69,6 +72,7 @@ public final class SentenceDecoder {
     private final String[] compact;       // 每个词条的拼音连写(按词条号)
     private final String[] initialKeys;   // 已排序的首字母串
     private final int[] initialIds;
+    private volatile GramPack gram;       // 搭配模型(可没有),词库管理里装了才有;键盘服务在后台线程里换上
 
     public SentenceDecoder(String[] keys, int[] ids, String[] texts, int[] freqs, byte[] sylLens, int[] sylStart,
                            String[] compact, String[] initialKeys, int[] initialIds) {
@@ -84,6 +88,11 @@ public final class SentenceDecoder {
         long total = 0L;
         for (int f : freqs) total += Math.max(f, 1);
         this.logTotal = Math.log(Math.max(total, 1L));
+    }
+
+    /** 装上 / 换掉 / 去掉(null)搭配模型。之后的整句解码会用它给相邻两个词的搭配加分。 */
+    public void setGram(GramPack g) {
+        this.gram = g;
     }
 
     private static int lowerBound(String[] a, String target) {
@@ -276,6 +285,12 @@ public final class SentenceDecoder {
         int want = Math.max(k, 1);
         int cap = want == 1 ? 1 : want + 3;      // 每个位置保留几条路径
         int per = want == 1 ? 1 : 2;             // 每条边保留同音的几个词
+        final GramPack gp = gram;
+        if (gp != null) {
+            // 搭配分取决于上一个词,所以每个位置要多留几条「上一个词不同」的路径,每条边也要多留几个同音词,才有得比
+            cap = Math.max(cap, GRAM_CAP);
+            per = Math.max(per, GRAM_PER);
+        }
         int[] cnt = new int[n + 1];
         double[][] sc = new double[n + 1][cap];
         int[][] fr = new int[n + 1][cap];
@@ -322,19 +337,27 @@ public final class SentenceDecoder {
                 for (int r = 0; r < cnt[i]; r++) {
                     // 这条路径上一个词的「后面我常接什么」(只在有记录时才有;每个上一个词只查一次)
                     Map<String, Long> row = null;
-                    if (chain != null && i > 0) {
-                        String prevText = wd[i][r] < base ? texts[wd[i][r]] : sn.texts[wd[i][r] - base];
-                        row = rows.get(prevText);
-                        if (row == null && !rows.containsKey(prevText)) {
-                            row = chain.ctxRow(null, prevText);
-                            rows.put(prevText, row);
+                    String prevText = null;
+                    if ((chain != null || gp != null) && i > 0) {
+                        prevText = wd[i][r] < base ? texts[wd[i][r]] : sn.texts[wd[i][r] - base];
+                        if (chain != null) {
+                            row = rows.get(prevText);
+                            if (row == null && !rows.containsKey(prevText)) {
+                                row = chain.ctxRow(null, prevText);
+                                rows.put(prevText, row);
+                            }
                         }
                     }
                     for (int m = 0; m < ec; m++) {
                         double add = esc[m];
+                        String t = null;
                         if (row != null) {
-                            String t = eid[m] < base ? texts[eid[m]] : sn.texts[eid[m] - base];
+                            t = eid[m] < base ? texts[eid[m]] : sn.texts[eid[m] - base];
                             if (row.containsKey(t)) add += CHAIN_BONUS;
+                        }
+                        if (gp != null && prevText != null) {
+                            if (t == null) t = eid[m] < base ? texts[eid[m]] : sn.texts[eid[m] - base];
+                            add += GRAM_WEIGHT * gp.pairScore(prevText, t);
                         }
                         ins(cnt, sc, fr, fk, wd, cap, j, sc[i][r] + add, i, r, eid[m]);
                     }
