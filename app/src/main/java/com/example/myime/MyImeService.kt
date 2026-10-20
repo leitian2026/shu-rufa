@@ -313,7 +313,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         const val EDGE_ALLOW_MS = 800L    // 补弹键盘时放行多久
         const val EDGE_TAP_GAP_MS = 400L  // 列表页搜索框:第一次要求之后隔这么久再来的要求,算用户点的
         const val CLIP_SAVE_DELAY_MS = 2000L   // 新复制/删除之后多久写一次盘(期间的改动合并)
-        const val MAX_CLIP_CHARS = 10000   // 单条剪贴板最多保存的字数,更长的不收
+        const val MAX_CLIP_CHARS = 50000   // 单条剪贴板最多保存的字数,更长的不收(原来 10000,一份长说明文档就超了,收不进历史、编辑页的粘贴也粘不出来)
         const val MAX_CLIP_TOTAL = 300_000   // 剪贴板历史所有条目加起来最多多少字,超了挤掉最旧的(上锁的不挤)
         const val MAX_COPY_WORDS = 300     // 一次复制最多把多少个不同的英文词记成「选过的词」(防止整篇文章把真正选过的挤掉)
         const val TRANS_DEBOUNCE_MS = 600L   // 翻译框停多久才去翻:越长请求越少越省电,越短译文越跟手
@@ -1788,7 +1788,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         when (v) {
             "tab" -> docStart(ic)   // 原来的 Tab 键:现在是「页首」,跳到整段文字的开头(选择状态下 = 一路选到开头)
             "copy" -> copySelection(ic, cut = false)
-            "paste" -> clips.firstOrNull()?.let { pasteFromHistory(it) }   // 系统剪贴板是空的:粘贴输入法历史里最新的一条
+            "paste" -> pasteLatest()
             "cut" -> copySelection(ic, cut = true)
             "all" -> ic.performContextMenuAction(android.R.id.selectAll)
             "up" -> if (!(selecting && extendSelection(ic, "up"))) sendKey(KeyEvent.KEYCODE_DPAD_UP, meta)
@@ -1831,6 +1831,28 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
         }
         ic.performContextMenuAction(if (cut) android.R.id.cut else android.R.id.copy)
+    }
+
+    /**
+     * 编辑页「粘贴」键。先看系统剪贴板里现在有没有文字,有就直接输出——这样输入法没收进历史的内容也能粘:
+     * 密码管理器 / 谷歌验证器标了「敏感」的验证码(我们不存历史、也不清空),以及别的没收进来的内容。
+     * 这里读出来只输出,不存进历史、不记日志。系统剪贴板是空的(被清空了),才粘输入法历史里最新的一条。
+     * 读系统剪贴板不看敏感标记、也不限字数:是用户亲手点「粘贴」要粘的,和被动收进历史是两回事。
+     */
+    private fun pasteLatest() {
+        val sys = try {
+            val clip = (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
+            if (clip != null && clip.itemCount > 0 && clip.description.hasMimeType("text/*")) {
+                clip.getItemAt(0).coerceToText(this)?.toString()
+            } else null
+        } catch (e: Exception) {
+            null   // 读不到(例如不是默认输入法)就退回历史
+        }
+        if (!sys.isNullOrEmpty()) {
+            pasteFromHistory(sys)   // 名字叫 FromHistory,其实只是 commitText + 失败提示
+            return
+        }
+        clips.firstOrNull()?.let { pasteFromHistory(it) }
     }
 
     /** 把输入法历史里的一条输出到输入框。失败(没有输入连接,或 commitText 返回失败)弹提示,返回 false。 */
@@ -3112,7 +3134,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             val desc = clip.description
             if (!desc.hasMimeType("text/*")) return null
             if (desc.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true) {
-                if (notify) clipNotice("这次复制被来源应用标记为敏感内容(如密码),没有收进剪贴板历史")
+                if (notify) clipNotice("这次复制被来源应用标记为敏感内容(如验证码、密码),没有收进历史;要粘贴,到光标编辑页点「粘贴」")
                 return null
             }
             val text = clip.getItemAt(0).coerceToText(this)?.toString() ?: return null
