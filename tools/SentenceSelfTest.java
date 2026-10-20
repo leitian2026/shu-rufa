@@ -1,10 +1,10 @@
 // 整句解码(SentenceDecoder)的自测:不需要 Android,电脑上有 JDK 17+ 即可运行。
 // 在工程根目录执行:
-//   javac -encoding UTF-8 -d /tmp/senttest app/src/main/java/com/example/myime/{Syllabary,SafeFile,LearnShare,UserFreq,UserChain,Fuzzy,SentenceDecoder}.java \
+//   javac -encoding UTF-8 -d /tmp/senttest app/src/main/java/com/example/myime/{Syllabary,SafeFile,LearnShare,UserFreq,UserChain,UserWords,UserChars,Fuzzy,GramPack,SentenceDecoder}.java \
 //         tools/stub/com/example/myime/ErrorHint.java tools/SentenceSelfTest.java
 //   java -Dstdout.encoding=UTF-8 -cp /tmp/senttest SentenceSelfTest
 // 覆盖:整句切成词、没打完的尾巴、词库缺音节、用户分词符、我打过的词影响结果、只有一个词不出句;
-//       混拼(简拼 + 全拼、最后一个音节没打完、单音节词必须写全、分词符、其他整串候选);速度(20 万词条)。
+//       搭配模型(装上后同音词按上下文选、去掉后恢复);混拼(简拼 + 全拼、最后一个音节没打完、单音节词必须写全、分词符、其他整串候选);速度(20 万词条)。
 import com.example.myime.*;
 import java.io.*;
 import java.nio.file.*;
@@ -163,6 +163,29 @@ public class SentenceSelfTest {
         chain.learn("我们", "明天");
         List<SentenceDecoder.Result> longer = d.decodeTop("womenmingtianqukanshu", null, null, null, 3, null, chain);
         check(!longer.isEmpty() && longer.get(0).text.equals("我们明天去看书"), "有无关记录时长句不受影响");
+
+        // ---------------- 搭配模型(GramPack):相邻两个词能查到搭配就加分,同音词靠上下文选对
+        Map<String, Integer> gm = new HashMap<>();
+        gm.put("去事", 150000);      // 15.0 - 8.0 = 7.0 分,乘 0.4 权重
+        gm.put("事去", 150000);
+        gm.put("无关词", 150000);
+        d.setGram(GramPack.wrap(GramPack.build(gm)));
+        List<SentenceDecoder.Result> gq = d.decodeTop("qushi", null, null, null, 3);
+        check(!gq.isEmpty() && gq.get(0).text.equals("去事"), "搭配 去事 压过词频 去是 → " + SentenceDecoder.show(gq.isEmpty() ? null : gq.get(0)));
+        gq = d.decodeTop("shiqu", null, null, null, 3);
+        check(!gq.isEmpty() && gq.get(0).text.equals("事去"), "搭配 事去 → " + SentenceDecoder.show(gq.isEmpty() ? null : gq.get(0)));
+        r = d.decode("womenmingtianqukanshu", null, null, null);
+        check(r != null && r.text.equals("我们明天去看书"), "有搭配模型时长句照常 → " + SentenceDecoder.show(r));
+        gq = d.decodeTop("tianqihenhao", null, null, null, 1);
+        check(!gq.isEmpty() && gq.get(0).text.equals("天气很好"), "搭配里没有的词对不受影响 → " + SentenceDecoder.show(gq.isEmpty() ? null : gq.get(0)));
+        // 用户习惯仍然叠加:我常在 去 后面接 是,和搭配 去事 一起算,习惯 + 词频要能反超不大的搭配分时才赢——这里只验证两者都在起作用而不报错
+        chain.learn("去", "是");
+        gq = d.decodeTop("qushi", null, null, null, 3, null, chain);
+        check(!gq.isEmpty() && (gq.get(0).text.equals("去是") || gq.get(0).text.equals("去事")), "搭配 + 词接词同时存在 → " + SentenceDecoder.show(gq.isEmpty() ? null : gq.get(0)));
+        // 模糊音整句也走同一套(core 共用),这里只确认带搭配模型时不抛异常
+        d.setGram(null);
+        gq = d.decodeTop("qushi", null, null, null, 3);
+        check(!gq.isEmpty() && gq.get(0).text.equals("去是"), "去掉搭配模型后恢复词频结果 → " + SentenceDecoder.show(gq.isEmpty() ? null : gq.get(0)));
 
         // ---------------- 混拼
         r = d.decodeMixed("zgren", null, null, null);
