@@ -2,7 +2,7 @@
 // 在工程根目录执行:
 //   D=app/src/main/java/com/example/myime
 //   javac -encoding UTF-8 -d /tmp/fuzzytest $D/Syllabary.java $D/SafeFile.java $D/LearnShare.java $D/UserFreq.java $D/UserChain.java \
-//         $D/Fuzzy.java $D/SentenceDecoder.java tools/stub/com/example/myime/ErrorHint.java tools/FuzzySelfTest.java
+//         $D/Fuzzy.java $D/GramPack.java $D/SentenceDecoder.java tools/stub/com/example/myime/ErrorHint.java tools/FuzzySelfTest.java
 //   java -Dstdout.encoding=UTF-8 -cp /tmp/fuzzytest FuzzySelfTest
 // 覆盖:单个音节的折叠规则;输入折叠(音节边界、没打完的尾巴);规范形索引(z/zh、an/ang 等能互相查到);
 //       模糊音整句(写法错了也能拼出整句,codes 仍是原输入);没开规则时不改任何东西;建索引和查询的耗时。
