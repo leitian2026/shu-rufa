@@ -301,7 +301,7 @@ class ClipboardPanelView(
 
     /** 最多两行,放不下时第二行末尾加省略号。 */
     private fun wrap(text: String, maxW: Float): List<String> {
-        // 一条最长 10000 字,但只画两行:只取开头一段来处理,不然 500 条每次重排版都要把全部文字扫一遍
+        // 一条最长 50000 字,但只画两行:只取开头一段来处理,不然 500 条每次重排版都要把全部文字扫一遍
         val truncated = text.length > PREVIEW_CHARS
         val t = (if (truncated) text.substring(0, PREVIEW_CHARS) else text).replace('\n', ' ').replace('\t', ' ').trim()
         val out = ArrayList<String>(2)
@@ -482,7 +482,7 @@ class ClipboardPanelView(
         const val ID_DEL = 5
         const val ID_TRASH = 6
         const val ID_WIPE = 7
-        const val NOTE = "有的 app 粘贴不了:关掉上面的开关,点条目输出到输入框,再选中复制一次"
+        const val NOTE = "验证码等敏感内容不存历史,在编辑页点「粘贴」;粘不了的 app:关上面开关再复制"
         const val ROWS_PER_SCREEN = 9f
         const val PREVIEW_CHARS = 400   // 两行最多放得下的字数远小于这个
     }
