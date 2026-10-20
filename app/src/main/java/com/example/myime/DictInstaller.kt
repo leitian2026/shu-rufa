@@ -23,8 +23,9 @@ object DictPacks {
     const val STROKE = "stroke"
     const val PINYIN = "pinyin"
     const val ENGLISH = "english"
+    const val GRAM = "gram"
 
-    val ALL = listOf(STROKE, PINYIN, ENGLISH)
+    val ALL = listOf(STROKE, PINYIN, ENGLISH, GRAM)
 
     private const val FREQ_FILE = "8105.dict.yaml"
     private const val TRAD_FILE = "luna_pinyin.dict.yaml"
@@ -63,6 +64,8 @@ object DictPacks {
             Source("count_1w.txt", norvig("count_1w.txt")),
             Source("count_2w.txt", norvig("count_2w.txt"), optional = true),
         )
+        // 搭配模型:一个现成的二进制包(gram.bin),没有内置下载地址,要在「自定义来源」里填(见 README)
+        GRAM -> emptyList()
         else -> emptyList()
     }
 
@@ -84,6 +87,7 @@ object DictPacks {
         STROKE -> listOf(DictStore.STROKE_FILE)
         PINYIN -> listOf(DictStore.PINYIN_FILE)
         ENGLISH -> listOf(DictStore.ENGLISH_FILE, DictStore.ENGLISH_BIGRAM_FILE)
+        GRAM -> listOf(DictStore.GRAM_FILE)
         else -> emptyList()
     }
 
@@ -196,6 +200,9 @@ object DictInstaller {
         val raw = DictStore.raw(ctx)
         val custom = DictConfig.customUrls(ctx, pack).isNotEmpty()
         val sources = DictPacks.sources(ctx, pack)
+        if (pack == DictPacks.GRAM && sources.isEmpty()) {
+            throw IOException("搭配模型没有默认下载地址:点「自定义来源」填入 gram.bin 的下载地址,或把 gram.bin 直接放进词库文件夹")
+        }
         val notes = ArrayList<String>()
         if (custom) {
             // 自定义来源:清掉以前多出来的自定义原始文件,避免地址变少后旧文件混进来
@@ -267,6 +274,27 @@ object DictInstaller {
                     DictStore.file(ctx, DictStore.ENGLISH_BIGRAM_FILE),
                     DictConfig.englishCap(ctx), cancel, conv,
                 )
+            }
+            DictPacks.GRAM -> {
+                // 下载到的就是成品:检查文件头,通过了再换上(先写临时文件再改名,装到一半不会留下坏文件)
+                val src = rawFile(DictPacks.customName(pack, 0)) ?: throw IOException("缺少 raw/${DictPacks.customName(pack, 0)}")
+                conv("检查搭配模型", 0.2f)
+                val entries = try {
+                    GramPack.verify(src)
+                } catch (e: IOException) {
+                    src.delete()
+                    throw IOException("下载到的不是可用的搭配模型包(${e.message})")
+                }
+                val dest = DictStore.file(ctx, DictStore.GRAM_FILE)
+                val part = File(dest.parentFile, dest.name + ".part")
+                src.copyTo(part, overwrite = true)
+                if (dest.exists()) dest.delete()
+                if (!part.renameTo(dest)) {
+                    part.copyTo(dest, overwrite = true)
+                    part.delete()
+                }
+                src.delete()   // 成品已经在词库文件夹里,不用在 raw/ 里再留一份
+                entries
             }
             else -> throw IOException("未知的词库包: $pack")
         }
