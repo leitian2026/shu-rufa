@@ -2,10 +2,13 @@ package com.example.myime
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.OpenableColumns
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -16,14 +19,16 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 词库管理:下载笔画 / 拼音 / 英文词库,存进专门的文件夹,键盘下次弹出时自动加载。
- * 这是本应用里唯一联网的地方,只在点「下载并安装」时才访问网络。
+ * 词库管理:下载笔画 / 拼音 / 英文词库和搭配模型(也可以从手机本地任意位置导入),存进专门的文件夹,键盘下次弹出时自动加载。
+ * 这是本应用里唯一联网的地方,只在点「下载并安装」时才访问网络;「从本地导入」不联网。
  */
 class DictManagerActivity : Activity() {
 
@@ -32,6 +37,7 @@ class DictManagerActivity : Activity() {
         lateinit var source: TextView
         lateinit var bar: ProgressBar
         lateinit var install: Button
+        lateinit var importBtn: Button
         lateinit var delete: Button
     }
 
@@ -56,7 +62,8 @@ class DictManagerActivity : Activity() {
                 "词库存放的文件夹(可手动部署,见下):\n" + DictStore.root(this).absolutePath + "\n\n" +
                     "手动部署:把转换好的 pinyin.txt / stroke.txt / english.txt / english_bigram.txt / gram.bin 直接放进这个文件夹," +
                     "或把原始文件放进其中的 raw/ 子文件夹后点「下载并安装」(下载失败时会用 raw/ 里已有的文件转换)。" +
-                    "装好后回到输入框,键盘会自动重新加载。没装时拼音/笔画用内置小样本,英文页没有补全。",
+                    "装好后回到输入框,键盘会自动重新加载。没装时拼音/笔画用内置小样本,英文页没有补全。\n\n" +
+                    "也可以点每张卡片里的「从本地导入」,在手机任意位置选词库文件(可多选,zip 会自动展开),导入后自动转换并装好。",
                 selectable = true,
             ).apply { setPadding(0, dpi(4f), 0, 0) },
         )
@@ -86,7 +93,7 @@ class DictManagerActivity : Activity() {
             root, DictPacks.GRAM, "搭配模型(整句更准)",
             "记录哪些字经常连在一起(数据:万象语法模型,CC BY 4.0,精简到前 5000 个常用词的搭配)。" +
                 "装了以后,长句拼音里 在建/再见、的/得 这类同音词会按上下文选对。没有默认下载地址," +
-                "请点「自定义来源」填入 gram.bin 的地址,或把 gram.bin 直接放进词库文件夹。",
+                "请点「从本地导入」选手机上的 gram.bin(zip 也行),或在「自定义来源」填 gram.bin 的地址。",
         )
 
         // ---- 网络
@@ -294,10 +301,14 @@ class DictManagerActivity : Activity() {
             }
         }
         val customBtn = smallButton("自定义来源").apply { setOnClickListener { showCustomDialog(pack, title) } }
+        card.importBtn = smallButton("从本地导入").apply { setOnClickListener { pickLocal(pack) } }
         row.addView(card.install, smallButtonParams())
         row.addView(customBtn, smallButtonParams())
         row.addView(card.delete, smallButtonParams())
         box.addView(row)
+        val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row2.addView(card.importBtn, smallButtonParams())
+        box.addView(row2)
 
         val lp = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -343,6 +354,7 @@ class DictManagerActivity : Activity() {
             card.bar.visibility = if (mine) View.VISIBLE else View.GONE
             card.install.text = if (mine) "取消" else if (installed) "重新下载并更新" else "下载并安装"
             card.install.isEnabled = busy == null || mine
+            card.importBtn.isEnabled = busy == null
             card.delete.isEnabled = busy == null && installed
         }
         capButton.text = "拼音词条上限:${DictConfig.pinyinCap(this) / 10000} 万(点击切换,重新安装后生效;单字不受限)"
@@ -462,7 +474,131 @@ class DictManagerActivity : Activity() {
         }.also { it.name = "dict-install" }.start()
     }
 
+    // ------------------------------------------------------------ 从本地导入
+
+    private fun importHint(pack: String): String = when (pack) {
+        DictPacks.GRAM -> "选 gram.bin(也可以选压缩过的 zip)。"
+        DictPacks.PINYIN -> "可以多选:Rime 的 *.dict.yaml,或「词<Tab>拼音<Tab>词频」文本,也可以是它们的 zip,按顺序合并。"
+        DictPacks.STROKE -> "可以多选:笔画字表(文件名带 stroke 的排最前),可选字频表、繁体字频表;也可以是 zip。"
+        else -> "可以多选:单词词频(词<Tab>次数),可选双词词频(文件名带 2w 或 bigram);也可以是 zip。"
+    }
+
+    /** 打开系统的文件选择器,可以在手机上任意位置选文件(允许多选)。 */
+    private fun pickLocal(pack: String) {
+        if (busyPack != null) return
+        importPack = pack
+        Toast.makeText(this, importHint(pack), Toast.LENGTH_LONG).show()
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("*/*")
+            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            startActivityForResult(i, REQ_IMPORT)
+        } catch (e: Exception) {
+            importPack = null
+            Toast.makeText(this, "这台手机没有文件选择器", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_IMPORT) return
+        val pack = importPack
+        importPack = null
+        if (pack == null || resultCode != RESULT_OK || data == null) return
+        val uris = ArrayList<Uri>()
+        val clip = data.clipData
+        if (clip != null) {
+            for (k in 0 until clip.itemCount) clip.getItemAt(k).uri?.let { uris.add(it) }
+        } else {
+            data.data?.let { uris.add(it) }
+        }
+        if (uris.isEmpty()) return
+        startImport(pack, uris)
+    }
+
+    /** 文件显示名(选择器里看到的名字);查不到用 uri 的最后一段。 */
+    private fun displayName(uri: Uri): String {
+        try {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val n = c.getString(0)
+                    if (!n.isNullOrBlank()) return n
+                }
+            }
+        } catch (e: Exception) {
+            // 查不到就用下面的备用名
+        }
+        return uri.lastPathSegment?.substringAfterLast('/') ?: "file"
+    }
+
+    private fun startImport(pack: String, uris: List<Uri>) {
+        if (busyPack != null) return
+        busyPack = pack
+        cancelFlag.set(false)
+        notes.remove(pack)
+        refresh()
+        val ctx = applicationContext
+        val resolver = ctx.contentResolver
+        // 文件名要在界面线程里先取好(选择器给的临时授权跟着这个页面)
+        val named = uris.map { it to displayName(it) }
+        Thread {
+            val dir = File(ctx.cacheDir, "import_pick")
+            val msg: String = try {
+                dir.deleteRecursively()
+                dir.mkdirs()
+                val picked = ArrayList<File>()
+                for ((idx, p) in named.withIndex()) {
+                    val (uri, name) = p
+                    if (cancelFlag.get()) throw CancelledException()
+                    ui.post { active?.showProgress(pack, "读取 $name", 0.05f * idx / named.size) }
+                    // 每个文件放在自己的子文件夹里:保留原文件名(名字里的 stroke / 2w 等提示还在),也不会重名
+                    val safe = name.replace('/', '_').replace('\\', '_').ifBlank { "file" }
+                    val sub = File(dir, idx.toString())
+                    sub.mkdirs()
+                    val dest = File(sub, safe)
+                    (resolver.openInputStream(uri) ?: throw IOException("打不开 $name")).use { input ->
+                        dest.outputStream().use { output ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                if (cancelFlag.get()) throw CancelledException()
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                output.write(buf, 0, n)
+                            }
+                        }
+                    }
+                    picked.add(dest)
+                }
+                DictInstaller.importLocal(ctx, pack, picked, cancelFlag) { text, frac ->
+                    ui.post { active?.showProgress(pack, text, frac) }
+                }
+            } catch (e: CancelledException) {
+                "已取消"
+            } catch (e: OutOfMemoryError) {
+                "内存不足,请把拼音词条上限调低后重试"
+            } catch (e: Throwable) {
+                "导入失败:" + (e.message ?: e.javaClass.simpleName)
+            } finally {
+                dir.deleteRecursively()
+            }
+            ui.post {
+                busyPack = null
+                notes[pack] = msg
+                active?.refresh()
+            }
+        }.also { it.name = "dict-import" }.start()
+    }
+
     private companion object {
+        const val REQ_IMPORT = 41
+
+        /** 正在等文件选择器结果的词库包(选择器是另一个页面,页面重建也不丢)。 */
+        @Volatile
+        var importPack: String? = null
+
         // 安装线程在整个进程里只有一个;页面被关掉再打开,还能看到进行中的状态
         @Volatile
         var busyPack: String? = null
