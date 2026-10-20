@@ -59,6 +59,7 @@ run_test StrokeWordsSelfTest "StrokeIndex StrokeWords TextFilter WordScore"
 run_test StrokeRankSelfTest "StrokeRank"
 run_test TypoSelfTest "Syllabary Typo"
 run_test GramPackSelfTest "GramPack"
+run_test DictZipSelfTest "DictZip"
 run_test SentenceSelfTest "$PIN Fuzzy GramPack SentenceDecoder"
 run_test FuzzySelfTest "$PIN Fuzzy GramPack SentenceDecoder"
 run_test UserWordsSelfTest "$PIN Fuzzy GramPack SentenceDecoder" "" SentenceSelfTest
