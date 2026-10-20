@@ -58,12 +58,13 @@ run_test StrokeFilterSelfTest "StrokeIndex"
 run_test StrokeWordsSelfTest "StrokeIndex StrokeWords TextFilter WordScore"
 run_test StrokeRankSelfTest "StrokeRank"
 run_test TypoSelfTest "Syllabary Typo"
-run_test SentenceSelfTest "$PIN Fuzzy SentenceDecoder"
-run_test FuzzySelfTest "$PIN Fuzzy SentenceDecoder"
-run_test UserWordsSelfTest "$PIN Fuzzy SentenceDecoder" "" SentenceSelfTest
+run_test GramPackSelfTest "GramPack"
+run_test SentenceSelfTest "$PIN Fuzzy GramPack SentenceDecoder"
+run_test FuzzySelfTest "$PIN Fuzzy GramPack SentenceDecoder"
+run_test UserWordsSelfTest "$PIN Fuzzy GramPack SentenceDecoder" "" SentenceSelfTest
 run_test WordsSyncSelfTest "$PIN"
 run_test CharsSelfTest "$PIN"
-run_test PerfSelfTest "$PIN Fuzzy Typo SentenceDecoder" "" SentenceSelfTest
+run_test PerfSelfTest "$PIN Fuzzy Typo GramPack SentenceDecoder" "" SentenceSelfTest
 
 
 
