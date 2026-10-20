@@ -2,7 +2,7 @@
 // 在工程根目录执行:
 //   D=app/src/main/java/com/example/myime
 //   javac -encoding UTF-8 -d /tmp/uwtest $D/Syllabary.java $D/SafeFile.java $D/LearnShare.java $D/UserFreq.java $D/UserChain.java \
-//         $D/UserWords.java $D/Fuzzy.java $D/SentenceDecoder.java tools/stub/com/example/myime/ErrorHint.java tools/UserWordsSelfTest.java
+//         $D/UserWords.java $D/Fuzzy.java $D/GramPack.java $D/SentenceDecoder.java tools/stub/com/example/myime/ErrorHint.java tools/UserWordsSelfTest.java
 //   java -Dstdout.encoding=UTF-8 -cp /tmp/uwtest UserWordsSelfTest
 // 覆盖:单字拼成的词第一次可用、含多字词的第二次才可用;精确/补全查询与排序;保存再读;清除;
 //       坏数据行;上限淘汰;非法参数;整句里用到我造的词(含分词符);速度。
