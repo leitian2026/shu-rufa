@@ -118,10 +118,19 @@ class PinyinEngine(
     private val compactKeys: Array<String>
     internal val compactOf: Array<String> = compact
 
+    /** 搭配模型(词库管理里装了才有)。整句转换时给相邻两个词的搭配加分;可以随时换上 / 去掉。 */
+    @Volatile var gramPack: GramPack? = null
+        set(v) {
+            field = v
+            if (sentenceLazy.isInitialized()) sentenceLazy.value.setGram(v)
+        }
+
     // 整句输入:第一次要用时才建(只算一个总词频),不输长句就不占任何东西
-    private val sentence: SentenceDecoder by lazy {
+    private val sentenceLazy = lazy {
         SentenceDecoder(compactKeys, compactIds, texts, freqs, sylLens, sylStart, compactOf, initialKeys, initialIds)
+            .also { it.setGram(gramPack) }
     }
+    private val sentence: SentenceDecoder get() = sentenceLazy.value
 
     /** 最近一次算出的整句候选和它们对应的输入(选了其中一句时,按词分别学习)。 */
     @Volatile private var lastSentences: List<SentenceDecoder.Result> = emptyList()
@@ -997,7 +1006,24 @@ object DictLoader {
         return if (f.isFile && f.length() > 0) f else null
     }
 
-    fun loadPinyin(context: Context): Engine? = try {
+    /** 拼音引擎;装了搭配模型(gram.bin)就一并挂上,整句转换会用到。 */
+    fun loadPinyin(context: Context): Engine? {
+        val e = loadPinyinCore(context)
+        (e as? PinyinEngine)?.gramPack = loadGram(context)
+        return e
+    }
+
+    private fun loadGram(context: Context): GramPack? = try {
+        val f = userFile(context, DictStore.GRAM_FILE)
+        ErrorHint.clear("gram")
+        if (f == null) null else GramPack.open(f)
+    } catch (e: Throwable) {
+        AppLog.w(TAG, "load gram failed", e)
+        ErrorHint.set("gram", ErrorHint.of("搭配模型加载失败(整句只按词频选词)", e))
+        null
+    }
+
+    private fun loadPinyinCore(context: Context): Engine? = try {
         val src = userFile(context, DictStore.PINYIN_FILE)
         if (src == null) ErrorHint.set("pinyin", "没装拼音词库,现在只有内置小样本(词库管理里下载)") else ErrorHint.clear("pinyin")
         val user = UserData.pinyin(context)
