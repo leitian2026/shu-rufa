@@ -201,7 +201,7 @@ object DictInstaller {
         val custom = DictConfig.customUrls(ctx, pack).isNotEmpty()
         val sources = DictPacks.sources(ctx, pack)
         if (pack == DictPacks.GRAM && sources.isEmpty()) {
-            throw IOException("搭配模型没有默认下载地址:点「自定义来源」填入 gram.bin 的下载地址,或把 gram.bin 直接放进词库文件夹")
+            throw IOException("搭配模型没有默认下载地址:点「从本地导入」选手机上的 gram.bin,或在「自定义来源」填它的下载地址")
         }
         val notes = ArrayList<String>()
         if (custom) {
@@ -276,22 +276,14 @@ object DictInstaller {
                 )
             }
             DictPacks.GRAM -> {
-                // 下载到的就是成品:检查文件头,通过了再换上(先写临时文件再改名,装到一半不会留下坏文件)
+                // 下载到的就是成品:检查文件头,通过了再换上
                 val src = rawFile(DictPacks.customName(pack, 0)) ?: throw IOException("缺少 raw/${DictPacks.customName(pack, 0)}")
                 conv("检查搭配模型", 0.2f)
                 val entries = try {
-                    GramPack.verify(src)
+                    installGramFile(ctx, src)
                 } catch (e: IOException) {
                     src.delete()
                     throw IOException("下载到的不是可用的搭配模型包(${e.message})")
-                }
-                val dest = DictStore.file(ctx, DictStore.GRAM_FILE)
-                val part = File(dest.parentFile, dest.name + ".part")
-                src.copyTo(part, overwrite = true)
-                if (dest.exists()) dest.delete()
-                if (!part.renameTo(dest)) {
-                    part.copyTo(dest, overwrite = true)
-                    part.delete()
                 }
                 src.delete()   // 成品已经在词库文件夹里,不用在 raw/ 里再留一份
                 entries
@@ -301,6 +293,91 @@ object DictInstaller {
         DictConfig.setMeta(ctx, pack, count)
         progress("完成", 1f)
         return "已安装 $count 条" + if (notes.isEmpty()) "" else "\n" + notes.joinToString("\n")
+    }
+
+    /** 把一个搭配模型成品装进词库文件夹:先检查文件头(不对抛 IOException),再写临时文件、改名,装到一半不会留下坏文件。返回条目数。 */
+    private fun installGramFile(ctx: Context, src: File): Int {
+        val entries = GramPack.verify(src)
+        val dest = DictStore.file(ctx, DictStore.GRAM_FILE)
+        val part = File(dest.parentFile, dest.name + ".part")
+        src.copyTo(part, overwrite = true)
+        if (dest.exists()) dest.delete()
+        if (!part.renameTo(dest)) {
+            part.copyTo(dest, overwrite = true)
+            part.delete()
+        }
+        return entries
+    }
+
+    /**
+     * 从手机上的本地文件导入词库并装好(词库管理页的「从本地导入」)。picked 是用户选的文件,已经复制到缓存文件夹。
+     * zip 会先展开,所以把 gram.bin 或一批 *.dict.yaml 压成 zip 传到手机也行。
+     * 各词库包要的文件(和「自定义来源」一样):
+     *   拼音:一个或多个 Rime *.dict.yaml,或「词<Tab>拼音(音节空格分开)<Tab>词频」文本,按顺序合并
+     *   笔画:笔画字表(文件名带 stroke 的排最前),可选字频表、繁体字频表(Rime 格式)
+     *   英文:单词词频(词<Tab>次数),可选双词词频(文件名带 2w 或 bigram 的当双词表)
+     *   搭配:gram.bin(检查文件头,不对不会覆盖现有的)
+     * 装好后键盘下次弹出时自动重新加载。返回给界面显示的一句话。耗时,要在后台线程调用。
+     */
+    fun importLocal(ctx: Context, pack: String, picked: List<File>, cancel: AtomicBoolean, progress: Progress): String {
+        val work = File(ctx.cacheDir, "import_unzip")
+        work.deleteRecursively()
+        work.mkdirs()
+        try {
+            val files = ArrayList<File>()
+            for (f in picked) {
+                if (DictZip.isZip(f)) {
+                    progress("展开 ${f.name}", 0.05f)
+                    files.addAll(DictZip.expand(f, work, 2L shl 30))
+                } else {
+                    files.add(f)
+                }
+            }
+            if (files.isEmpty()) throw IOException("选的文件里没有可用的内容")
+            val conv: Progress = { msg, f -> progress(msg, 0.1f + 0.9f * f) }
+            val count: Int = when (pack) {
+                DictPacks.GRAM -> {
+                    conv("检查搭配模型", 0.2f)
+                    val good = files.firstOrNull {
+                        try {
+                            GramPack.verify(it)
+                            true
+                        } catch (e: IOException) {
+                            false
+                        }
+                    } ?: throw IOException("选的文件里没有可用的搭配模型包(gram.bin)")
+                    installGramFile(ctx, good)
+                }
+                DictPacks.PINYIN -> DictConvert.buildPinyin(
+                    files, emptyList(), DictStore.file(ctx, DictStore.PINYIN_FILE),
+                    DictConfig.pinyinCap(ctx), cancel, conv, minMainSingles = 0,
+                )
+                DictPacks.STROKE -> {
+                    val s = files.sortedBy { if (it.name.contains("stroke", ignoreCase = true)) 0 else 1 }
+                    DictConvert.buildStroke(
+                        s[0], s.getOrNull(1), DictStore.file(ctx, DictStore.STROKE_FILE), cancel, conv,
+                        tradFile = s.getOrNull(2),
+                    )
+                }
+                DictPacks.ENGLISH -> {
+                    val s = files.sortedBy {
+                        if (it.name.contains("2w", ignoreCase = true) || it.name.contains("bigram", ignoreCase = true)) 1 else 0
+                    }
+                    DictConvert.buildEnglish(
+                        s[0], s.getOrNull(1),
+                        DictStore.file(ctx, DictStore.ENGLISH_FILE),
+                        DictStore.file(ctx, DictStore.ENGLISH_BIGRAM_FILE),
+                        DictConfig.englishCap(ctx), cancel, conv,
+                    )
+                }
+                else -> throw IOException("未知的词库包: $pack")
+            }
+            DictConfig.setMeta(ctx, pack, count)
+            progress("完成", 1f)
+            return "已导入 $count 条"
+        } finally {
+            work.deleteRecursively()
+        }
     }
 
     fun delete(ctx: Context, pack: String) {
