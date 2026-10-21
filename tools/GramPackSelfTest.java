@@ -30,7 +30,7 @@ public class GramPackSelfTest {
         check(g.lookup("在建") == 0, "没有的键 在建 = 0");
         check(g.lookup("我们明") == 0, "前缀不是键 = 0");
 
-        // 词对搭配分:取前词末尾 1~3 个字 + 后词开头 1~3 个字的最大值
+        // 词对搭配分:取前词末尾 1~2 个字 + 后词开头 1~2 个字的最大值
         check(Math.abs(g.pairScore("我们", "明天") - (18.2 - 8.0)) < 1e-9, "我们+明天 → 命中 我们明天:" + g.pairScore("我们", "明天"));
         check(Math.abs(g.pairScore("明天", "去") - (15.0 - 8.0)) < 1e-9, "明天+去 → 命中 明天去:" + g.pairScore("明天", "去"));
         check(g.pairScore("在", "建") == 0.0, "在+建 没有搭配 = 0");
@@ -68,6 +68,27 @@ public class GramPackSelfTest {
         double rate = fp / (double) tries;
         System.out.println("   误判 " + fp + " / " + tries + " = " + String.format("%.4f%%", rate * 100) + "(每桶约 " + (600_000 >> 20) + " 条,条目少所以更低)");
         check(rate < 0.001, "误判率低于 0.1%");
+
+        // 词对分数 = 逐个组合 lookup 的结果(验证接着算的哈希和整串哈希一致、缓存不串味):随机 2 万对,每对查两次
+        Random rr = new Random(11);
+        List<String> keysL = new ArrayList<>(big.keySet());
+        int diff = 0;
+        for (int i = 0; i < 20_000; i++) {
+            String k = keysL.get(rr.nextInt(keysL.size()));
+            int cut = 1 + rr.nextInt(k.length() - 1);
+            String w1 = (rr.nextBoolean() ? randKey(rr).substring(0, 1) : "") + k.substring(0, cut);
+            String w2 = k.substring(cut) + (rr.nextBoolean() ? randKey(rr).substring(0, 1) : "");
+            int best = 0;
+            for (int a2 = 1; a2 <= 2 && a2 <= w1.length(); a2++)
+                for (int b2 = 1; b2 <= 2 && b2 <= w2.length(); b2++)
+                    best = Math.max(best, gb.lookup(w1.substring(w1.length() - a2) + w2.substring(0, b2)));
+            double want = Math.max(0.0, best / 10.0 - GramPack.SCORE_FLOOR);
+            if (Math.abs(gb.pairScore(w1, w2) - want) > 1e-9 || Math.abs(gb.pairScore(w1, w2) - want) > 1e-9) diff++;
+        }
+        check(diff == 0, "pairScore 与逐个组合 lookup 一致(含缓存命中),不一致 " + diff);
+        // 缓存重复命中的速度:同一对词
+        check(Math.abs(g.pairScore("我们", "明天") - g.pairScore("我们", "明天")) < 1e-12, "同一对词两次结果相同(缓存)");
+        check(GramPack.MAX_KEY_CHARS == 4, "查询用的键最长 4 个字,打包时更长的丢掉");
 
         // 速度:100 万次词对查询
         long t0 = System.nanoTime();
