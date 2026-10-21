@@ -192,7 +192,7 @@ class CandidateBarView(
     private fun applyMetrics() {
         val wide = context.isWide()
         stripH = context.dpf(if (wide) 37f else 26f)
-        chunkH = context.dpf(if (wide) 40f else 34f)
+        chunkH = if (BarRows.chunk) context.dpf(if (wide) 40f else 34f) else 0f
         candTop = stripH + chunkH
         rowH = context.dpf(if (wide) 50f else 44f)
         inset = context.dpf(if (wide) 31f else 8f)
