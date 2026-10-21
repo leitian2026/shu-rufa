@@ -70,6 +70,23 @@ public class DictZipSelfTest {
         File empty = zipOf(dir, "empty.zip", new String[][] {{"d/", ""}});
         check(DictZip.expand(empty, new File(dir, "out3"), 1000).isEmpty(), "只有目录的 zip 展开为空");
 
+        // 分段接起来:part10 要排在 part2 后面,内容按顺序连起来
+        File pd = new File(dir, "parts");
+        pd.mkdirs();
+        List<File> parts = new ArrayList<>();
+        for (int i = 1; i <= 11; i++) {
+            File pf = new File(pd, "gram.bin.part" + i);
+            Files.write(pf.toPath(), ("<" + i + ">").getBytes(StandardCharsets.UTF_8));
+            parts.add(pf);
+        }
+        Collections.shuffle(parts, new Random(3));
+        File joined = DictZip.join(parts, new File(dir, "joined.bin"));
+        String got = new String(Files.readAllBytes(joined.toPath()), StandardCharsets.UTF_8);
+        check(got.equals("<1><2><3><4><5><6><7><8><9><10><11>"), "分段按数字顺序接起来(part10 在 part2 后):" + got);
+        boolean one = false;
+        try { DictZip.join(parts.subList(0, 1), new File(dir, "j1.bin")); } catch (IOException e) { one = true; }
+        check(one, "只有一段时拒绝接");
+
         System.out.println(fails == 0 ? "ALL PASS" : ("FAILED " + fails));
         System.exit(fails == 0 ? 0 : 1);
     }
