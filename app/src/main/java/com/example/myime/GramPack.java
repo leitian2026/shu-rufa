@@ -11,7 +11,7 @@ import java.nio.channels.FileChannel;
 /**
  * 搭配模型包(纯 JDK,可脱离手机测试,见 tools/GramPackSelfTest.java)。
  *
- * 里面存的是「哪些汉字串经常连着出现」:键是一小段汉字(2~6 个字,通常是前一个词的末尾几个字 + 后一个词开头几个字),
+ * 里面存的是「哪些汉字串经常连着出现」:键是一小段汉字(2~4 个字,通常是前一个词的末尾 1~2 个字 + 后一个词开头 1~2 个字),
  * 值是一个字节(1~255,越大越常见)。数据来自万象语法模型(CC BY 4.0),在电脑上抽取、剪枝后用 BuildGramPack 打包。
  * 整句解码时,相邻两个词如果能在这里查到搭配,整句就加一点分(见 SentenceDecoder.GRAM_WEIGHT),
  * 所以「在建 / 再见」「的 / 得」这类同音词能靠上下文选对。
@@ -39,9 +39,14 @@ public final class GramPack {
 
     /** 一对词之间的搭配分:值 / 10 再减去这个数,不到 0 的当 0(原始值是 ln(分)×10000,字节值 = 原始值 / 1000)。 */
     public static final double SCORE_FLOOR = 8.0;
-    private static final int MAX_SIDE = 3;   // 前一个词取末尾最多几个字、后一个词取开头最多几个字
+    private static final int MAX_SIDE = 2;   // 前一个词取末尾最多几个字、后一个词取开头最多几个字
+    /** 查询时最长会用到几个字的键;更长的搭配永远查不到,打包时直接丢掉(BuildGramPack 用)。 */
+    public static final int MAX_KEY_CHARS = 2 * MAX_SIDE;
+    private static final int PAIR_CACHE = 1 << 13;   // 词对分数缓存的格数(直接映射,不分配对象)
 
     private final ByteBuffer buf;
+    /** 词对 → 最大字节值 的小缓存:打字时每按一个键整句重算一遍,前面的词对大多一样,不用再查文件。 */
+    private final java.util.concurrent.atomic.AtomicLongArray pairCache = new java.util.concurrent.atomic.AtomicLongArray(PAIR_CACHE);
     private final int bucketBits;
     private final int count;
     private final int entriesOff;
@@ -111,20 +116,6 @@ public final class GramPack {
         return mix(h);
     }
 
-    /** a 从 aFrom 到结尾 + b 从开头到 bTo 拼起来的哈希(不真的拼字符串)。 */
-    private static long hashJoin(String a, int aFrom, String b, int bTo) {
-        long h = FNV_OFFSET;
-        for (int i = aFrom; i < a.length(); i++) {
-            h ^= a.charAt(i);
-            h *= FNV_PRIME;
-        }
-        for (int i = 0; i < bTo; i++) {
-            h ^= b.charAt(i);
-            h *= FNV_PRIME;
-        }
-        return mix(h);
-    }
-
     /** 哈希 → 桶号。 */
     public static int bucketOf(long h, int bits) {
         return (int) (h >>> (64 - bits));
@@ -160,23 +151,56 @@ public final class GramPack {
 
     /**
      * 前一个词 w1 和后一个词 w2 相连的搭配分(≥ 0,没有搭配就是 0)。
-     * 取 w1 末尾 1~3 个字 与 w2 开头 1~3 个字 的所有组合去查,取最大的:
-     * 分 = 字节值 / 10 - SCORE_FLOOR,小于 0 记 0。
+     * 取 w1 末尾 1~2 个字 与 w2 开头 1~2 个字 的所有组合去查,取最大的:
+     * 分 = 字节值 / 10 - SCORE_FLOOR,小于 0 记 0。结果缓存在一个小数组里(同一对词反复出现不重复查)。
      */
     public double pairScore(String w1, String w2) {
         int n1 = w1.length();
         int n2 = w2.length();
         if (n1 == 0 || n2 == 0) return 0.0;
-        int best = 0;
-        for (int a = 1; a <= MAX_SIDE && a <= n1; a++) {
-            int from = n1 - a;
-            for (int b = 1; b <= MAX_SIDE && b <= n2; b++) {
-                int v = lookupHash(hashJoin(w1, from, w2, b));
-                if (v > best) best = v;
-            }
+        // 缓存的键:两个词整串的哈希(中间隔一个分隔符,免得 AB+C 和 A+BC 混了)
+        long k = FNV_OFFSET;
+        for (int i = 0; i < n1; i++) {
+            k ^= w1.charAt(i);
+            k *= FNV_PRIME;
+        }
+        k ^= 0x1F;
+        k *= FNV_PRIME;
+        for (int i = 0; i < n2; i++) {
+            k ^= w2.charAt(i);
+            k *= FNV_PRIME;
+        }
+        k = mix(k);
+        int slot = (int) (k >>> 32) & (PAIR_CACHE - 1);
+        long e = pairCache.get(slot);
+        int best;
+        if (e != 0L && (e >>> 16) == (k >>> 16)) {
+            best = (int) (e & 0xFFFFL) - 1;
+        } else {
+            best = scan(w1, n1, w2, n2);
+            pairCache.lazySet(slot, (k & ~0xFFFFL) | (best + 1));
         }
         double s = best / 10.0 - SCORE_FLOOR;
         return s > 0 ? s : 0.0;
+    }
+
+    /** 没缓存时真的去查:w1 末尾 a 个字接着 w2 开头 b 个字,哈希一路接着算,不拼字符串。 */
+    private int scan(String w1, int n1, String w2, int n2) {
+        int best = 0;
+        for (int a = 1; a <= MAX_SIDE && a <= n1; a++) {
+            long h = FNV_OFFSET;
+            for (int i = n1 - a; i < n1; i++) {
+                h ^= w1.charAt(i);
+                h *= FNV_PRIME;
+            }
+            for (int b = 0; b < MAX_SIDE && b < n2; b++) {
+                h ^= w2.charAt(b);
+                h *= FNV_PRIME;
+                int v = lookupHash(mix(h));
+                if (v > best) best = v;
+            }
+        }
+        return best;
     }
 
     // ------------------------------------------------------------ 打包(电脑上的 BuildGramPack 和自测用,手机上不会调用)
