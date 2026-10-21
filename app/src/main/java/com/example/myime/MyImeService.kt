@@ -321,6 +321,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     private val composing = StringBuilder()
 
+    // 组合文本(拼音):已经选好的词先攒在这里,不进目标输入框,只在预览条里和剩下的拼音一起显示;
+    // 拼音全选完 / 按空格 / 打标点 / 回车 / 切换时一次性上屏。pickStack 记每次选词(词, 它对应的拼音),退格时按它还原。
+    private val pending = StringBuilder()
+    private val pickStack = ArrayList<Array<String>>()
+
     // 拼音里的笔画筛选(音形混输):filterOn = 「笔筛」开着,这时 h s p n z 五个键当笔画用;filterStrokes = 已经打的笔画(hspnz)。
     // 一段拼音选完、清空、换页都会复位;只在用户按了「笔筛」时才有,平时这两个量不动、查询也完全走原来的路。
     @Volatile private var filterOn = false   // 词库加载线程也会看一眼,决定要不要顺便建反查索引
@@ -1093,6 +1098,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         selFocus = -1
 
         composing.clear()
+        dropPending()
         filterOn = false
         filterStrokes.clear()
         exactOn = false
@@ -1223,6 +1229,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         edgeQuietAt = 0L
         edgeQuietUser = false
         exitAdjust(save = false)
+        if (pending.isNotEmpty()) currentInputConnection?.let { flushPending(it) }   // 选好还没上屏的词不丢
+        dropPending()
         transReset(finishTarget = true)
         transUi()
         composing.clear()
@@ -1269,6 +1277,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             (newSelEnd < candidatesStart || newSelEnd > candidatesEnd)
         ) {
             composing.clear()
+            dropPending()
             queryGen++
             applyCandidates("", emptyList())
             prevWord = null
@@ -1281,6 +1290,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             // 不是我们自己改的、光标却变了。组合字母都不在输入框里(没有 candidatesStart 可比),这里一并处理
             if (composing.isNotEmpty()) {
                 composing.clear()
+                dropPending()
                 queryGen++
                 applyCandidates("", emptyList())
             }
@@ -1481,7 +1491,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     /** 候选栏上方的预览:拼音;笔筛开着时后面跟「 ｜」和已打的笔画。输入框里的组合区仍只有拼音。 */
     private fun previewText(): String {
-        val base = displayComposing()
+        val base = if (pending.isEmpty()) displayComposing() else pending.toString() + " " + displayComposing()
         if (exactActive()) return "$base ｜整字"
         if (!filterActive()) return base
         val sb = StringBuilder(base).append(" ｜")
@@ -1515,6 +1525,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         if (composing.isNotEmpty()) {
             composing.deleteCharAt(composing.length - 1)
+            if (composing.isEmpty() && pickStack.isNotEmpty()) undoLastPick()
             showComposing()
             requery()
             if (mode == Mode.ENGLISH) afterCommit()
@@ -1588,16 +1599,21 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             ic.beginBatchEdit()
             val c = bestCandidate()
             if (c == null) {
-                if (mode == Mode.PINYIN) commitTo(ic, composing.toString()) else commitTo(ic, "")
+                if (mode == Mode.PINYIN) pending.append(composing)
+                flushPending(ic)
+                if (mode != Mode.PINYIN) commitTo(ic, "")
                 composing.clear()
                 prevChinese = null
                 assocKey = null
             } else {
                 learnChinese(c)
-                commitTo(ic, c.text)
+                if (mode == Mode.PINYIN) holdPick(c) else commitTo(ic, c.text)
                 noteChineseCommit(c.text, false)
                 composing.delete(0, c.consumed.coerceIn(1, composing.length))
+                if (composing.isEmpty()) flushPending(ic)
                 afterPick()
+                // 拼音:空格把整句剩下的部分也按最佳候选一起上屏
+                if (mode == Mode.PINYIN && composing.isNotEmpty()) flushComposition(ic)
                 if (composing.isNotEmpty()) showComposing()
             }
             ic.endBatchEdit()
@@ -2302,6 +2318,38 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         return e.query(code)
     }
 
+    /** 拼音:选了一个词,先攒着不上屏。必须在从 composing 里删掉它的拼音之前调用。 */
+    private fun holdPick(c: Candidate) {
+        val n = c.consumed.coerceIn(1, composing.length)
+        pickStack.add(arrayOf(c.text, composing.substring(0, n)))
+        pending.append(c.text)
+    }
+
+    /** 把攒着的词一次性上屏。 */
+    private fun flushPending(ic: InputConnection) {
+        if (pending.isNotEmpty()) commitTo(ic, pending.toString())
+        pending.clear()
+        pickStack.clear()
+    }
+
+    /** 放弃攒着的词(不上屏):光标被挪走、关闭候选、换输入框。 */
+    private fun dropPending() {
+        pending.clear()
+        pickStack.clear()
+    }
+
+    /** 退格退掉了剩下的最后一个拼音字母:把最后选的那个词还原成拼音,接着编辑。 */
+    private fun undoLastPick() {
+        val top = pickStack.removeAt(pickStack.size - 1)
+        pending.setLength(maxOf(0, pending.length - top[0].length))
+        composing.insert(0, top[1])
+        wordCodes.clear()
+        wordTexts.clear()
+        wordTail = null
+        prevChinese = null
+        assocKey = null
+    }
+
     private fun onCandidatePicked(index: Int) {
         val ic = currentInputConnection ?: return
         if (candidatesFor != queryKey()) return // 过期的点击
@@ -2312,10 +2360,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         if (c.kind == 3) {   // 点了表情:直接上屏。不记进用词习惯,也不拿它做联想
             ic.beginBatchEdit()
-            commitTo(ic, c.text)
+            if (mode == Mode.PINYIN && composing.isNotEmpty()) holdPick(c) else commitTo(ic, c.text)
             if (composing.isNotEmpty()) {
                 composing.delete(0, c.consumed.coerceIn(1, composing.length))
                 resetFilter()
+                if (composing.isEmpty()) flushPending(ic)
                 if (composing.isNotEmpty()) showComposing()
             }
             ic.endBatchEdit()
@@ -2340,9 +2389,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         learnChinese(c)
         ic.beginBatchEdit()
-        commitTo(ic, c.text)
+        if (mode == Mode.PINYIN) holdPick(c) else commitTo(ic, c.text)
         noteChineseCommit(c.text, false)
         composing.delete(0, c.consumed.coerceIn(1, composing.length))
+        if (composing.isEmpty()) flushPending(ic)
         afterPick()
         if (composing.isNotEmpty()) showComposing()
         ic.endBatchEdit()
@@ -2407,6 +2457,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             } else {
                 ic.finishComposingText()
                 composing.clear()
+                dropPending()
             }
             ic.endBatchEdit()
         }
@@ -2428,14 +2479,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         while (composing.isNotEmpty() && guard++ < 64) {
             val c = bestCandidate()
             if (c == null) {
-                if (mode == Mode.PINYIN) commitTo(ic, composing.toString()) else commitTo(ic, "")
+                if (mode == Mode.PINYIN) pending.append(composing) else commitTo(ic, "")
                 composing.clear()
                 break
             }
-            commitTo(ic, c.text)
+            if (mode == Mode.PINYIN) pending.append(c.text) else commitTo(ic, c.text)
             composing.delete(0, c.consumed.coerceIn(1, composing.length))
         }
         composing.clear()
+        flushPending(ic)
         clearCandidates()
     }
 
@@ -2445,8 +2497,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             if (mode == Mode.ENGLISH) {
                 commitEnglishWord(ic, auto = false, trailing = "")
             } else {
-                if (mode == Mode.PINYIN) commitTo(ic, composing.toString()) else commitTo(ic, "")
+                if (mode == Mode.PINYIN) pending.append(composing) else commitTo(ic, "")
                 composing.clear()
+                flushPending(ic)
             }
         }
         if (mode == Mode.ENGLISH) {
@@ -3010,6 +3063,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         transFinishing = false
         if (composing.isNotEmpty()) {
             composing.clear()
+            dropPending()
             queryGen++
             applyCandidates("", emptyList())
         }
