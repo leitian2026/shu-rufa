@@ -36,7 +36,12 @@ fun Context.isWide(): Boolean = !KbSize.floating && resources.configuration.scre
 /** 影响键盘尺寸/配色的所有系统条件的指纹:没变就不用重算尺寸和调色板。 */
 fun Context.uiSignature(): String {
     val c = resources.configuration
-    return "${c.uiMode}:${c.screenWidthDp}:${c.screenHeightDp}:${c.densityDpi}:${c.fontScale}:${keyboardHeightPx()}:${KbSize.floating}"
+    return "${c.uiMode}:${c.screenWidthDp}:${c.screenHeightDp}:${c.densityDpi}:${c.fontScale}:${keyboardHeightPx()}:${KbSize.floating}:${BarRows.chunk}"
+}
+
+/** 候选栏要不要中间的「词块行」。拼音有(整句改词用);笔画不需要,去掉后候选行贴着预览的笔画。由键盘服务按「最近用的中文方式」设置。 */
+object BarRows {
+    @Volatile var chunk = true
 }
 
 /** 键盘区(含各个面板)的统一高度,切换页面时高度不变。可在「键盘调节」里改。 */
@@ -45,7 +50,8 @@ fun Context.keyboardHeightPx(): Int = dpi(KbSize.heightDp(this))
 /** 候选栏(笔画/拼音预览 + 候选词那两行)的高度。整页面板盖住候选栏时,面板高度 = 键盘高度 + 这个值,总高度不变,所以切换不跳动。 */
 fun Context.candidateBarHeightPx(): Int {
     val wide = isWide()
-    return (dpf(if (wide) 37f else 26f) + dpf(if (wide) 40f else 34f) + dpf(if (wide) 50f else 44f)).toInt()   // 预览条 + 词块行 + 候选行
+    val chunkH = if (BarRows.chunk) dpf(if (wide) 40f else 34f) else 0f
+    return (dpf(if (wide) 37f else 26f) + chunkH + dpf(if (wide) 50f else 44f)).toInt()   // 预览条 + 词块行(笔画没有) + 候选行
 }
 
 /**
