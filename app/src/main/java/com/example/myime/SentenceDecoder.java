@@ -51,8 +51,8 @@ public final class SentenceDecoder {
     private static final double CTX_BONUS = 2.0;      // 我常接在上一个词后面的词(只给第一个词)
     private static final double CHAIN_BONUS = 1.5;    // 整句里,后一个词是我常接在前一个词后面的
     private static final double GRAM_WEIGHT = 0.4;    // 搭配模型(GramPack)给相邻两个词的分,乘上这个权重再加进整句分
-    private static final int GRAM_CAP = 12;           // 有搭配模型时,每个位置保留几条路径(上一个词不同,搭配分就不同)
-    private static final int GRAM_PER = 4;            // 有搭配模型时,每条边保留同音的几个词(的/得/地 都要留着比)
+    private static final int GRAM_CAP = 8;            // 有搭配模型时,每个位置保留几条路径(上一个词不同,搭配分就不同)
+    private static final int GRAM_PER = 3;            // 有搭配模型时,每条边保留同音的几个词(的/得/地 都要留着比)
     private static final double NEG = -1e18;
     private static final String[] NO_ALTS = new String[0];
 
