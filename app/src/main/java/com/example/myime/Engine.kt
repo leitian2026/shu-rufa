@@ -565,6 +565,8 @@ class PinyinEngine(
         // 整句:把拼音切成几个词拼成整句(最多 3 句,歧义切分各给一句;模糊音下再加最多 2 句)。
         // 整串不是一个词时放在最前面;整串本来就是词时(输入够长才查)放在这些词后面,只给 2 句
         var sentenceDone = false
+        // 省电模式不用搭配模型(它让整句多算几倍),别的时候照常用
+        sentence.setGram(if (low) null else gramPack)
         val sents = ArrayList<SentenceDecoder.Result>()
         if (p.length >= SENTENCE_MIN && (!hadExact || (!low && p.length >= SENTENCE_MIN_EXACT)) && !cancelled()) {
             // 省电模式只要最好的一句;相邻的词用我的「词接词」记录加分
@@ -1013,10 +1015,24 @@ object DictLoader {
         return e
     }
 
+    // 文件没变(路径 + 大小 + 修改时间)就沿用上次映射好的,不重复映射
+    @Volatile private var gramCache: Pair<String, GramPack>? = null
+
     private fun loadGram(context: Context): GramPack? = try {
         val f = userFile(context, DictStore.GRAM_FILE)
         ErrorHint.clear("gram")
-        if (f == null) null else GramPack.open(f)
+        if (f == null) {
+            gramCache = null
+            null
+        } else {
+            val stamp = "${f.absolutePath}:${f.length()}:${f.lastModified()}"
+            val c = gramCache
+            if (c != null && c.first == stamp) {
+                c.second
+            } else {
+                GramPack.open(f).also { gramCache = stamp to it }
+            }
+        }
     } catch (e: Throwable) {
         AppLog.w(TAG, "load gram failed", e)
         ErrorHint.set("gram", ErrorHint.of("搭配模型加载失败(整句只按词频选词)", e))
