@@ -338,14 +338,20 @@ object DictInstaller {
             val count: Int = when (pack) {
                 DictPacks.GRAM -> {
                     conv("检查搭配模型", 0.2f)
-                    val good = files.firstOrNull {
-                        try {
-                            GramPack.verify(it)
-                            true
-                        } catch (e: IOException) {
-                            false
-                        }
-                    } ?: throw IOException("选的文件里没有可用的搭配模型包(gram.bin)")
+                    fun ok(f: File): Boolean = try {
+                        GramPack.verify(f)
+                        true
+                    } catch (e: IOException) {
+                        false
+                    }
+                    var good = files.firstOrNull { ok(it) }
+                    if (good == null && files.size >= 2) {
+                        // 文件太大分成了几段(gram.bin.part1、part2…):选中所有段,按文件名顺序接起来再检查
+                        conv("接起来 ${files.size} 段", 0.3f)
+                        val joined = DictZip.join(files, File(work, "joined_gram.bin"))
+                        if (ok(joined)) good = joined
+                    }
+                    good ?: throw IOException("选的文件里没有可用的搭配模型包(gram.bin);如果是分段的,要一次选中所有段")
                     installGramFile(ctx, good)
                 }
                 DictPacks.PINYIN -> DictConvert.buildPinyin(
