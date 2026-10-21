@@ -175,6 +175,7 @@ abstract class PanelView(context: Context) : View(context) {
     })
 
     init {
+        gestures.setOnDoubleTapListener(null)   // 关掉双击检测,否则连点两下时第二下被当成双击吞掉,点不上
         applyMetrics()
     }
 
