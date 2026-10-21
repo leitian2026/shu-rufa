@@ -222,6 +222,40 @@ class PinyinEngine(
         return null
     }
 
+    /** 整句切出来的一块:文字 + 它对应的拼音连写(不含分词符)。 */
+    class Chunk(val text: String, val code: String)
+
+    /**
+     * 最近一次整句解码里,文字是 text 的那一句按词切开的结果;raw 必须就是那次解码的输入,否则返回 null。
+     * 点候选栏上方的「词块」改词时用:每一块可以单独换词。
+     */
+    fun sentenceChunks(raw: String, text: String): List<Chunk>? {
+        val sp = lastSentenceP ?: return null
+        val p = Syllabary.normalize(raw.replace("'", ""))
+        if (p != sp) return null
+        for (s in lastSentences) {
+            if (s.text != text || s.letters > sp.length || s.words.size != s.codes.size) continue
+            val out = ArrayList<Chunk>(s.words.size)
+            for (i in s.words.indices) out.add(Chunk(s.words[i], s.codes[i]))
+            return out
+        }
+        return null
+    }
+
+    /**
+     * 拼音连写正好是 code 的词(我造的词在前,再按我选过的 / 词频排),最多 max 个。
+     * 点词块换词、拆成单字、合并时用;查的是整个词库,和整句候选里有没有这个词无关。
+     */
+    fun wordsFor(code: String, max: Int): List<String> {
+        val p = code.replace("'", "")
+        if (p.isEmpty() || max <= 0) return emptyList()
+        val out = LinkedHashSet<String>()
+        val uw = words?.snapshot()
+        if (uw != null) for (t in uw.exact(p)) out.add(t)
+        for (id in top(compactKeys, compactIds, p, p + '\u0000', emptyList(), null)) out.add(texts[id])
+        return if (out.size <= max) ArrayList(out) else ArrayList(out).subList(0, max)
+    }
+
     /** 词库里有没有「拼音连写正好是 code、文字是 text」的词条;有就返回词条号,没有返回 -1。 */
     private fun dictFind(code: String, text: String): Int {
         var i = lowerBound(compactKeys, code)
