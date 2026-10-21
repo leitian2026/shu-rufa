@@ -3372,6 +3372,14 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     )
 
     private fun refreshLayout(animate: Boolean) {
+        // 笔画用户(最近用的中文方式是笔画)不要词块行:候选行贴着预览的笔画;拼音有。切换中英文不变,所以不会跳
+        val wantChunk = chineseMode != Mode.STROKE
+        if (BarRows.chunk != wantChunk) {
+            BarRows.chunk = wantChunk
+            if (!wantChunk) resetChunks()
+            applySizeLive()
+            inputRoot?.requestLayout()
+        }
         refreshTradKey()
         warmUp()
         val kb = keyboardView ?: return
