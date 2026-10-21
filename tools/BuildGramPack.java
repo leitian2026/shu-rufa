@@ -7,6 +7,7 @@
 // 值的换算:原始值 = ln(分)×10000,存成一个字节 = round(原始值 / 1000),夹在 1~255。
 // 键的哈希、桶号、校验码都用 GramPack 里的函数,保证和手机上查询时完全一致。
 // 两个不同的键如果落在同一个桶、校验码也相同,只留值大的那个。
+// 超过 GramPack.MAX_KEY_CHARS 个字的搭配查询时永远用不到,打包时直接丢掉。
 import com.example.myime.GramPack;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -17,12 +18,14 @@ public class BuildGramPack {
         if (a.length < 2) { System.err.println("用法: BuildGramPack in.tsv out.bin"); System.exit(2); }
         long[] arr = new long[1 << 20];
         int n = 0;
+        long dropped = 0;
         try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(a[0]), StandardCharsets.UTF_8), 1 << 20)) {
             String line;
             while ((line = r.readLine()) != null) {
                 int t = line.indexOf('\t');
                 if (t <= 0) continue;
                 String key = line.substring(0, t);
+                if (key.length() > GramPack.MAX_KEY_CHARS) { dropped++; continue; }   // 查询永远用不到这么长的键
                 int raw;
                 try { raw = Integer.parseInt(line.substring(t + 1).trim()); } catch (NumberFormatException e) { continue; }
                 long comp = GramPack.composite(key, raw);
@@ -30,7 +33,7 @@ public class BuildGramPack {
                 arr[n++] = comp;
             }
         }
-        System.err.println("读入 " + n + " 条");
+        System.err.println("读入 " + n + " 条(丢掉超过 " + GramPack.MAX_KEY_CHARS + " 个字的 " + dropped + " 条)");
         byte[] bytes = GramPack.assemble(arr, n);
         try (OutputStream os = new BufferedOutputStream(new FileOutputStream(a[1]))) { os.write(bytes); }
         System.err.println("写出 " + a[1] + "," + bytes.length + " 字节");
