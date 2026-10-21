@@ -79,6 +79,35 @@ public final class DictZip {
         return out;
     }
 
+    /**
+     * 把分成几段的大文件按文件名顺序接回一个文件(gram.bin.part1、gram.bin.part2 …;名字里最后的数字按大小比,part10 排在 part2 后面)。
+     * 一个文件太大发不出去时分段传,手机上选中所有段导入时用。parts 至少要有两个;返回 out。
+     */
+    public static File join(List<File> parts, File out) throws IOException {
+        if (parts.size() < 2) throw new IOException("至少要两段才能接起来");
+        java.util.ArrayList<File> sorted = new java.util.ArrayList<>(parts);
+        sorted.sort((a, b) -> {
+            String na = a.getName(), nb = b.getName();
+            String pa = na.replaceAll("[0-9]+$", ""), pb = nb.replaceAll("[0-9]+$", "");
+            int c = pa.compareTo(pb);
+            if (c != 0) return c;
+            String da = na.substring(pa.length()), db = nb.substring(pb.length());
+            long va = da.isEmpty() ? -1 : Long.parseLong(da.length() > 18 ? da.substring(da.length() - 18) : da);
+            long vb = db.isEmpty() ? -1 : Long.parseLong(db.length() > 18 ? db.substring(db.length() - 18) : db);
+            return Long.compare(va, vb);
+        });
+        byte[] buf = new byte[64 * 1024];
+        try (OutputStream os = new BufferedOutputStream(new FileOutputStream(out))) {
+            for (File f : sorted) {
+                try (InputStream in = new FileInputStream(f)) {
+                    int n;
+                    while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+                }
+            }
+        }
+        return out;
+    }
+
     private static String uniq(String name, int k) {
         int dot = name.lastIndexOf('.');
         return dot > 0 ? name.substring(0, dot) + "_" + k + name.substring(dot) : name + "_" + k;
