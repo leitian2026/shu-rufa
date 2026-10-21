@@ -21,8 +21,9 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 
 /**
- * 键盘上方的两条白色区域(高度固定,不会跳动):
+ * 键盘上方的三条白色区域(高度固定,不会跳动):
  *  - 上条:拼音 / 笔画的预览文字
+ *  - 中条:整句切成的词块(拼音输入有候选时才有内容),点一块就改那一块的词
  *  - 下条:没有候选时是工具栏图标;有候选时是候选词(第一个蓝色),右边多一个「关闭候选区」的小按钮(没有候选就不显示)
  *
  * 候选内容每次按键都会更新,但"有候选 ↔ 无候选"之间才做动画,避免每个字母触发一次。
@@ -32,6 +33,7 @@ class CandidateBarView(
     private val onPick: (Int) -> Unit,
     private val onTool: (Int) -> Unit,
     private val onClose: () -> Unit,
+    private val onChunk: (Int) -> Unit = {},
 ) : View(context) {
 
     private var palette = Palette(context)
@@ -59,7 +61,18 @@ class CandidateBarView(
 
     // 尺寸
     private var stripH = 0f
+    private var chunkH = 0f      // 中间的词块行
     private var rowH = 0f
+    private var candTop = 0f     // 候选行(和没有候选时的工具栏)的上沿 = 预览条 + 词块行
+
+    // 词块行:整句按词切开,一块一个;sel 是点中的那块(-1 = 没有),raw 是没被吃掉的拼音(只显示,不能点)
+    private var chunkTexts: List<String> = emptyList()
+    private var chunkRaw: List<Boolean> = emptyList()
+    private var chunkSel = -1
+    private var chunkXs = FloatArray(1)
+    private var chunkContentW = 0f
+    private var chunkOffset = 0f
+    private var scrollingChunks = false   // 这一次手势是在词块行上开始的
     private var inset = 0f
     private var itemPad = 0f
     private var fixedHeight = 0
@@ -67,6 +80,8 @@ class CandidateBarView(
     private var closeW = 0f      // 候选条右边留给关闭按钮的宽度
 
     private val candPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
+    private val chunkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
+    private var chunkBase = 0f
     private val composePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private val readPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private var readBase = 0f
@@ -102,13 +117,18 @@ class CandidateBarView(
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean {
             scroller.forceFinished(true)
+            scrollingChunks = chunkTexts.isNotEmpty() && e.y >= stripH && e.y < candTop
             return true
         }
 
         override fun onScroll(
             e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float,
         ): Boolean {
-            offset = (offset + distanceX).coerceIn(0f, maxOffset())
+            if (scrollingChunks) {
+                chunkOffset = (chunkOffset + distanceX).coerceIn(0f, chunkMaxOffset())
+            } else {
+                offset = (offset + distanceX).coerceIn(0f, maxOffset())
+            }
             invalidate()
             return true
         }
@@ -116,13 +136,14 @@ class CandidateBarView(
         override fun onFling(
             e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float,
         ): Boolean {
+            if (scrollingChunks) return true   // 词块行只跟手拖动,不做惯性
             scroller.fling(offset.toInt(), 0, (-velocityX).toInt(), 0, 0, maxOffset().toInt(), 0, 0)
             postOnAnimation(flingRunnable)
             return true
         }
 
         override fun onLongPress(e: MotionEvent) {
-            if (!targetVisible || e.y < stripH || e.x >= width - closeW) return
+            if (!targetVisible || e.y < candTop || e.x >= width - closeW) return
             val x = e.x - inset + offset
             for (i in items.indices) {
                 if (x >= xs[i] && x < xs[i + 1]) {
@@ -134,6 +155,16 @@ class CandidateBarView(
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
             if (!targetVisible || e.y < stripH) return false
+            if (e.y < candTop) {   // 词块行
+                val cx = e.x - inset + chunkOffset
+                for (i in chunkTexts.indices) {
+                    if (cx >= chunkXs[i] && cx < chunkXs[i + 1]) {
+                        if (!chunkRaw[i]) onChunk(i)
+                        return true
+                    }
+                }
+                return false
+            }
             if (e.x >= width - closeW) {   // 右边的关闭按钮
                 onClose()
                 return true
@@ -161,6 +192,8 @@ class CandidateBarView(
     private fun applyMetrics() {
         val wide = context.isWide()
         stripH = context.dpf(if (wide) 37f else 26f)
+        chunkH = context.dpf(if (wide) 40f else 34f)
+        candTop = stripH + chunkH
         rowH = context.dpf(if (wide) 50f else 44f)
         inset = context.dpf(if (wide) 31f else 8f)
         itemPad = context.dpf(if (wide) 20f else 14f)
@@ -174,6 +207,8 @@ class CandidateBarView(
         iconPaint.pathEffect = CornerPathEffect(context.dpf(2.5f))
         candBase = baseline(candPaint)
         composeBase = baseline(composePaint)
+        chunkPaint.textSize = context.spf(if (wide) 21f else 18f)
+        chunkBase = baseline(chunkPaint)
         hintPaint.textSize = context.spf(if (wide) 14f else 12f)
         hintBase = baseline(hintPaint)
         readPaint.textSize = context.spf(if (wide) 12f else 10.5f)
@@ -181,6 +216,7 @@ class CandidateBarView(
     }
 
     private fun maxOffset(): Float = (contentWidth + inset + closeW - width).coerceAtLeast(0f)
+    private fun chunkMaxOffset(): Float = (chunkContentW + inset * 2 - width).coerceAtLeast(0f)
 
     /** 每次开始输入时调用:跟随深色模式、屏幕宽度变化。 */
     private var uiSig = ""
@@ -205,6 +241,35 @@ class CandidateBarView(
     fun setComposing(text: String) {
         if (text == composing) return
         composing = text
+        invalidate()
+    }
+
+    /** 词块行:整句按词切成的文字、哪些是没被吃掉的拼音(只显示)、点中的那块(-1 = 没有)。 */
+    fun setChunks(texts: List<String>, raws: List<Boolean>, sel: Int) {
+        if (texts == chunkTexts && raws == chunkRaw && sel == chunkSel) return
+        val sameList = texts == chunkTexts
+        chunkTexts = texts
+        chunkRaw = raws
+        chunkSel = sel
+        chunkXs = FloatArray(texts.size + 1)
+        var x = 0f
+        val pad = itemPad * 0.55f
+        for (i in texts.indices) {
+            chunkXs[i] = x
+            x += chunkPaint.measureText(texts[i]) + pad * 2 + itemPad * 0.25f
+        }
+        chunkXs[texts.size] = x
+        chunkContentW = x
+        if (!sameList) chunkOffset = 0f
+        // 点中的那块要看得见:不在屏幕里就滚到它
+        if (sel in texts.indices) {
+            val l = chunkXs[sel]
+            val r = chunkXs[sel + 1]
+            val viewW = width - 2 * inset
+            if (l < chunkOffset) chunkOffset = l
+            else if (r > chunkOffset + viewW) chunkOffset = r - viewW
+        }
+        chunkOffset = chunkOffset.coerceIn(0f, chunkMaxOffset())
         invalidate()
     }
 
@@ -317,11 +382,14 @@ class CandidateBarView(
             }
         }
 
+        // 中条:词块
+        if (chunkTexts.isNotEmpty()) drawChunks(canvas)
+
         // 下条:工具栏 ⇄ 候选
         if (contentAlpha < 1f) drawToolbar(canvas, 1f - contentAlpha)
         if (items.isNotEmpty() && contentAlpha > 0f) {
             canvas.save()
-            canvas.clipRect(0f, stripH, width - closeW, height.toFloat())   // 候选词不压到关闭按钮
+            canvas.clipRect(0f, candTop, width - closeW, height.toFloat())   // 候选词不压到关闭按钮
             drawCandidates(canvas)
             canvas.restore()
             drawClose(canvas)
@@ -331,7 +399,7 @@ class CandidateBarView(
     /** 圆圈里一个 ×。 */
     private fun drawClose(canvas: Canvas) {
         val cx = width - closeW / 2f
-        val cy = stripH + rowH / 2f
+        val cy = candTop + rowH / 2f
         val r = iconU * 0.85f
         val d = r * 0.38f
         iconPaint.color = palette.icon
@@ -341,13 +409,42 @@ class CandidateBarView(
         canvas.drawLine(cx + d, cy - d, cx - d, cy + d, iconPaint)
     }
 
+    /** 词块行:一块一个词,点中的那块有一个淡色底;没被吃掉的拼音用浅色字显示。 */
+    private fun drawChunks(canvas: Canvas) {
+        canvas.save()
+        canvas.clipRect(0f, stripH, width.toFloat(), candTop)
+        val cy = stripH + chunkH / 2f
+        val pad = itemPad * 0.55f
+        val left = chunkOffset - inset
+        val right = left + width
+        for (i in chunkTexts.indices) {
+            if (chunkXs[i + 1] < left) continue
+            if (chunkXs[i] > right) break
+            val x0 = inset + chunkXs[i] - chunkOffset
+            val w = chunkXs[i + 1] - chunkXs[i] - itemPad * 0.25f
+            if (i == chunkSel) {
+                pillPaint.color = palette.accent
+                pillPaint.alpha = 40
+                tmp.set(x0, cy - chunkH * 0.40f, x0 + w, cy + chunkH * 0.40f)
+                canvas.drawRoundRect(tmp, chunkH * 0.3f, chunkH * 0.3f, pillPaint)
+            }
+            chunkPaint.color = when {
+                chunkRaw[i] -> palette.icon
+                i == chunkSel -> palette.accent
+                else -> palette.text
+            }
+            canvas.drawText(chunkTexts[i], x0 + pad, cy + chunkBase, chunkPaint)
+        }
+        canvas.restore()
+    }
+
     private fun drawCandidates(canvas: Canvas) {
         val left = offset - inset
         val right = left + width
         val hasReads = reads.isNotEmpty()
         // 有读音:读音在上、字在下,两行一起居中;没有读音和以前完全一样
-        val y = stripH + rowH * (if (hasReads) 0.68f else 0.5f) + candBase
-        val ry = stripH + rowH * 0.27f + readBase
+        val y = candTop + rowH * (if (hasReads) 0.68f else 0.5f) + candBase
+        val ry = candTop + rowH * 0.27f + readBase
         val a = (contentAlpha * 255f).toInt()
         for (i in items.indices) {
             if (xs[i + 1] < left) continue
@@ -373,7 +470,7 @@ class CandidateBarView(
     private fun drawToolbar(canvas: Canvas, alpha: Float) {
         val n = TOOLS
         val cellW = (width - 2 * inset) / n
-        val cy = stripH + rowH / 2f
+        val cy = candTop + rowH / 2f
         val a = (alpha * 255f).toInt()
 
         for (i in 0 until n) {
@@ -473,7 +570,7 @@ class CandidateBarView(
     }
 
     private fun toolAt(x: Float, y: Float): Int {
-        if (y < stripH) return -1
+        if (y < candTop) return -1
         val cellW = (width - 2 * inset) / TOOLS
         val idx = ((x - inset) / cellW).toInt()
         return if (x >= inset && idx in 0 until TOOLS) idx else -1
