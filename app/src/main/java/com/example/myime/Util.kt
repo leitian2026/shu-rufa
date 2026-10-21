@@ -45,7 +45,7 @@ fun Context.keyboardHeightPx(): Int = dpi(KbSize.heightDp(this))
 /** 候选栏(笔画/拼音预览 + 候选词那两行)的高度。整页面板盖住候选栏时,面板高度 = 键盘高度 + 这个值,总高度不变,所以切换不跳动。 */
 fun Context.candidateBarHeightPx(): Int {
     val wide = isWide()
-    return (dpf(if (wide) 37f else 26f) + dpf(if (wide) 50f else 44f)).toInt()
+    return (dpf(if (wide) 37f else 26f) + dpf(if (wide) 40f else 34f) + dpf(if (wide) 50f else 44f)).toInt()   // 预览条 + 词块行 + 候选行
 }
 
 /**
