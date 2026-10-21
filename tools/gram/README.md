@@ -12,7 +12,7 @@
    g++ -O2 -o extract_gram tools/gram/extract_gram.cpp
    ./extract_gram wanxiang-lts-zh-hans.gram lex.tsv 5000 k5000.tsv     # 约 2 分钟,969 万行
    ```
-   K 越大越准越大:1500 → 311 万条(约 10 MB);3000 → 621 万;5000 → 969 万(约 33 MB);1 万 → 1626 万;6 万 → 3778 万。
+   K 越大越准越大(抽取出的条数,打包时再丢掉超过 4 个字的,约少两成):1500 → 311 万条;3000 → 621 万;5000 → 969 万(打包后 799 万条、约 28 MB);1 万 → 1626 万;6 万 → 3778 万。
 4. **打包**:
    ```
    javac -encoding UTF-8 -d /tmp/gp app/src/main/java/com/example/myime/GramPack.java tools/BuildGramPack.java
