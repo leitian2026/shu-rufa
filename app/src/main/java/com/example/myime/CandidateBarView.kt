@@ -182,6 +182,9 @@ class CandidateBarView(
 
     init {
         applyMetrics()
+        // SimpleOnGestureListener 自带「双击检测」:第二下点得快(0.3 秒内、位置不远)会被当成双击,不再触发单击,
+        // 连点两个候选时第二个就点不上。候选栏没有双击功能,关掉,每一下都按单击处理
+        gestures.setOnDoubleTapListener(null)
     }
 
     private fun baseline(p: Paint): Float {
@@ -230,6 +233,15 @@ class CandidateBarView(
         relayout()
         requestLayout()
         invalidate()
+    }
+
+    private var stale = false
+
+    /** 候选正在刷新、旧候选已经不能点了:把它们画淡一点,让人看出来在等(只改显示,不改点击)。 */
+    fun setStale(v: Boolean) {
+        if (v == stale) return
+        stale = v
+        if (items.isNotEmpty()) invalidate()
     }
 
     fun setHint(text: String?) {
@@ -445,7 +457,7 @@ class CandidateBarView(
         // 有读音:读音在上、字在下,两行一起居中;没有读音和以前完全一样
         val y = candTop + rowH * (if (hasReads) 0.68f else 0.5f) + candBase
         val ry = candTop + rowH * 0.27f + readBase
-        val a = (contentAlpha * 255f).toInt()
+        val a = (contentAlpha * 255f * (if (stale) 0.45f else 1f)).toInt()
         for (i in items.indices) {
             if (xs[i + 1] < left) continue
             if (xs[i] > right) break
