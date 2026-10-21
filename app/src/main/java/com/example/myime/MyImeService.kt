@@ -2130,6 +2130,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val code = composing.toString()
         val key = queryKey()
         val gen = ++queryGen
+        // 旧候选已经不能点了(选词后剩下的拼音、退格…)就画淡一点,看得出在等;还能点的(只是接着多打了字母)保持原样
+        candidateBar?.setStale(candidatesFor.isNotEmpty() && candidatesFor != key && !staleUsable(key))
         if (keepChunks) keepChunks = false else resetChunks()   // 输入变了:词块作废;只有换完词 / 退出备选这类自己触发的重查才保留
         if (code.isEmpty()) {
             applyCandidates("", emptyList())
@@ -2198,6 +2200,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (mode == Mode.PINYIN || mode == Mode.STROKE) shown = GlyphFilter.filter(shown)
         candidatesFor = code
         candidates = shown
+        candidateBar?.setStale(false)
         pushToBar(shown)
         candidateBar?.setHint(
             ErrorHint.get("query") ?: when (mode) {
@@ -2594,13 +2597,26 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         assocKey = null
     }
 
+    /**
+     * 候选还是上一次输入的结果,但新输入只是在后面接着多打了字母(旧输入是新输入的开头):
+     * 旧候选吃掉的那几个字母仍然在最前面,点它就按那几个字母上屏,剩下的接着打。
+     * 这样打得快、候选还没刷新时点候选不会被当成过期点击丢掉。退格、选词后剩下的拼音、改了笔筛这类情况不算(旧候选对不上了)。
+     */
+    private fun staleUsable(key: String): Boolean {
+        if (mode != Mode.PINYIN && mode != Mode.STROKE) return false
+        val old = candidatesFor
+        if (old.isEmpty() || chunkSel >= 0 || filterQueryOn() || exactActive()) return false
+        if (old.indexOf('\u0001') >= 0 || old.indexOf('\u0002') >= 0) return false
+        return key.length > old.length && key.startsWith(old)
+    }
+
     private fun onCandidatePicked(index: Int) {
         val ic = currentInputConnection ?: return
         if (chunkSel >= 0) {   // 候选栏里现在是某一块的备选
             onChunkPicked(index)
             return
         }
-        if (candidatesFor != queryKey()) return // 过期的点击
+        if (candidatesFor != queryKey() && !staleUsable(queryKey())) return // 过期的点击
         val c = candidates.getOrNull(index) ?: return
         if (mode == Mode.ENGLISH) {
             pickEnglish(ic, c)
