@@ -1174,14 +1174,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
         }
 
-        // 英文补全只用在普通文本框;密码、网址、邮箱、数字框不用。应用声明"不要建议/不要个性化学习"时只是不记录我的用词
-        val noSuggest = cls == InputType.TYPE_CLASS_TEXT &&
-            (info.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0
+        // 英文补全只用在普通文本框;密码、网址、邮箱、数字框不用。应用声明"不要个性化学习"(无痕等)时不记录我的用词
         val noLearn = (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0
         // 网页输入框(GPT 等)常带"不要建议"标记,但这只是应用的提示:候选栏照样给英文补全 / 联想,
-        // 是否记录我的用词仍由下面的 allowLearn 单独控制(和中文联想的做法一致)
+        // 是否记录我的用词由下面的 allowLearn 单独控制:"不要建议"只是应用对系统键盘建议条的提示,不拦学习;
+        // 只有密码框和"不要个性化学习"(无痕)才不记
         englishAssist = cls == InputType.TYPE_CLASS_TEXT && !secureField && forced != Mode.ENGLISH && !uriField
-        allowLearn = !secureField && !noSuggest && !noLearn && DictConfig.learn(applicationContext)
+        allowLearn = !secureField && !noLearn && DictConfig.learn(applicationContext)
         applyStrokeConfig()
         // 模糊音设置:每次弹出键盘读一次(SharedPreferences 在内存里),在设置页改了下次弹出就生效
         (pinyinEngine as? PinyinEngine)?.let {
