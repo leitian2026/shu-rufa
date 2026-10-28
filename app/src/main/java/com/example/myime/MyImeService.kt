@@ -1179,7 +1179,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         // 网页输入框(GPT 等)常带"不要建议"标记,但这只是应用的提示:候选栏照样给英文补全 / 联想,
         // 是否记录我的用词由下面的 allowLearn 单独控制:"不要建议"只是应用对系统键盘建议条的提示,不拦学习;
         // 只有密码框和"不要个性化学习"(无痕)才不记
-        englishAssist = cls == InputType.TYPE_CLASS_TEXT && !secureField && forced != Mode.ENGLISH && !uriField
+        englishAssist = cls == InputType.TYPE_CLASS_TEXT && !secureField && forced != Mode.ENGLISH   // 网址/搜索合一的框也给英文补全(方便记单词)
         allowLearn = !secureField && !noLearn && DictConfig.learn(applicationContext)
         applyStrokeConfig()
         // 模糊音设置:每次弹出键盘读一次(SharedPreferences 在内存里),在设置页改了下次弹出就生效
