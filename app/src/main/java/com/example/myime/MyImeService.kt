@@ -2148,6 +2148,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         // 笔画页里打了分字符:按词查(每个字一段笔画)。拼音词库没加载好时先只给第一个字的候选,加载完会自动再查一次
         val exact = exactActive()
         val wordMode = mode == Mode.STROKE && code.indexOf('\'') >= 0
+        val zhMode = mode == Mode.PINYIN || mode == Mode.STROKE
+        val tradReadyNow = tradReady
+        val tradNow = tradOn
         val pe = if (wordMode) pinyinEngine as? PinyinEngine else null
         if (wordMode && pe == null) loadKind(KIND_PINYIN)
         worker.execute {
@@ -2164,6 +2167,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                     else -> engine.query(code)
                 }
                 ErrorHint.clear("query")
+                // 简繁转换和字形检查的结果都有缓存:在这个后台线程先算一遍,主线程 applyCandidates 里再调就全是命中,
+                // 不会在打字那一下去问 ICU / 系统字体(首次出现的字才会慢)
+                if (zhMode && tradReadyNow) {
+                    TradConv.convert(found, tradNow)
+                    GlyphFilter.filter(found)
+                }
                 found
             } catch (t: Throwable) {
                 ErrorHint.set("query", ErrorHint.of("查询出错", t))
@@ -3395,7 +3404,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             applySizeLive()
             inputRoot?.requestLayout()
         }
-        refreshTradKey()
+        if (mode == Mode.SETTINGS) refreshTradKey()   // 设置页没显示时不用刷它(每个词开头/结尾都会走到这里);弹出键盘、切简繁时另有调用,打开设置页时会走这一行
         warmUp()
         val kb = keyboardView ?: return
         candidateBar?.setActiveTool(
