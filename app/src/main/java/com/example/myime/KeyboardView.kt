@@ -81,6 +81,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private var richZ = 0f
     private var richS = 0f
     private var richE = 0f
+    private var hintTopPad = 0f      // 小字离键顶 / 离键右边的距离:尺寸变了才重算,不在每帧每个键里算
+    private var hintRightPad = 0f
+    private var symW = 0f            // 「符」字的宽度
+    private var iconStroke = 0f
 
     private val shadowRect = RectF()
     private val segRect = RectF()
@@ -175,6 +179,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         richZ = richPaint.measureText("中")
         richS = richPaint.measureText("/")
         richE = richPaint.measureText("英")
+        symW = richPaint.measureText("符")
+        hintTopPad = context.dpf(2f)
+        hintRightPad = context.dpf(if (wide) 6f else 4f)
+        iconStroke = context.dpf(1.8f)
     }
 
     /** 每次开始输入时调用:跟随深色模式、屏幕宽度变化。 */
@@ -442,14 +450,14 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             }
             hp.color = if (hint[0].isDigit()) palette.hintText else palette.hintSym   // 数字稍浅,符号更深
             val hs = hp.textSize
-            val hy = r.top + context.dpf(2f) + hs * 0.72f
-            canvas.drawText(hint, r.right - context.dpf(if (context.isWide()) 6f else 4f), hy, hp)   // 右上角
+            val hy = r.top + hintTopPad + hs * 0.72f
+            canvas.drawText(hint, r.right - hintRightPad, hy, hp)   // 右上角
         }
         if (label == "符") {
             // 和旁边「中/英」一样大
             richPaint.isFakeBoldText = false
             richPaint.color = color
-            canvas.drawText(label, cx - richPaint.measureText(label) / 2f, cy + richBase, richPaint)
+            canvas.drawText(label, cx - symW / 2f, cy + richBase, richPaint)
             return
         }
 
@@ -495,7 +503,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     private fun drawIcon(canvas: Canvas, kind: Int, cx: Float, cy: Float, color: Int) {
         iconPaint.style = Paint.Style.STROKE
-        iconPaint.strokeWidth = context.dpf(1.8f)
+        iconPaint.strokeWidth = iconStroke
         iconPaint.color = color
         iconPaint.alpha = 255
         val w = iconW
