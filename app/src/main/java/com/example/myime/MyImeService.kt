@@ -2068,13 +2068,21 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             val list = ArrayList<Candidate>()
             val seen = HashSet<String>()
             try {
-                if (learnOn && prev != null) {
-                    for (w in UserData.chain(ctx).next(prev2, prev)) if (seen.add(w)) list.add(Candidate(w, 0, 2))
-                }
+                val chain: List<String> =
+                    if (learnOn && prev != null) UserData.chain(ctx).next(prev2, prev) else emptyList()
                 val eng = pinyinEngine as? PinyinEngine
-                if (eng != null) {
-                    for (w in eng.followers(key, 12)) if (seen.add(w)) list.add(Candidate(w, 0, 2))
+                // 搭配模型预测的「下一个字」和词库补全(已按搭配分排过序)
+                val preds: List<String> = eng?.predictNext(key, 6) ?: emptyList()
+                val fol: List<String> = eng?.followers(key, 12) ?: emptyList()
+                // 混排:我最近接过的前 2 个先放(只学过一两次的接词不会把更可能的挤掉),
+                // 然后「预测字」和「词库补全」交替,最后是我剩下的接词
+                for (i in 0 until minOf(2, chain.size)) if (seen.add(chain[i])) list.add(Candidate(chain[i], 0, 2))
+                val n = maxOf(preds.size, fol.size)
+                for (i in 0 until n) {
+                    if (i < preds.size && seen.add(preds[i])) list.add(Candidate(preds[i], 0, 2))
+                    if (i < fol.size && seen.add(fol[i])) list.add(Candidate(fol[i], 0, 2))
                 }
+                for (i in 2 until chain.size) if (seen.add(chain[i])) list.add(Candidate(chain[i], 0, 2))
             } catch (t: Throwable) {
                 // 查不出来就不显示联想
             }
