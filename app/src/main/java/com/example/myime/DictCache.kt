@@ -32,8 +32,22 @@ object DictCache {
 
     private fun stampOf(src: File): String = "${src.length()}:${src.lastModified()}"
 
+    /** 全部清掉:只在词库文件被整体换掉(还原备份)时用。平时词库更新靠头里的 大小:修改时间 自动作废,不用删。 */
     fun clear(ctx: Context) {
-        for (n in listOf("pinyin.bin", "stroke.bin", "english.bin")) file(ctx, n).delete()
+        val d = file(ctx, "x").parentFile ?: return
+        d.listFiles()?.forEach { if (it.name.endsWith(".bin") || it.name.endsWith(".tmp")) it.delete() }
+    }
+
+    /** 只清某个词库的缓存(那个词库被删掉了,缓存用不上了);别的词库的缓存原样保留。 */
+    fun clearPack(ctx: Context, pack: String) {
+        val d = file(ctx, "x").parentFile ?: return
+        val prefixes = when (pack) {
+            DictPacks.PINYIN -> listOf("pinyin", "fuzzy_")
+            DictPacks.STROKE -> listOf("stroke")
+            DictPacks.ENGLISH -> listOf("english")
+            else -> return
+        }
+        d.listFiles()?.forEach { f -> if (prefixes.any { f.name.startsWith(it) }) f.delete() }
     }
 
     private inline fun write(ctx: Context, name: String, src: File, version: Int, body: (DataOutputStream) -> Unit) {
@@ -46,8 +60,15 @@ object DictCache {
                 o.writeUTF(stampOf(src))
                 body(o)
             }
-            if (out.exists()) out.delete()
-            if (!tmp.renameTo(out)) tmp.delete()
+            // 直接替换旧缓存:不先删再改名,中间被杀也不会把好好的缓存弄丢
+            try {
+                java.nio.file.Files.move(
+                    tmp.toPath(), out.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                )
+            } catch (e: java.nio.file.AtomicMoveNotSupportedException) {
+                java.nio.file.Files.move(tmp.toPath(), out.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
         } catch (e: Exception) {
             ErrorHint.set("cache", ErrorHint.of("词库缓存写入失败(只会让启动变慢)", e))
             tmp.delete()
@@ -68,6 +89,70 @@ object DictCache {
             }
         } catch (e: Exception) {
             i.close()
+            null
+        }
+    }
+
+    // ------------------------------------------------------------ 排好的顺序(联想排序、模糊音索引):各自一个小文件,不动上面的主缓存
+
+    /** 存一份排好的下标顺序(给 PinyinEngine 的联想排序、模糊音索引用)。 */
+    fun saveOrder(ctx: Context, name: String, src: File, order: IntArray) {
+        write(ctx, "$name.bin", src, 1) { o ->
+            o.writeInt(order.size)
+            for (x in order) o.writeInt(x)
+        }
+    }
+
+    /** 读回来;个数对不上 n、有越界下标、文件坏了都返回 null(调用方自己重新排)。 */
+    fun loadOrder(ctx: Context, name: String, src: File, n: Int): IntArray? {
+        val i = openChecked(ctx, "$name.bin", src, 1) ?: return null
+        return try {
+            i.use {
+                val m = it.readInt()
+                if (m != n) return null
+                val a = IntArray(n)
+                for (k in 0 until n) {
+                    val v = it.readInt()
+                    if (v < 0 || v >= n) return null
+                    a[k] = v
+                }
+                a
+            }
+        } catch (e: Exception) {
+            file(ctx, "$name.bin").delete()
+            null
+        }
+    }
+
+    // ------------------------------------------------------------ 英文双词表
+
+    fun saveBigram(ctx: Context, src: File, succ: HashMap<String, Array<String>>) {
+        write(ctx, "english_bigram.bin", src, 1) { o ->
+            o.writeInt(succ.size)
+            for ((k, v) in succ) {
+                o.writeUTF(k)
+                o.writeInt(v.size)
+                for (w in v) o.writeUTF(w)
+            }
+        }
+    }
+
+    fun loadBigram(ctx: Context, src: File): HashMap<String, Array<String>>? {
+        val i = openChecked(ctx, "english_bigram.bin", src, 1) ?: return null
+        return try {
+            i.use {
+                val n = it.readInt()
+                val m = HashMap<String, Array<String>>(maxOf(16, n * 2))
+                for (k in 0 until n) {
+                    val key = it.readUTF()
+                    val c = it.readInt()
+                    if (c < 0) return null
+                    m[key] = Array(c) { _ -> it.readUTF() }
+                }
+                m
+            }
+        } catch (e: Exception) {
+            file(ctx, "english_bigram.bin").delete()
             null
         }
     }
