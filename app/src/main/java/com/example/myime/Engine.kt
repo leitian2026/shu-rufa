@@ -401,16 +401,98 @@ class PinyinEngine(
             bestId[pos] = id
             if (size < pool) size++
         }
+        val rests = Array(size) { texts[bestId[it]].substring(prefix.length) }
+        // 有搭配模型:候选池(词频前 48)里非「我打过的」按 搭配分 + 词频 重新排序——「今天」后面更常接的词排前面,而不只是词频高的;
+        // 我打过的词仍然排在最前面,顺序不变。没有搭配模型 / 省电模式:和以前完全一样
+        val gp = if (lowPower) null else gramPack
+        val order: List<Int> = if (gp == null || size < 2) {
+            (0 until size).toList()
+        } else {
+            var maxLf = 1.0
+            for (k in 0 until size) if (bestFreq[k] < MINE_FLOOR) maxLf = maxOf(maxLf, Math.log(1.0 + bestFreq[k]))
+            val sc = DoubleArray(size) { k ->
+                if (bestFreq[k] >= MINE_FLOOR) 1e9 - k
+                else gp.pairScore(prefix, rests[k]) + FREQ_WEIGHT * Math.log(1.0 + bestFreq[k]) / maxLf
+            }
+            (0 until size).sortedByDescending { sc[it] }
+        }
         val out = ArrayList<String>()
         val seen = HashSet<String>()
-        for (k in 0 until size) {
-            val r = texts[bestId[k]].substring(prefix.length)
+        for (k in order) {
+            val r = rests[k]
             if (seen.add(r)) {
                 out.add(r)
                 if (out.size >= max) break
             }
         }
         return out
+    }
+
+    // 「下一个字」预测用的常用字:词库里的单字按词频取前 PRED_CHARS 个(去重,多音字只留一个)。第一次用时在后台线程算一次
+    private val commonChars: Array<String> by lazy {
+        val idx = ArrayList<Int>()
+        for (i in texts.indices) {
+            val t = texts[i]
+            if (t.length == 1 && t[0].code in 0x4E00..0x9FFF) idx.add(i)
+        }
+        idx.sortByDescending { freqs[it] }
+        val seen = HashSet<String>()
+        val out = ArrayList<String>()
+        for (i in idx) {
+            if (seen.add(texts[i])) {
+                out.add(texts[i])
+                if (out.size >= PRED_CHARS) break
+            }
+        }
+        out.toTypedArray()
+    }
+
+    // 预测结果的小缓存(按上屏的词):同一个词反复接着打,不用再查几千次
+    private val predictCache = object : LinkedHashMap<String, List<String>>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<String>>?): Boolean = size > 64
+    }
+
+    /**
+     * 联想:key(刚上屏的词)后面最可能接的单个字。用搭配模型直接查「key 末尾 1~2 个字 + 常用字」的搭配分,取分高的前 max 个——
+     * 比如「吃饭」→ 了、吗、没……,不要求词库里正好有「吃饭了」这个词条。
+     * 没有搭配模型、省电模式、搭配分都很低时返回空列表。查询是内存映射上的只读,结果有缓存;调用方放在后台线程。
+     */
+    fun predictNext(key: String, max: Int): List<String> {
+        val gp = gramPack ?: return emptyList()
+        if (lowPower || key.isEmpty() || max <= 0) return emptyList()
+        synchronized(predictCache) { predictCache[key]?.let { return if (it.size > max) it.subList(0, max) else it } }
+        val n = key.length
+        val t1 = key.substring(n - 1)
+        val t2 = if (n >= 2) key.substring(n - 2) else null
+        val chars = commonChars
+        val sb = StringBuilder(8)
+        val hitIdx = IntArray(chars.size)
+        val hitScore = IntArray(chars.size)
+        var hits = 0
+        for (i in chars.indices) {
+            sb.setLength(0)
+            sb.append(t1).append(chars[i])
+            var v = gp.lookup(sb)
+            if (t2 != null) {
+                sb.setLength(0)
+                sb.append(t2).append(chars[i])
+                val v2 = gp.lookup(sb)
+                if (v2 > v) v = v2
+            }
+            if (v > PRED_FLOOR) {
+                hitIdx[hits] = i
+                hitScore[hits] = v
+                hits++
+            }
+        }
+        val order = (0 until hits).sortedWith(compareBy({ -hitScore[it] }, { hitIdx[it] }))
+        val res = ArrayList<String>(PRED_KEEP)
+        for (k in order) {
+            res.add(chars[hitIdx[k]])
+            if (res.size >= PRED_KEEP) break
+        }
+        synchronized(predictCache) { predictCache[key] = res }
+        return if (res.size > max) res.subList(0, max) else res
     }
 
     /**
@@ -818,6 +900,11 @@ class PinyinEngine(
         const val SENT_SHOWN = 4     // 整句最多放几个到候选里(含模糊音的)
         const val SENT_WITH_EXACT = 2   // 整串本来就是词时,整句最多放几个
         const val MIXED_MIN = 4      // 少于这么多字母不查混拼(2、3 个字母的纯声母原来就能查)
+        const val MINE_FLOOR = 1L shl 45   // 联想排序键 >= 这个的是我打过的词(见 UserFreq 的分层)
+        const val FREQ_WEIGHT = 4.0        // 联想排序里词频(取对数后归一到 0~1)占多少分,搭配分满分约 17
+        const val PRED_CHARS = 1500        // 「下一个字」预测只在最常用的这些字里挑
+        const val PRED_KEEP = 8            // 每个词最多缓存几个预测
+        const val PRED_FLOOR = 80          // 搭配字节值要超过它才算(= GramPack 的 SCORE_FLOOR × 10,低于它的搭配分是 0)
     }
 }
 
