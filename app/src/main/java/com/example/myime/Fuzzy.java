@@ -119,6 +119,39 @@ public final class Fuzzy {
         /** 在后台线程建。compact:每个词条的拼音连写;sylLens/sylStart:各音节长度(见 PinyinEngine)。 */
         public static Index build(String[] compact, byte[] sylLens, int[] sylStart, int mask) {
             int n = compact.length;
+            String[] folded = fold(compact, sylLens, sylStart, mask);
+            Integer[] order = new Integer[n];
+            for (int i = 0; i < n; i++) order[i] = i;
+            Arrays.sort(order, (x, y) -> folded[x].compareTo(folded[y]));
+            String[] keys = new String[n];
+            int[] ids = new int[n];
+            for (int i = 0; i < n; i++) {
+                int id = order[i];
+                ids[i] = id;
+                keys[i] = folded[id];
+            }
+            return new Index(mask, keys, ids);
+        }
+
+        /**
+         * 用缓存里排好的顺序(ids)直接还原索引:只重算折叠后的拼音,不再排序(排序是最费时间的一步)。
+         * ids 不是 0..n-1 的合法下标时抛 IllegalArgumentException,调用方退回 build。
+         */
+        public static Index fromOrder(String[] compact, byte[] sylLens, int[] sylStart, int mask, int[] ids) {
+            int n = compact.length;
+            if (ids.length != n) throw new IllegalArgumentException("顺序长度不对");
+            String[] folded = fold(compact, sylLens, sylStart, mask);
+            String[] keys = new String[n];
+            for (int i = 0; i < n; i++) {
+                int id = ids[i];
+                if (id < 0 || id >= n) throw new IllegalArgumentException("顺序里有越界的下标");
+                keys[i] = folded[id];
+            }
+            return new Index(mask, keys, ids);
+        }
+
+        private static String[] fold(String[] compact, byte[] sylLens, int[] sylStart, int mask) {
+            int n = compact.length;
             String[] folded = new String[n];
             StringBuilder sb = new StringBuilder(64);
             for (int i = 0; i < n; i++) {
@@ -148,17 +181,7 @@ public final class Fuzzy {
                 }
                 folded[i] = sb.toString();
             }
-            Integer[] order = new Integer[n];
-            for (int i = 0; i < n; i++) order[i] = i;
-            Arrays.sort(order, (x, y) -> folded[x].compareTo(folded[y]));
-            String[] keys = new String[n];
-            int[] ids = new int[n];
-            for (int i = 0; i < n; i++) {
-                int id = order[i];
-                ids[i] = id;
-                keys[i] = folded[id];
-            }
-            return new Index(mask, keys, ids);
+            return folded;
         }
     }
 }
