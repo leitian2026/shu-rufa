@@ -98,6 +98,12 @@ internal class ByteBuf(cap: Int = 4096) {
  * 最后补充"只消耗输入前半段"的候选,这样可以连续打多个词再逐段选。
  * 输入里的 ' (分词键)表示用户指定的音节边界,候选必须在这些位置有音节分界。
  */
+/** 引擎里「排好的下标顺序」的磁盘缓存读写(DictLoader 提供;内置样本没有词库文件就没有)。 */
+interface OrderCache {
+    fun load(name: String, n: Int): IntArray?
+    fun save(name: String, order: IntArray)
+}
+
 class PinyinEngine(
     internal val texts: Array<String>,
     compact: Array<String>,
@@ -142,10 +148,25 @@ class PinyinEngine(
     @Volatile private var fuzzyFailed = false
     private val fuzzyBuilding = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /** 排好的顺序的磁盘缓存;DictLoader 在引擎一造好就设上(早于任何一次联想 / 模糊音使用)。 */
+    @Volatile var orderCache: OrderCache? = null
+
     private fun buildFuzzy(mask: Int) {
         if (!fuzzyBuilding.compareAndSet(false, true)) return
         try {
-            fuzzyIdx = Fuzzy.Index.build(compactOf, sylLens, sylStart, mask)
+            val oc = orderCache
+            val name = "fuzzy_$mask"
+            var idx: Fuzzy.Index? = null
+            val pre = try { oc?.load(name, texts.size) } catch (t: Throwable) { null }
+            if (pre != null) {
+                // 缓存里有排好的顺序:只重算折叠后的拼音,不再排序;任何问题都退回重新建
+                idx = try { Fuzzy.Index.fromOrder(compactOf, sylLens, sylStart, mask, pre) } catch (t: Throwable) { null }
+            }
+            if (idx == null) {
+                idx = Fuzzy.Index.build(compactOf, sylLens, sylStart, mask)
+                try { oc?.save(name, idx.ids) } catch (t: Throwable) { /* 存不了只是下次再建一次 */ }
+            }
+            fuzzyIdx = idx
         } catch (t: Throwable) {
             fuzzyFailed = true   // 内存不够之类:这个词库实例里不再重试
             AppLog.w(TAG, "build fuzzy index failed", t)
@@ -325,7 +346,11 @@ class PinyinEngine(
 
 
     // 联想用:按词本身排序的下标。第一次要联想时才在后台算一次,不用联想就不占内存
-    private val textOrder: IntArray by lazy { IdxSort.by(texts.size) { texts[it] } }
+    private val textOrder: IntArray by lazy {
+        val oc = orderCache
+        val pre = try { oc?.load("pinyin_text", texts.size) } catch (t: Throwable) { null }
+        pre ?: IdxSort.by(texts.size) { texts[it] }.also { try { oc?.save("pinyin_text", it) } catch (t: Throwable) { /* 存不了只是下次再排一次 */ } }
+    }
     private val textKeys: Array<String> by lazy {
         val o = textOrder
         Array(o.size) { texts[o[it]] }
@@ -1045,7 +1070,17 @@ object DictLoader {
     /** 拼音引擎;装了搭配模型(gram.bin)就一并挂上,整句转换会用到。 */
     fun loadPinyin(context: Context): Engine? {
         val e = loadPinyinCore(context)
-        (e as? PinyinEngine)?.gramPack = loadGram(context)
+        (e as? PinyinEngine)?.let { pe ->
+            pe.gramPack = loadGram(context)
+            val src = userFile(context, DictStore.PINYIN_FILE)
+            if (src != null) {
+                val app = context.applicationContext
+                pe.orderCache = object : OrderCache {
+                    override fun load(name: String, n: Int): IntArray? = DictCache.loadOrder(app, name, src, n)
+                    override fun save(name: String, order: IntArray) = DictCache.saveOrder(app, name, src, order)
+                }
+            }
+        }
         return e
     }
 
@@ -1198,7 +1233,10 @@ object DictLoader {
             // 双词表很小,每次读文本
             val succ = HashMap<String, Array<String>>()
             val bf = userFile(context, DictStore.ENGLISH_BIGRAM_FILE)
-            if (bf != null) {
+            val cachedBigram = if (bf != null) DictCache.loadBigram(context, bf) else null
+            if (cachedBigram != null) {
+                succ.putAll(cachedBigram)   // 双词表也走二进制缓存,不用每次读文本、切分、排序
+            } else if (bf != null) {
                 val tmp = HashMap<String, ArrayList<Pair<String, Int>>>()
                 bf.bufferedReader(Charsets.UTF_8).useLines { lines ->
                     for (line in lines) {
@@ -1213,6 +1251,7 @@ object DictLoader {
                     list.sortByDescending { it.second }
                     succ[k] = Array(list.size) { list[it].first }
                 }
+                DictCache.saveBigram(context, bf, succ)
             }
             val user = UserData.english(context)
             val cached = DictCache.loadEnglish(context, f, succ, user)
