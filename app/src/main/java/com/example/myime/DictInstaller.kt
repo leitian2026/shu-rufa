@@ -126,14 +126,21 @@ object DictDownloader {
                         part.outputStream().use { output ->
                             val buf = ByteArray(64 * 1024)
                             var done = 0L
+                            var lastReport = 0L
                             while (true) {
                                 if (cancel.get()) throw CancelledException()
                                 val n = input.read(buf)
                                 if (n < 0) break
                                 output.write(buf, 0, n)
                                 done += n
-                                onBytes(done, total)
+                                // 进度最多每 200ms 报一次:121 MB 的搭配模型每 64 KB 报一次就是近两千次切到主线程刷界面,白白耗电
+                                val t = android.os.SystemClock.elapsedRealtime()
+                                if (t - lastReport >= 200L) {
+                                    lastReport = t
+                                    onBytes(done, total)
+                                }
                             }
+                            onBytes(done, total)   // 最后补一次,进度条停在真实的位置
                         }
                     }
                     if (part.length() == 0L) throw IOException("下载到的文件是空的")
@@ -402,6 +409,6 @@ object DictInstaller {
             File(raw, DictPacks.tradFileName()).delete()
         }
         DictConfig.clearMeta(ctx, pack)
-        DictCache.clear(ctx)
+        DictCache.clearPack(ctx, pack)   // 只清这个词库自己的缓存,别的词库的缓存不动
     }
 }
