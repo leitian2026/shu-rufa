@@ -1507,6 +1507,13 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         var from = -1
         var to = -1
         val r = chunkRange()
+        if (chunkEdit != null && BarRows.read && mode == Mode.PINYIN && !filterActive() && !exactActive()) {
+            // 词块行已经把读音按字放在每个字上方:预览条不再堆一整串拼音,只留已选的词和正在改的那一块的拼音(带光标)
+            val pre = if (pending.isEmpty()) "" else pending.toString() + " "
+            val sel = if (r != null) composing.substring(r[0], r[1]) else ""
+            candidateBar?.setComposing(pre + sel, if (sel.isNotEmpty()) pre.length else -1, pre.length + sel.length)
+            return
+        }
         if (r != null && mode == Mode.PINYIN) {
             val prefix = if (pending.isEmpty()) 0 else pending.length + 1   // previewText 里已选的词 + 一个空格
             from = prefix + r[0]
@@ -3579,7 +3586,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun refreshLayout(animate: Boolean) {
         // 笔画用户(最近用的中文方式是笔画)不要词块行:候选行贴着预览的笔画;拼音有。切换中英文不变,所以不会跳
         val wantChunk = chineseMode != Mode.STROKE
-        val wantRead = wantChunk && readingOn   // 「显示读音」开着:词块行每个字上方也带读音(行高一些)
+        val wantRead = wantChunk   // 拼音:词块行每个字上方永远带声调读音(不看「显示读音」开关,那个只管候选行)
         if (BarRows.chunk != wantChunk || BarRows.read != wantRead) {
             val readChanged = BarRows.read != wantRead
             BarRows.chunk = wantChunk
