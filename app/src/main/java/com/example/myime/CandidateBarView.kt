@@ -218,7 +218,7 @@ class CandidateBarView(
         chunkBase = baseline(chunkPaint)
         hintPaint.textSize = context.spf(if (wide) 14f else 12f)
         hintBase = baseline(hintPaint)
-        readPaint.textSize = context.spf(if (wide) 12f else 10.5f)
+        readPaint.textSize = context.spf(if (wide) 15f else 13.5f)   // 读音(带声调):太小声调看不清
         readBase = baseline(readPaint)
     }
 
@@ -519,7 +519,7 @@ class CandidateBarView(
                 val yr = stripH + chunkH * 0.27f + readBase
                 val sy = if (chunkReads.isNotEmpty() && !chunkRaw[i]) sylsOf(chunkTexts[i], chunkReads[i]) else null
                 if (sy != null) {
-                    readPaint.color = if (i == chunkSel) palette.accent else palette.icon
+                    readPaint.color = if (i == chunkSel) palette.accent else palette.text   // 用正文色,声调符号才看得清
                     readPaint.alpha = 255
                     drawRuby(canvas, chunkTexts[i], sy, x0 + pad, yt, yr, chunkPaint)
                 } else {
