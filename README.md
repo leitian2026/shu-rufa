@@ -667,12 +667,10 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 - 实现:`ChunkEdit.recode` / `remove`(纯 JDK,自测 `ChunkEditSelfTest` 多了 8 项);`MyImeService.editChunkCode` 在输入串里按这一块的字母数算出它的位置、只改这一段,后台查词用 `loadChunkAlts`(点一块和改拼音共用);`CandidateBarView.setComposing` 多了高亮范围。词块行的滚动位置在块数没变时不再回到开头。
 - 界面和按键处理要在手机上验证(没有电脑上能跑的自测)。
 
-## 读音按字对齐 + 词块行读音 + 模糊音(0.39.0)
+## 读音按字放在字上方 + 模糊音(0.39.0)
 
-都跟着功能页的「显示读音」开关走(默认关)。
-
-- **读音在每个字正上方**:以前整串读音(`jīn wǎn`)居中放在词上方,比词宽时就偏、挤成一堆。现在读音按空格切开,个数等于字数时一个字一格,格宽取「字宽」和「该字音节宽」中大的那个,音节在字的正上方、字在格里居中;词还是一个候选 / 一个词块,不拆开,只是字之间按读音撑开。个数对不上的(表情、符号混在里面)仍是整串居中。
-- **词块行也带读音**:开着「显示读音」时,词块行变高一行(手机 +14dp,宽屏 +16dp),每个词块的每个字上方是它的带声调读音,点中的那块读音是蓝色。读音在后台算好再刷新,算过的缓存在内存里(最多 400 条),关开关时清掉。改块里的拼音时,读音随新拼音和新词即时更新。
-- **模糊音**:① 读音来源①(刚打的拼音)现在认模糊音:打 `zi` 也能对上「知」的 zhī、打 `shi` 对上「四」的 sì(`ToneMap.annotate(..., mask)`,先找一模一样的,没有才用折叠后相同的);② 点中词块查备选 / 改块里的拼音时,`wordsFor` 在精确匹配后面补上模糊音相近的词(用模糊音索引,没开规则或索引没建好就跳过)。
-- 代码:`CandidateBarView`(`sylsOf / rubyWidth / drawRuby`、`setChunks` 多了读音)、`Util.kt`(`BarRows.read`、`chunkRowH`)、`ToneMap`、`PinyinEngine.wordsFor`、`MyImeService.pushChunks / fillChunkReads / chunkReading`。这些都依赖界面和字体,没有电脑上能跑的自测,需要在手机上验证。
-
+- **词块行永远带声调读音**(拼音输入,不看「显示读音」开关):每个词块的每个字正上方是它自己的带声调音节(`jīn wǎn｜hái｜miè｜chī fàn｜ma`),词块不拆开,字之间按读音撑开;点中的那块读音是蓝色。读音在后台算好再刷新,算过的缓存在内存里(最多 400 条)。
+- **预览条不再堆一整串拼音**:有词块行时,预览条只留已选的词和正在改的那一块的拼音(蓝色加光标线);整串拼音由词块行上方的读音代替,没被吃掉的尾巴在词块行里是灰色。
+- **候选行读音**(功能页「显示读音」,默认关)也改成同样的按字排版:一个字一格,音节在字正上方,词仍是一个候选。个数对不上字数(混了表情、符号)的仍是整串居中。
+- **模糊音**:① 读音来源(刚打的拼音)认模糊音:打 `zi` 也能对上「知」的 zhī、打 `shi` 对上「四」的 sì(`ToneMap.annotate(..., mask)`);② 点中词块查备选 / 改块里的拼音时,`wordsFor` 不再「精确匹配排满就不查模糊」:先放前 12 个精确的,紧接着放最多 14 个模糊音相近的,再接剩下的。没开规则、或模糊音索引还没建好(开了规则后第一次要在后台建一次)时不会有模糊的。
+- 代码:`CandidateBarView`(`sylsOf / rubyWidth / drawRuby`)、`Util.kt`(`BarRows.read`、`chunkRowH`)、`ToneMap`、`PinyinEngine.wordsFor`、`MyImeService.pushChunks / pushPreview / fillChunkReads / chunkReading`。依赖界面和字体,没有电脑上能跑的自测,需要在手机上验证。
