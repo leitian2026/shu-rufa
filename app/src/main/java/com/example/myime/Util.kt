@@ -49,7 +49,7 @@ object BarRows {
 fun Context.chunkRowH(): Float {
     if (!BarRows.chunk) return 0f
     val wide = isWide()
-    return dpf((if (wide) 40f else 34f) + (if (BarRows.read) (if (wide) 16f else 14f) else 0f))
+    return dpf((if (wide) 40f else 34f) + (if (BarRows.read) (if (wide) 24f else 21f) else 0f))
 }
 
 /** 键盘区(含各个面板)的统一高度,切换页面时高度不变。可在「键盘调节」里改。 */
