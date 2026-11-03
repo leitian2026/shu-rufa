@@ -1,6 +1,6 @@
 // 词块编辑(ChunkEdit)自测:不需要 Android,电脑上有 JDK 17+ 即可运行。
 // 在工程根目录执行:  bash tools/run_selftests.sh ChunkEdit
-// 覆盖:换词、拼音块换词后变正常块、拆成单字、合并、上屏文字只取开头连续的非拼音块、拼音字母数、拆分的校验、音节切分。
+// 覆盖:换词、拼音块换词后变正常块、拆成单字、合并、点中一块改它的拼音(recode / remove)、上屏文字只取开头连续的非拼音块、拼音字母数、拆分的校验、音节切分。
 import com.example.myime.ChunkEdit;
 import java.util.*;
 
@@ -61,6 +61,24 @@ public class ChunkEditSelfTest {
 
         check(ChunkEdit.syllables("xyz") == null || true, "不完整音节不抛异常");
         check(new ChunkEdit(new ArrayList<ChunkEdit.Item>()).text().isEmpty(), "空列表文字为空");
+
+        // 点中一块直接改它的拼音:recode 换拼音和文字,remove 整块去掉
+        ChunkEdit e = new ChunkEdit(Arrays.asList(
+            new ChunkEdit.Item("今晚", "jinwan", false),
+            new ChunkEdit.Item("灭", "mie", false),
+            new ChunkEdit.Item("吃饭", "chifan", false),
+            new ChunkEdit.Item("ma", "ma", true)));
+        check(e.recode(1, "没", "mei") && e.get(1).text.equals("没") && e.get(1).code.equals("mei") && !e.get(1).raw, "第 2 块 mie → mei:文字和拼音都换了");
+        check(e.edited() && e.text().equals("今晚没吃饭") && e.letters() == 6 + 3 + 6, "改拼音后整句文字和字母数跟着变:" + e.text() + " / " + e.letters());
+        check(e.get(0).code.equals("jinwan") && e.get(2).code.equals("chifan"), "别的块不动");
+        check(e.recode(1, "m", "m") && e.letters() == 6 + 1 + 6, "没打完的拼音先用字母顶着,字母数跟着变");
+        check(!e.recode(9, "x", "x") && !e.recode(-1, "x", "x") && !e.recode(1, "", "m") && !e.recode(1, "x", ""), "越界 / 空文字 / 空拼音被拒绝");
+        check(e.remove(1) && e.size() == 3 && e.text().equals("今晚吃饭") && e.letters() == 12, "拼音删光的块整块去掉:" + e.text());
+        check(!e.remove(7) && !e.remove(-1), "删除越界被拒绝");
+        ChunkEdit e2 = new ChunkEdit(Arrays.asList(
+            new ChunkEdit.Item("今晚", "jinwan", false),
+            new ChunkEdit.Item("吃饭", "chifan", false)));
+        check(!e2.edited() && e2.recode(0, "今万", "jinwan") && e2.edited(), "recode 算改过");
 
         System.out.println(fails == 0 ? "ALL PASS" : ("FAILED " + fails));
         System.exit(fails == 0 ? 0 : 1);
