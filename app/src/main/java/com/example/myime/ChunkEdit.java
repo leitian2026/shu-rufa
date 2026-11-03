@@ -76,6 +76,22 @@ public final class ChunkEdit {
         return true;
     }
 
+    /** 第 i 块自己的拼音改了(在这一块里打字 / 退格):拼音换成 code,文字换成 text(查不到词时调用方给拼音字母)。变成正常块。 */
+    public boolean recode(int i, String text, String code) {
+        if (i < 0 || i >= items.size() || text == null || text.isEmpty() || code == null || code.isEmpty()) return false;
+        items.set(i, new Item(text, code, false));
+        edited = true;
+        return true;
+    }
+
+    /** 第 i 块整块删掉(它的拼音被退格删光了)。 */
+    public boolean remove(int i) {
+        if (i < 0 || i >= items.size()) return false;
+        items.remove(i);
+        edited = true;
+        return true;
+    }
+
     /** 开头连续的、不是拼音块的那几块拼成的文字:这就是改完以后整句要上屏的内容。 */
     public String text() {
         StringBuilder sb = new StringBuilder();
