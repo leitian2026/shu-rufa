@@ -143,6 +143,7 @@ class PinyinEngine(
     @Volatile private var lastSentenceP: String? = null
 
     /** 模糊音:哪些规则打开了(Fuzzy.ZH 等按位或),0 = 全关。由键盘服务设置。 */
+    private val FUZZY_SENT_PENALTY = 2.0   // 模糊音整句的分数扣这么多再和精确整句比(分是对数概率,2 ≈ 词频差 7 倍)
     @Volatile var fuzzyMask: Int = 0
     @Volatile private var fuzzyIdx: Fuzzy.Index? = null
     @Volatile private var fuzzyFailed = false
@@ -734,8 +735,16 @@ class PinyinEngine(
             // 省电模式只要最好的一句;相邻的词用我的「词接词」记录加分
             sents.addAll(sentence.decodeTop(p, cutsArr, lu, ctx, if (low) 1 else SENTENCE_K, uw, chain))
         }
+        val nExactSents = sents.size
         if (!low && fi != null && cn != null && p.length >= SENTENCE_MIN && !cancelled()) {
             sents.addAll(sentence.decodeFuzzyTop(p, cn, fi.keys, fi.ids, lu, ctx, 2))
+        }
+        if (sents.size > nExactSents && nExactSents > 0) {
+            // 模糊音整句和精确整句按分数一起排(模糊的扣 FUZZY_SENT_PENALTY 分,同样好时还是精确的在前);
+            // 以前模糊的永远排在精确的后面,打 sang 想要「今天晚上」却先给「今天晚丧」
+            val ranked = sents.withIndex().sortedByDescending { it.value.score - (if (it.index >= nExactSents) FUZZY_SENT_PENALTY else 0.0) }.map { it.value }
+            sents.clear()
+            sents.addAll(ranked)
         }
         if (sents.isNotEmpty()) {
             val limit = if (hadExact) SENT_WITH_EXACT else SENT_SHOWN
