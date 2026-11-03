@@ -52,6 +52,8 @@ class CandidateBarView(
     private var pinPopup: PopupWindow? = null   // 长按弹出的信息条:不会自己消失,只在候选变了 / 点别处 / 键盘收起时收起
 
     private var composing = ""
+    private var hlStart = -1   // 预览里高亮的一段(点中的词块的拼音),-1 = 没有
+    private var hlEnd = -1
     private var hint: String? = null   // 出错原因(小红字,显示在预览行右边)
     private var activeTool = -1
 
@@ -67,6 +69,8 @@ class CandidateBarView(
 
     // 词块行:整句按词切开,一块一个;sel 是点中的那块(-1 = 没有),raw 是没被吃掉的拼音(只显示,不能点)
     private var chunkTexts: List<String> = emptyList()
+    private var chunkReads: List<String> = emptyList()   // 每块的读音(音节空格隔开,个数 = 字数才按字排),空串 = 没有
+    private val rubyGap get() = context.dpf(2f)
     private var chunkRaw: List<Boolean> = emptyList()
     private var chunkSel = -1
     private var chunkXs = FloatArray(1)
@@ -195,7 +199,7 @@ class CandidateBarView(
     private fun applyMetrics() {
         val wide = context.isWide()
         stripH = context.dpf(if (wide) 37f else 26f)
-        chunkH = if (BarRows.chunk) context.dpf(if (wide) 40f else 34f) else 0f
+        chunkH = context.chunkRowH()
         candTop = stripH + chunkH
         rowH = context.dpf(if (wide) 50f else 44f)
         inset = context.dpf(if (wide) 31f else 8f)
@@ -250,17 +254,26 @@ class CandidateBarView(
         if (composing.isNotEmpty()) invalidate()
     }
 
-    fun setComposing(text: String) {
-        if (text == composing) return
+    /** hlFrom ~ hlTo:预览里要高亮的一段(点中的那一块的拼音),后面带一根光标线;不要高亮传 -1。 */
+    fun setComposing(text: String, hlFrom: Int = -1, hlTo: Int = -1) {
+        val ok = hlFrom >= 0 && hlTo > hlFrom && hlTo <= text.length
+        val from = if (ok) hlFrom else -1
+        val to = if (ok) hlTo else -1
+        if (text == composing && from == hlStart && to == hlEnd) return
         composing = text
+        hlStart = from
+        hlEnd = to
         invalidate()
     }
 
     /** 词块行:整句按词切成的文字、哪些是没被吃掉的拼音(只显示)、点中的那块(-1 = 没有)。 */
-    fun setChunks(texts: List<String>, raws: List<Boolean>, sel: Int) {
-        if (texts == chunkTexts && raws == chunkRaw && sel == chunkSel) return
-        val sameList = texts == chunkTexts
+    fun setChunks(texts: List<String>, raws: List<Boolean>, sel: Int, readings: List<String> = emptyList()) {
+        val rd = if (readings.size == texts.size) readings else emptyList()
+        if (texts == chunkTexts && raws == chunkRaw && sel == chunkSel && rd == chunkReads) return
+        // 块数和「哪些是拼音块」没变(只是某块的文字换了,比如在块里改拼音):保持滚动位置,不要每打一个字母就跳回开头
+        val sameList = texts == chunkTexts || (texts.size == chunkTexts.size && raws == chunkRaw)
         chunkTexts = texts
+        chunkReads = rd
         chunkRaw = raws
         chunkSel = sel
         chunkXs = FloatArray(texts.size + 1)
@@ -268,7 +281,9 @@ class CandidateBarView(
         val pad = itemPad * 0.55f
         for (i in texts.indices) {
             chunkXs[i] = x
-            x += chunkPaint.measureText(texts[i]) + pad * 2 + itemPad * 0.25f
+            val sy = if (rd.isNotEmpty()) sylsOf(texts[i], rd[i]) else null
+            val tw = if (sy != null) rubyWidth(texts[i], sy, chunkPaint) else chunkPaint.measureText(texts[i])
+            x += tw + pad * 2 + itemPad * 0.25f
         }
         chunkXs[texts.size] = x
         chunkContentW = x
@@ -348,6 +363,32 @@ class CandidateBarView(
     /** 有读音时每个候选左右留的空白小一点(读音比字宽,不然候选栏一屏放不下几个)。 */
     private fun padNow(): Float = if (reads.isEmpty()) itemPad else itemPad * 0.75f
 
+    /** 读音按空格切开,个数正好等于字数才能一个字配一个音节;对不上返回 null(整串读音居中放在词上方)。 */
+    private fun sylsOf(text: String, read: String): List<String>? {
+        if (read.isEmpty() || text.isEmpty()) return null
+        val s = read.split(' ')
+        return if (s.size == text.length) s else null
+    }
+
+    /** 一个词按字排:每个字一格,格宽 = 字宽和它的音节宽中大的那个,音节在字的正上方、字在格里居中。词仍是一个整体,只是字之间按读音撑开。 */
+    private fun rubyWidth(text: String, syls: List<String>, tp: Paint): Float {
+        var w = 0f
+        for (k in text.indices) w += maxOf(tp.measureText(text, k, k + 1), readPaint.measureText(syls[k]) + rubyGap)
+        return w
+    }
+
+    private fun drawRuby(canvas: Canvas, text: String, syls: List<String>, x0: Float, yText: Float, yRead: Float, tp: Paint) {
+        var x = x0
+        for (k in text.indices) {
+            val cw = tp.measureText(text, k, k + 1)
+            val rw = readPaint.measureText(syls[k])
+            val cell = maxOf(cw, rw + rubyGap)
+            canvas.drawText(text, k, k + 1, x + (cell - cw) / 2f, yText, tp)
+            canvas.drawText(syls[k], x + (cell - rw) / 2f, yRead, readPaint)
+            x += cell
+        }
+    }
+
     private fun relayout() {
         xs = FloatArray(items.size + 1)
         var x = 0f
@@ -357,7 +398,10 @@ class CandidateBarView(
             var w = candPaint.measureText(items[i])
             if (reads.isNotEmpty()) {
                 val r = reads[i]
-                if (r.isNotEmpty()) w = maxOf(w, readPaint.measureText(r))
+                if (r.isNotEmpty()) {
+                    val sy = sylsOf(items[i], r)
+                    w = if (sy != null) rubyWidth(items[i], sy, candPaint) else maxOf(w, readPaint.measureText(r))
+                }
             }
             x += w + pad * 2
         }
@@ -381,7 +425,31 @@ class CandidateBarView(
         // 上条:预览文字
         if (composing.isNotEmpty()) {
             composePaint.color = palette.text
-            canvas.drawText(composing, inset + itemPad * 1.5f, stripH / 2f + composeBase, composePaint)
+            val tx = inset + itemPad * 1.5f
+            val ty = stripH / 2f + composeBase
+            if (hlStart >= 0 && hlEnd in (hlStart + 1)..composing.length) {
+                // 点中了一块:这一块的拼音换成强调色加淡底,末尾一根光标线——打字 / 退格改的就是它
+                val before = composing.substring(0, hlStart)
+                val mid = composing.substring(hlStart, hlEnd)
+                val xMid = tx + composePaint.measureText(before)
+                val wMid = composePaint.measureText(mid)
+                val gap = context.dpf(2f)
+                pillPaint.color = palette.accent
+                pillPaint.alpha = 40
+                tmp.set(xMid - gap, stripH * 0.10f, xMid + wMid + gap, stripH * 0.90f)
+                canvas.drawRoundRect(tmp, context.dpf(6f), context.dpf(6f), pillPaint)
+                canvas.drawText(before, tx, ty, composePaint)
+                composePaint.color = palette.accent
+                canvas.drawText(mid, xMid, ty, composePaint)
+                composePaint.color = palette.text
+                canvas.drawText(composing.substring(hlEnd), xMid + wMid, ty, composePaint)
+                pillPaint.alpha = 255
+                val cx = xMid + wMid + gap * 0.5f
+                tmp.set(cx, stripH * 0.18f, cx + context.dpf(1.5f), stripH * 0.82f)
+                canvas.drawRect(tmp, pillPaint)
+            } else {
+                canvas.drawText(composing, tx, ty, composePaint)
+            }
             val h = hint
             if (h != null) {
                 val left = inset + itemPad * 1.5f + composePaint.measureText(composing) + itemPad
@@ -437,7 +505,7 @@ class CandidateBarView(
             if (i == chunkSel) {
                 pillPaint.color = palette.accent
                 pillPaint.alpha = 40
-                tmp.set(x0, cy - chunkH * 0.40f, x0 + w, cy + chunkH * 0.40f)
+                tmp.set(x0, cy - chunkH * 0.44f, x0 + w, cy + chunkH * 0.44f)
                 canvas.drawRoundRect(tmp, chunkH * 0.3f, chunkH * 0.3f, pillPaint)
             }
             chunkPaint.color = when {
@@ -445,7 +513,21 @@ class CandidateBarView(
                 i == chunkSel -> palette.accent
                 else -> palette.text
             }
-            canvas.drawText(chunkTexts[i], x0 + pad, cy + chunkBase, chunkPaint)
+            if (BarRows.read) {
+                // 带读音的词块行:读音在上、字在下(和候选行一样);词块不拆开,每个字上方是自己的音节
+                val yt = stripH + chunkH * 0.68f + chunkBase
+                val yr = stripH + chunkH * 0.27f + readBase
+                val sy = if (chunkReads.isNotEmpty() && !chunkRaw[i]) sylsOf(chunkTexts[i], chunkReads[i]) else null
+                if (sy != null) {
+                    readPaint.color = if (i == chunkSel) palette.accent else palette.icon
+                    readPaint.alpha = 255
+                    drawRuby(canvas, chunkTexts[i], sy, x0 + pad, yt, yr, chunkPaint)
+                } else {
+                    canvas.drawText(chunkTexts[i], x0 + pad, yt, chunkPaint)
+                }
+            } else {
+                canvas.drawText(chunkTexts[i], x0 + pad, cy + chunkBase, chunkPaint)
+            }
         }
         canvas.restore()
     }
@@ -465,16 +547,22 @@ class CandidateBarView(
             val first = i == 0
             candPaint.color = if (first) palette.accent else palette.text
             candPaint.alpha = a
+            val r = if (hasReads) reads[i] else ""
+            val sy = if (r.isNotEmpty()) sylsOf(items[i], r) else null
+            if (sy != null) {
+                // 每个字上方是它自己的音节;词不拆开
+                readPaint.color = if (first) palette.accent else palette.icon
+                readPaint.alpha = a
+                drawRuby(canvas, items[i], sy, inset + xs[i] - offset + padNow(), y, ry, candPaint)
+                continue
+            }
             val tw = candPaint.measureText(items[i])
             canvas.drawText(items[i], inset + xs[i] - offset + (w - tw) / 2f, y, candPaint)
-            if (hasReads) {
-                val r = reads[i]
-                if (r.isNotEmpty()) {
-                    readPaint.color = if (first) palette.accent else palette.icon
-                    readPaint.alpha = a
-                    val rw = readPaint.measureText(r)
-                    canvas.drawText(r, inset + xs[i] - offset + (w - rw) / 2f, ry, readPaint)
-                }
+            if (r.isNotEmpty()) {
+                readPaint.color = if (first) palette.accent else palette.icon
+                readPaint.alpha = a
+                val rw = readPaint.measureText(r)
+                canvas.drawText(r, inset + xs[i] - offset + (w - rw) / 2f, ry, readPaint)
             }
         }
     }
