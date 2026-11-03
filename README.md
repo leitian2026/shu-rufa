@@ -674,3 +674,5 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 - **候选行读音**(功能页「显示读音」,默认关)也改成同样的按字排版:一个字一格,音节在字正上方,词仍是一个候选。个数对不上字数(混了表情、符号)的仍是整串居中。
 - **模糊音**:① 读音来源(刚打的拼音)认模糊音:打 `zi` 也能对上「知」的 zhī、打 `shi` 对上「四」的 sì(`ToneMap.annotate(..., mask)`);② 点中词块查备选 / 改块里的拼音时,`wordsFor` 不再「精确匹配排满就不查模糊」:先放前 12 个精确的,紧接着放最多 14 个模糊音相近的,再接剩下的。没开规则、或模糊音索引还没建好(开了规则后第一次要在后台建一次)时不会有模糊的。
 - 代码:`CandidateBarView`(`sylsOf / rubyWidth / drawRuby`)、`Util.kt`(`BarRows.read`、`chunkRowH`)、`ToneMap`、`PinyinEngine.wordsFor`、`MyImeService.pushChunks / pushPreview / fillChunkReads / chunkReading`。依赖界面和字体,没有电脑上能跑的自测,需要在手机上验证。
+- 读音字号加大(手机 10.5→13.5sp,宽屏 12→15sp),声调符号才看得清;词块行带读音时比不带高 21dp(宽屏 24dp),词块读音用正文色(点中的仍是蓝色)。
+- **模糊音整句和精确整句一起排**:以前模糊整句永远排在精确的后面,打 `sang` 想要「今天晚上」,先给的却是「今天晚丧」。现在两种整句按分数一起排,模糊的扣 2 分(`FUZZY_SENT_PENALTY`,对数概率,约词频差 7 倍),同样好时精确的仍在前;所以更常见的「今天晚上」排到最前,词块行也就是 今天|晚|上。
