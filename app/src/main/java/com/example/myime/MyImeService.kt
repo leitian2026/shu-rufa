@@ -1060,9 +1060,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 readingOn = !readingOn
                 DictConfig.setShowReading(applicationContext, readingOn)
                 if (!readingOn) ToneMap.release()   // 关了就把声调表放掉
+                chunkReadCache.clear()
                 refreshTradKey()
                 leavePage()
                 pushToBar(candidates)
+                refreshLayout(animate = false)   // 词块行的读音一行跟着开 / 关
             }
             SettingsPanelView.ID_TRANS_MS -> {
                 onTransKey(Translator.MS)
@@ -1343,6 +1345,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val ic = currentInputConnection ?: return
         if (mode == Mode.PINYIN && t.length == 1 && t[0] in 'a'..'z') {
             if (composing.isEmpty()) resetFilter()   // 新的一段输入,上一段留下的筛选不带过来
+            if (chunkSel >= 0 && editChunkCode(t[0])) return   // 点中了一个词块:打的字母接在这一块拼音后面,只改这一块
             lastOwnEditAt = SystemClock.uptimeMillis()   // 正在打字:这段时间网页迟到的光标回调不能清掉预览条里的词
             composing.append(t)
             showComposing()
@@ -1499,6 +1502,19 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         return sb.toString()
     }
 
+    /** 把预览交给候选栏;点中了一个词块时,顺便告诉它这一块的拼音在预览里的位置(高亮 + 光标)。 */
+    private fun pushPreview() {
+        var from = -1
+        var to = -1
+        val r = chunkRange()
+        if (r != null && mode == Mode.PINYIN) {
+            val prefix = if (pending.isEmpty()) 0 else pending.length + 1   // previewText 里已选的词 + 一个空格
+            from = prefix + r[0]
+            to = prefix + r[1]
+        }
+        candidateBar?.setComposing(previewText(), from, to)
+    }
+
     /** 分词键:在拼音输入里插入音节边界。 */
     private fun typeSeparator() {
         if ((mode != Mode.PINYIN && mode != Mode.STROKE) || composing.isEmpty()) return
@@ -1524,6 +1540,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             return
         }
         if (composing.isNotEmpty()) {
+            if (chunkSel >= 0 && editChunkCode(null)) return   // 点中了一个词块:退格只退这一块拼音的最后一个字母
             composing.deleteCharAt(composing.length - 1)
             if (composing.isEmpty() && pickStack.isNotEmpty()) undoLastPick()
             showComposing()
@@ -2124,7 +2141,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     /** 组合内容变了:更新预览条;「分词/笔画」「清除/回车」这类键的文字也随之切换。 */
     private fun onComposingChanged() {
-        candidateBar?.setComposing(previewText())
+        pushPreview()
         val c = composing.isNotEmpty()
         if (c != layoutComposing) {
             layoutComposing = c
@@ -2272,7 +2289,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             val rs = try { pe.readings(text, 3) } catch (t: Throwable) { emptyList() }
             for (r in rs) sources.add(r.split(' '))
         }
-        return try { ToneMap.annotate(text, sources) } catch (t: Throwable) { "" }
+        return try { ToneMap.annotate(text, sources, (pinyinEngine as? PinyinEngine)?.fuzzyMask ?: 0) } catch (t: Throwable) { "" }
     }
 
     /** 已输入的拼音前 consumed 个字符切成音节,正好 n 个才算(对得上这个候选的字数);切不开返回 null。 */
@@ -2358,6 +2375,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     /** 当前整句切成的词块;null = 没有(不是拼音输入 / 还没有候选)。用户改过(换词、拆、并)后 edited() 为 true。 */
     private var chunkEdit: ChunkEdit? = null
+    private val CHUNK_CODE_MAX = 24   // 一块拼音最多这么多字母(在块里打字时的上限)
     private var chunkSel = -1   // 点中的那一块;-1 = 没有。有的话候选栏显示这一块的备选
     private var keepChunks = false   // 下一次 requery 不要丢掉词块(换完词、退出备选时用)
 
@@ -2373,6 +2391,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         chunkPlan = null
         chunkAltOrig = emptyList()
         candidateBar?.setChunks(emptyList(), emptyList(), -1)
+        pushPreview()   // 预览里不再高亮
     }
 
     /** 词块 / 备选里的文字也跟着简繁设置走。 */
@@ -2392,7 +2411,65 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             texts.add(if (it.raw) it.text else dispChunk(it.text))
             raws.add(it.raw)
         }
-        candidateBar?.setChunks(texts, raws, chunkSel)
+        var reads: List<String> = emptyList()
+        if (BarRows.read) {
+            // 每块的读音(带声调,按字对应)。已经算过的直接用;没算过的交给后台线程,算好再刷新一次
+            val rl = ArrayList<String>(ce.size())
+            var missing = false
+            for (i in 0 until ce.size()) {
+                val it = ce.get(i)
+                if (it.raw) { rl.add(""); continue }
+                val v = chunkReadCache[it.text + "\u0001" + it.code]
+                if (v == null) missing = true
+                rl.add(v ?: "")
+            }
+            reads = rl
+            if (missing) fillChunkReads(ce)
+        }
+        candidateBar?.setChunks(texts, raws, chunkSel, reads)
+        pushPreview()   // 点中的块变了:预览里高亮的拼音跟着变
+    }
+
+    private val chunkReadCache = HashMap<String, String>()   // 只在主线程读写:「文字\u0001拼音」→ 带声调的读音(空串 = 没有)
+
+    /** 后台把还没有读音的词块算出来(声调表、词库读音都在后台读),算好回主线程刷新词块行。 */
+    private fun fillChunkReads(ce: ChunkEdit) {
+        val todo = ArrayList<Array<String>>()
+        for (i in 0 until ce.size()) {
+            val it = ce.get(i)
+            if (!it.raw && !chunkReadCache.containsKey(it.text + "\u0001" + it.code)) todo.add(arrayOf(it.text, it.code))
+        }
+        if (todo.isEmpty()) return
+        val pe = pinyinEngine as? PinyinEngine
+        val ctx = applicationContext
+        worker.execute {
+            ToneMap.ensure(ctx)
+            val done = ArrayList<Array<String>>(todo.size)
+            for (t in todo) done.add(arrayOf(t[0], t[1], chunkReading(t[0], t[1], pe)))
+            main.post {
+                if (chunkReadCache.size > 400) chunkReadCache.clear()
+                for (d in done) chunkReadCache[d[0] + "\u0001" + d[1]] = d[2]
+                if (chunkEdit === ce && BarRows.read) pushChunks()
+            }
+        }
+    }
+
+    /**
+     * 一个词块的读音(带声调)。来源按可信度:① 这一块打的拼音(开着模糊音时,打 zi 也认得「知」是 zhī);② 词库里这个词的读音;
+     * ③ 声调表里每个字最常用的读音。个数对不上字数的(表情、符号)返回空串。
+     */
+    private fun chunkReading(text: String, code: String, pe: PinyinEngine?): String {
+        if (text.isEmpty() || text.length > 16) return ""
+        var han = false
+        for (ch in text) if (ch.code in 0x4E00..0x9FFF) { han = true; break }
+        if (!han) return ""
+        val sources = ArrayList<List<String>>(3)
+        ChunkEdit.syllables(code)?.let { if (it.size == text.length) sources.add(it) }
+        if (pe != null && pe.indexReady) {
+            val rs = try { pe.readings(text, 3) } catch (t: Throwable) { emptyList() }
+            for (r in rs) sources.add(r.split(' '))
+        }
+        return try { ToneMap.annotate(text, sources, pe?.fuzzyMask ?: 0) } catch (t: Throwable) { "" }
     }
 
     /** 一个新的候选结果到了:把第一个候选(整句)切成词块。用户已经改过的不重切。 */
@@ -2473,10 +2550,21 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             exitChunk()
             return
         }
-        val pe = pinyinEngine as? PinyinEngine ?: return
+        if (pinyinEngine !is PinyinEngine) return
         chunkSel = i
         val gen = ++queryGen   // 之前排队的整句查询结果不要再盖掉备选
         pushChunks()
+        loadChunkAlts(i, gen, resolveText = false)
+    }
+
+    /**
+     * 在后台查第 i 块的备选(这一块的拼音单独查整个词库、拆成单字、并下一块),查好回到主线程显示。
+     * resolveText = true:这一块的拼音是用户刚改过的,文字还是临时的(拼音字母),查到词就把文字换成排第一的词。
+     */
+    private fun loadChunkAlts(i: Int, gen: Int, resolveText: Boolean) {
+        val ce = chunkEdit ?: return
+        val pe = pinyinEngine as? PinyinEngine ?: return
+        if (i !in 0 until ce.size()) return
         val cur = ce.get(i)
         val next = if (i + 1 < ce.size()) ce.get(i + 1) else null
         worker.execute {
@@ -2498,8 +2586,92 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 // 拆不开就不给「拆成单字」
             }
             val merge = try { if (next != null) pe.wordsFor(cur.code + next.code, 1).firstOrNull() else null } catch (t: Throwable) { null }
-            main.post { if (gen == queryGen && chunkSel == i) showChunkAlts(cur, alts, ChunkPlan(splitT, splitC, merge)) }
+            main.post {
+                val now = chunkEdit
+                if (gen != queryGen || chunkSel != i || now == null || i >= now.size()) return@post
+                if (resolveText) {
+                    // 拼音在这期间又被改了:这一份结果作废,等最新那次
+                    if (now.get(i).code != cur.code) return@post
+                    // 整个词库里这一段拼音排第一的词;没有就用每个音节各自排第一的字拼起来;还是没有(没打完)就留拼音字母
+                    val best = alts.firstOrNull() ?: splitT?.joinToString("")
+                    if (best != null && best.isNotEmpty() && best != now.get(i).text) {
+                        now.recode(i, best, cur.code)
+                        pushChunks()
+                    }
+                }
+                showChunkAlts(now.get(i), alts, ChunkPlan(splitT, splitC, merge))
+            }
         }
+    }
+
+    // ---- 点中一块以后,打字 / 退格直接改这一块的拼音
+
+    /** 输入串里第 n 个拼音字母(不算分词符)之后的位置;n ≤ 0 是 0,字母不够就是串尾。 */
+    private fun indexAfterLetters(n: Int): Int {
+        if (n <= 0) return 0
+        var k = 0
+        for (i in composing.indices) {
+            if (composing[i] == '\'') continue
+            if (++k == n) return i + 1
+        }
+        return composing.length
+    }
+
+    /** 点中的那一块的拼音在输入串里的范围 [开始, 结束);没点中 / 对不上返回 null。 */
+    private fun chunkRange(): IntArray? {
+        val ce = chunkEdit ?: return null
+        val sel = chunkSel
+        if (sel < 0 || sel >= ce.size() || ce.get(sel).raw) return null
+        var before = 0
+        for (i in 0 until sel) before += ce.get(i).code.length
+        val len = ce.get(sel).code.length
+        var s = indexAfterLetters(before)
+        while (s < composing.length && composing[s] == '\'') s++   // 块与块之间的分词符不算这一块的
+        val e = indexAfterLetters(before + len)
+        return if (e > s && e <= composing.length) intArrayOf(s, e) else null
+    }
+
+    /**
+     * 点中了一个词块时,键盘打的字母 / 退格只改这一块的拼音:字母接在这一块拼音后面,退格删这一块拼音的最后一个字母;
+     * 别的块、别的块里换过的词都不动。改完这一块的文字换成新拼音排第一的词,候选行换成新拼音的备选。
+     * add = null 表示退格。返回 true = 已经处理(调用方不用再走普通输入);false = 对不上,走普通输入。
+     */
+    private fun editChunkCode(add: Char?): Boolean {
+        val ce = chunkEdit ?: return false
+        val sel = chunkSel
+        if (mode != Mode.PINYIN || sel < 0 || sel >= ce.size()) return false
+        val range = chunkRange() ?: return false
+        val cur = ce.get(sel)
+        if (add != null && cur.code.length >= CHUNK_CODE_MAX) return true   // 一块拼音太长了:不再接,也不要把选中状态弄丢
+        lastOwnEditAt = SystemClock.uptimeMillis()
+        if (add == null) {
+            composing.deleteCharAt(range[1] - 1)
+            if (cur.code.length == 1) {
+                // 这一块的拼音删光了:整块去掉,回到整句候选(别的块的改动保留)
+                ce.remove(sel)
+                chunkSel = -1
+                chunkPlan = null
+                chunkAltOrig = emptyList()
+                if (composing.isEmpty() && pickStack.isNotEmpty()) undoLastPick()
+                if (composing.isNotEmpty() && ce.size() > 0 && !ce.get(0).raw) keepChunks = true else resetChunks()
+                showComposing()
+                requery()
+                return true
+            }
+        } else {
+            composing.insert(range[1], add)
+        }
+        val newCode = Syllabary.normalize(if (add == null) cur.code.substring(0, cur.code.length - 1) else cur.code + add)
+        // 先用拼音字母顶着:查到词再换。这样快速连打时,输入串和词块的拼音始终一一对得上
+        ce.recode(sel, newCode, newCode)
+        val gen = ++queryGen
+        candidates = emptyList()   // 旧备选对应旧拼音,不能再点
+        chunkAltOrig = emptyList()
+        candidateBar?.setStale(true)
+        pushChunks()
+        onComposingChanged()
+        loadChunkAlts(sel, gen, resolveText = true)
+        return true
     }
 
     /** 候选栏换成点中那一块的备选:原词在最前(点它 = 不改),然后是「拆成单字 / 并下一块」,再是这一段拼音的所有词。 */
@@ -2531,6 +2703,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         chunkAltOrig = orig
         candidates = list
         candidatesFor = "\u0001chunk"   // 和 queryKey() 永远不同:别处把它当过期候选,不会按它的 consumed 去上屏
+        candidateBar?.setStale(false)
         candidateBar?.setCandidates(list.map { it.text })
     }
 
@@ -3406,9 +3579,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun refreshLayout(animate: Boolean) {
         // 笔画用户(最近用的中文方式是笔画)不要词块行:候选行贴着预览的笔画;拼音有。切换中英文不变,所以不会跳
         val wantChunk = chineseMode != Mode.STROKE
-        if (BarRows.chunk != wantChunk) {
+        val wantRead = wantChunk && readingOn   // 「显示读音」开着:词块行每个字上方也带读音(行高一些)
+        if (BarRows.chunk != wantChunk || BarRows.read != wantRead) {
+            val readChanged = BarRows.read != wantRead
             BarRows.chunk = wantChunk
-            if (!wantChunk) resetChunks()
+            BarRows.read = wantRead
+            if (!wantChunk) resetChunks() else if (readChanged) pushChunks()
             applySizeLive()
             inputRoot?.requestLayout()
         }
