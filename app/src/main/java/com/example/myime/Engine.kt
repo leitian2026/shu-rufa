@@ -270,19 +270,32 @@ class PinyinEngine(
     fun wordsFor(code: String, max: Int): List<String> {
         val p = code.replace("'", "")
         if (p.isEmpty() || max <= 0) return emptyList()
-        val out = LinkedHashSet<String>()
+        val exact = LinkedHashSet<String>()
         val uw = words?.snapshot()
-        if (uw != null) for (t in uw.exact(p)) out.add(t)
-        for (id in top(compactKeys, compactIds, p, p + '\u0000', emptyList(), null)) out.add(texts[id])
-        // 模糊音:打的拼音按开着的规则折叠后,再补上读音相近的词(排在一模一样的后面);索引没建好 / 没开规则就跳过
-        if (out.size < max && fuzzyMask != 0) {
+        if (uw != null) for (t in uw.exact(p)) exact.add(t)
+        for (id in top(compactKeys, compactIds, p, p + '\u0000', emptyList(), null)) exact.add(texts[id])
+        // 模糊音:打的拼音按开着的规则折叠后,查读音相近的词。常见音节(si / shi …)精确匹配就能塞满,所以不能「精确的排满了就不查」:
+        // 先放前 EXACT_HEAD 个精确的,紧接着放最多 FUZZY_SLOTS 个模糊的,再接着放剩下的精确的、剩下的模糊的。
+        val fuzzy = LinkedHashSet<String>()
+        if (fuzzyMask != 0) {
             val fi = fuzzyIndex()
             val cn = if (fi != null) Fuzzy.canon(p, fi.mask, Syllabary.segment(p)) else null
             if (fi != null && cn != null) {
-                for (id in top(fi.keys, fi.ids, cn.canon, cn.canon + '\u0000', emptyList(), null, p)) out.add(texts[id])
+                for (id in top(fi.keys, fi.ids, cn.canon, cn.canon + '\u0000', emptyList(), null, p)) {
+                    if (texts[id] !in exact) fuzzy.add(texts[id])
+                }
             }
         }
-        return if (out.size <= max) ArrayList(out) else ArrayList(out).subList(0, max)
+        if (fuzzy.isEmpty()) return if (exact.size <= max) ArrayList(exact) else ArrayList(exact).subList(0, max)
+        val ex = ArrayList(exact)
+        val fz = ArrayList(fuzzy)
+        val res = LinkedHashSet<String>()
+        val head = minOf(ex.size, 12)
+        for (k in 0 until head) res.add(ex[k])
+        for (t in fz) if (res.size < max && res.size < head + 14) res.add(t)
+        for (k in head until ex.size) if (res.size < max) res.add(ex[k])
+        for (t in fz) if (res.size < max) res.add(t)
+        return ArrayList(res)
     }
 
     /** 词库里有没有「拼音连写正好是 code、文字是 text」的词条;有就返回词条号,没有返回 -1。 */
