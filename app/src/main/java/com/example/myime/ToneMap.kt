@@ -93,21 +93,25 @@ object ToneMap {
     }
 
     /** 这个字的读音里,去掉声调后等于 syl 的那个;没有返回 null。 */
-    private fun matchOf(t: Table, c: Char, syl: String): String? {
+    private fun matchOf(t: Table, c: Char, syl: String, mask: Int = 0): String? {
         if (!isHan(c)) return null
         val k = c.code - FIRST
         val a = t.start[k]
         if (a < 0) return null
         val e = t.end[k]
         var from = a
+        var near: String? = null   // 模糊音下读音相近的(zi ≈ zhī):没有一模一样的才用
+        val want = if (mask != 0) Fuzzy.canonSyllable(syl, mask) else syl
         while (from < e) {
             var to = t.blob.indexOf(',', from)
             if (to < 0 || to > e) to = e
             val r = t.blob.substring(from, to)
-            if (plain(r) == syl) return r
+            val pr = plain(r)
+            if (pr == syl) return r
+            if (mask != 0 && near == null && Fuzzy.canonSyllable(pr, mask) == want) near = r
             from = to + 1
         }
-        return null
+        return near
     }
 
     /** 这个字所有读音(最多 max 个),表没读好或没有这个字返回空。长按看读音时,词库没有读音的字拿它兜底。 */
@@ -122,11 +126,12 @@ object ToneMap {
 
     /**
      * 给 text 配上带声调的读音,音节之间用空格隔开(如「你好」→「nǐ hǎo」)。
+     * mask:开着的模糊音规则(Fuzzy.ZH 等),打的 zi 也能对上「知」的 zhī、打的 shi 对上「四」的 sì;0 = 只认一模一样的。
      * sources:可能的音节来源(每个是和 text 逐字对应的无声调音节列表),按可信度从高到低:
      * 先是输入的拼音,再是词库里的读音。第一个能让每个字都对上的来源胜出;都对不上就用第一个来源里对得上的字,
      * 其余字用最常用的读音。表里没有的字(生僻字、符号)用来源里的无声调音节,没有来源就跳过。
      */
-    fun annotate(text: String, sources: List<List<String>>): String {
+    fun annotate(text: String, sources: List<List<String>>, mask: Int = 0): String {
         val t = table ?: return ""
         val n = text.length
         if (n == 0 || n > 16) return ""
@@ -136,21 +141,21 @@ object ToneMap {
             if (usable == null) usable = src
             var all = true
             for (i in 0 until n) {
-                if (matchOf(t, text[i], src[i]) == null) {
+                if (matchOf(t, text[i], src[i], mask) == null) {
                     all = false
                     break
                 }
             }
-            if (all) return join(t, text, src, strict = true)
+            if (all) return join(t, text, src, strict = true, mask = mask)
         }
-        return join(t, text, usable, strict = false)
+        return join(t, text, usable, strict = false, mask = mask)
     }
 
-    private fun join(t: Table, text: String, src: List<String>?, strict: Boolean): String {
+    private fun join(t: Table, text: String, src: List<String>?, strict: Boolean, mask: Int): String {
         val sb = StringBuilder(text.length * 5)
         for (i in text.indices) {
             val c = text[i]
-            val r = (if (src != null) matchOf(t, c, src[i]) else null)
+            val r = (if (src != null) matchOf(t, c, src[i], mask) else null)
                 ?: if (strict) null else firstOf(t, c)
                 ?: src?.get(i)
             if (r.isNullOrEmpty()) continue
