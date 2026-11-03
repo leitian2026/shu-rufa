@@ -274,6 +274,14 @@ class PinyinEngine(
         val uw = words?.snapshot()
         if (uw != null) for (t in uw.exact(p)) out.add(t)
         for (id in top(compactKeys, compactIds, p, p + '\u0000', emptyList(), null)) out.add(texts[id])
+        // 模糊音:打的拼音按开着的规则折叠后,再补上读音相近的词(排在一模一样的后面);索引没建好 / 没开规则就跳过
+        if (out.size < max && fuzzyMask != 0) {
+            val fi = fuzzyIndex()
+            val cn = if (fi != null) Fuzzy.canon(p, fi.mask, Syllabary.segment(p)) else null
+            if (fi != null && cn != null) {
+                for (id in top(fi.keys, fi.ids, cn.canon, cn.canon + '\u0000', emptyList(), null, p)) out.add(texts[id])
+            }
+        }
         return if (out.size <= max) ArrayList(out) else ArrayList(out).subList(0, max)
     }
 
