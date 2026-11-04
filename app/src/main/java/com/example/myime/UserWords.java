@@ -53,13 +53,97 @@ public final class UserWords {
         public final int[][] lens;
         public final int[] counts;
         private final long[] stamps;
+        /** 只有「模糊音折叠视图」才有:keys 是折叠后的拼音连写,这里是每一项折叠前(原来)的拼音连写。普通快照是 null。 */
+        public final String[] origKeys;
+        private volatile Folded foldedView;
 
         Snapshot(String[] keys, String[] texts, int[][] lens, int[] counts, long[] stamps) {
+            this(keys, texts, lens, counts, stamps, null);
+        }
+
+        Snapshot(String[] keys, String[] texts, int[][] lens, int[] counts, long[] stamps, String[] origKeys) {
             this.keys = keys;
             this.texts = texts;
             this.lens = lens;
             this.counts = counts;
             this.stamps = stamps;
+            this.origKeys = origKeys;
+        }
+
+        private static final class Folded {
+            final int mask;
+            final Snapshot snap;
+
+            Folded(int mask, Snapshot snap) {
+                this.mask = mask;
+                this.snap = snap;
+            }
+        }
+
+        /** 一个拼音连写按音节长度逐个折叠(Fuzzy.canonSyllable)。 */
+        private static String foldKey(String key, int[] len, int mask) {
+            StringBuilder sb = new StringBuilder(key.length());
+            int pos = 0;
+            for (int l : len) {
+                if (l <= 0 || pos + l > key.length()) break;
+                sb.append(Fuzzy.canonSyllable(key.substring(pos, pos + l), mask));
+                pos += l;
+            }
+            if (pos < key.length()) sb.append(key, pos, key.length());
+            return sb.toString();
+        }
+
+        /**
+         * 模糊音折叠视图:同样这些词,拼音连写按 mask 折叠后重新排序(zhi / zi 折成同一种写法),
+         * origKeys 记着每个词原来的拼音。快照不可变,所以每个 mask 只建一次(最多 3000 个词,毫秒级),随快照一起被换掉。
+         * mask = 0 返回自己。
+         */
+        public Snapshot folded(int mask) {
+            if (mask == 0 || keys.length == 0) return this;
+            Folded f = foldedView;
+            if (f != null && f.mask == mask) return f.snap;
+            synchronized (this) {
+                f = foldedView;
+                if (f != null && f.mask == mask) return f.snap;
+                int n = keys.length;
+                final String[] fk = new String[n];
+                for (int i = 0; i < n; i++) fk[i] = foldKey(keys[i], lens[i], mask);
+                Integer[] ord = new Integer[n];
+                for (int i = 0; i < n; i++) ord[i] = i;
+                Arrays.sort(ord, (a, b) -> fk[a].compareTo(fk[b]));
+                String[] k2 = new String[n];
+                String[] t2 = new String[n];
+                int[][] l2 = new int[n][];
+                int[] c2 = new int[n];
+                long[] s2 = new long[n];
+                String[] o2 = new String[n];
+                for (int i = 0; i < n; i++) {
+                    int j = ord[i];
+                    k2[i] = fk[j];
+                    t2[i] = texts[j];
+                    l2[i] = lens[j];
+                    c2[i] = counts[j];
+                    s2[i] = stamps[j];
+                    o2[i] = keys[j];
+                }
+                Snapshot s = new Snapshot(k2, t2, l2, c2, s2, o2);
+                foldedView = new Folded(mask, s);
+                return s;
+            }
+        }
+
+        /** 折叠视图里:折叠后的拼音连写正好等于 p、原来的拼音不是 skip 的词(skip 那些普通查询已经给过了),常用的在前。 */
+        public String[] exactSkip(String p, String skip) {
+            int lo = lowerBound(keys, p);
+            if (lo >= keys.length || !keys[lo].equals(p)) return NONE;
+            return collect(lo, lowerBound(keys, p + '\u0000'), 8, skip, false);
+        }
+
+        /** 折叠视图里:折叠后的拼音连写以 p 开头、原来的拼音不以 skip 开头的词(补全),常用的在前,最多 max 个。 */
+        public String[] prefixSkip(String p, String skip, int max) {
+            int lo = lowerBound(keys, p);
+            if (lo >= keys.length || !keys[lo].startsWith(p)) return NONE;
+            return collect(lo, lowerBound(keys, p + '\uffff'), max, skip, true);
         }
 
         public static int lowerBound(String[] a, String target) {
@@ -76,11 +160,19 @@ public final class UserWords {
         private static final String[] NONE = new String[0];
 
         private String[] collect(int lo, int hi, int max, String skipKey) {
+            return collect(lo, hi, max, skipKey, false);
+        }
+
+        /** skipKey:跳过拼音(折叠视图里用原拼音)等于它的词;skipPrefix = true 时改成「以它开头的」。 */
+        private String[] collect(int lo, int hi, int max, String skipKey, boolean skipPrefix) {
             if (hi <= lo) return NONE;
             Integer[] idx = new Integer[hi - lo];
             int n = 0;
             for (int i = lo; i < hi; i++) {
-                if (skipKey != null && keys[i].equals(skipKey)) continue;
+                if (skipKey != null) {
+                    String real = origKeys != null ? origKeys[i] : keys[i];
+                    if (skipPrefix ? real.startsWith(skipKey) : real.equals(skipKey)) continue;
+                }
                 idx[n++] = i;
             }
             if (n == 0) return NONE;
