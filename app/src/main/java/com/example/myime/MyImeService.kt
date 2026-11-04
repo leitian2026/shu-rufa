@@ -2395,8 +2395,24 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val gen = ++queryGen
         // 旧候选已经不能点了(选词后剩下的拼音、退格…)就画淡一点,看得出在等;还能点的(只是接着多打了字母)保持原样
         candidateBar?.setStale(candidatesFor.isNotEmpty() && candidatesFor != key && !staleUsable(key))
-        if (keepChunks) keepChunks = false else resetChunks()   // 输入变了:词块作废;只有换完词 / 退出备选这类自己触发的重查才保留
+        if (keepChunks) {
+            keepChunks = false
+        } else {
+            // 输入变了:词块作废重切。但用户改过的块(变→编)要带到新的整句里,不然接着打字又变回去:先记下来,新整句出来时再合进去
+            val old = chunkEdit
+            if (mode == Mode.PINYIN && old != null && old.edited()) {
+                val keep = ArrayList<ChunkEdit.Item>(old.size())
+                for (i in 0 until old.size()) {
+                    val it = old.get(i)
+                    if (it.raw) break
+                    keep.add(it)
+                }
+                carryItems = if (keep.isEmpty()) null else keep
+            }
+            resetChunks()
+        }
         if (code.isEmpty()) {
+            carryItems = null
             applyCandidates("", emptyList())
             return
         }
@@ -2713,7 +2729,11 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     /** 一个新的候选结果到了:把第一个候选(整句)切成词块。用户已经改过的不重切。 */
+    private var carryItems: List<ChunkEdit.Item>? = null   // 输入变化前用户改过的块(开头连续的非拼音块),等新整句出来合进去
+
     private fun buildChunks(list: List<Candidate>) {
+        val carry = carryItems
+        carryItems = null
         if (mode != Mode.PINYIN || composing.isEmpty()) {
             resetChunks()
             return
@@ -2755,7 +2775,54 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             val tail = letters.substring(covered)
             items.add(ChunkEdit.Item(tail, tail, true))
         }
-        chunkEdit = ChunkEdit(items)
+        // 接着打字 / 退格以后,用户改过的块保留:找最靠后的一个「新旧都是块边界、前面的拼音也一样」的位置,
+        // 这之前用旧块(改过的),这之后用新切出来的
+        var outItems: List<ChunkEdit.Item> = items
+        var carried = false
+        if (carry != null) {
+            val newStart = HashMap<Int, Int>()   // 累计字母数 → 从第几块开始是这个位置之后的新块
+            newStart[0] = 0
+            var acc = 0
+            for (idx in items.indices) {
+                if (items[idx].raw) break
+                acc += items[idx].code.length
+                newStart[acc] = idx + 1
+            }
+            var best = -1
+            var bestOff = 0
+            var off = 0
+            val joined = StringBuilder()
+            for (k in carry.indices) {
+                off += carry[k].code.length
+                joined.append(carry[k].code)
+                if (!letters.startsWith(joined.toString())) break
+                if (newStart.containsKey(off)) {
+                    best = k
+                    bestOff = off
+                }
+            }
+            if (best >= 0) {
+                val merged = ArrayList<ChunkEdit.Item>(items.size)
+                for (k in 0..best) merged.add(carry[k])
+                for (idx in (newStart[bestOff] ?: 0) until items.size) merged.add(items[idx])
+                var same = merged.size == items.size
+                if (same) {
+                    for (q in merged.indices) {
+                        if (merged[q].text != items[q].text || merged[q].code != items[q].code || merged[q].raw != items[q].raw) {
+                            same = false
+                            break
+                        }
+                    }
+                }
+                if (!same) {
+                    outItems = merged
+                    carried = true
+                }
+            }
+        }
+        val built = ChunkEdit(outItems)
+        if (carried) built.markEdited()
+        chunkEdit = built
         chunkSel = -1
         pushChunks()
     }
