@@ -60,6 +60,7 @@ public final class SentenceDecoder {
     private static final int MIXED_MAX = 24;          // 混拼最长处理的字母数
     private static final int MAX_TOKENS = 8;          // 一个词最多几个音节记号
     private static final int MAX_ALTS = 7;
+    private static final double FUZZY_WORD_PENALTY = 1.0;  // 模糊音整句里,词的真实拼音和打的不一样(zi 打出 知)时每个词扣的分;写对的词不扣
     private static final double MIX_PENALTY = 0.7;    // 每个简写的音节扣的分(写全的优先)
 
     private final String[] keys;     // 已排序的拼音连写
@@ -200,6 +201,16 @@ public final class SentenceDecoder {
      */
     public java.util.List<Result> decodeFuzzyTop(String orig, Fuzzy.Canon cn, String[] fKeys, int[] fIds,
                                                  UserFreq user, Map<String, Long> ctx, int k) {
+        return decodeFuzzyTop(orig, cn, fKeys, fIds, user, ctx, k, null);
+    }
+
+    /**
+     * 同上,另外用我的「词接词」记录(UserChain,可为 null),和精确整句一样给我常接的词加分。
+     * 规范形索引里写对的词和写错的词(zi / zhi 都折成 zi)混在一起,整句里每个「真实拼音和打的不一样」的词扣 FUZZY_WORD_PENALTY,
+     * 所以和精确整句可以直接按分数比:只有语言上明显更好时,模糊的整句才会排到前面。
+     */
+    public java.util.List<Result> decodeFuzzyTop(String orig, Fuzzy.Canon cn, String[] fKeys, int[] fIds,
+                                                 UserFreq user, Map<String, Long> ctx, int k, UserChain chain) {
         if (cn == null || !cn.tailComplete) return EMPTY;
         int on = orig.length();
         if (on < MIN_LETTERS || on > MAX_LETTERS) return EMPTY;
@@ -214,7 +225,7 @@ public final class SentenceDecoder {
             pre[cn.canonEnds[m]] = true;
             posMap[cn.canonEnds[m]] = cn.origEnds[m];
         }
-        return core(q, null, user, ctx, k, fKeys, fIds, pre, n, true, posMap, orig, null, null);
+        return core(q, null, user, ctx, k, fKeys, fIds, pre, n, true, posMap, orig, null, chain);
     }
 
     /** 把 (id, 分) 放进这条边的前 per 名里,返回现在有几个。 */
@@ -320,10 +331,14 @@ public final class SentenceDecoder {
                 int ec = 0;
                 if (dictHas) {
                     int hi = lowerBound(kArr, sub + '\u0000');
+                    // 模糊音:这一段原输入怎么打的,用来看词的真实拼音是不是一样
+                    String typed = posMap == null ? null : orig.substring(posMap[i], posMap[j]);
                     for (int x = lo; x < hi; x++) {
                         int id = iArr[x];
                         if (!cutsOk(id, cuts, i, j)) continue;
-                        ec = offer(eid, esc, ec, per, id, wordScore(id, user, ctx, i == 0));
+                        double ws = wordScore(id, user, ctx, i == 0);
+                        if (typed != null && !compact[id].equals(typed)) ws -= FUZZY_WORD_PENALTY;
+                        ec = offer(eid, esc, ec, per, id, ws);
                     }
                 }
                 if (userHas) {
