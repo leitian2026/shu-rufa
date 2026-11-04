@@ -38,6 +38,11 @@ public final class ChunkEdit {
         return items.get(i);
     }
 
+    /** 继续打字时把用户之前改过的块带到新的整句里:这一套也算「改过」,下次再打字还会接着带。 */
+    public void markEdited() {
+        edited = true;
+    }
+
     /** 用户改过(换词、拆、并)。没改过的整句就是引擎给的那一句,不用另外处理。 */
     public boolean edited() {
         return edited;
