@@ -49,7 +49,7 @@ object BarRows {
 fun Context.chunkRowH(): Float {
     if (!BarRows.chunk) return 0f
     val wide = isWide()
-    return dpf((if (wide) 40f else 34f) + (if (BarRows.read) (if (wide) 24f else 21f) else 0f))
+    return dpf((if (wide) 32f else 30f) + (if (BarRows.read) (if (wide) 24f else 21f) else 0f))
 }
 
 /** 键盘区(含各个面板)的统一高度,切换页面时高度不变。可在「键盘调节」里改。 */
@@ -59,7 +59,7 @@ fun Context.keyboardHeightPx(): Int = dpi(KbSize.heightDp(this))
 fun Context.candidateBarHeightPx(): Int {
     val wide = isWide()
     val chunkH = chunkRowH()
-    return (dpf(if (wide) 37f else 26f) + chunkH + dpf(if (wide) 50f else 44f)).toInt()   // 预览条 + 词块行(笔画没有) + 候选行
+    return (dpf(if (wide) 34f else 24f) + chunkH + dpf(if (wide) 46f else 42f)).toInt()   // 预览条 + 词块行(笔画没有) + 候选行
 }
 
 /**
