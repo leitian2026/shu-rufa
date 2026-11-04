@@ -203,6 +203,28 @@ public class FuzzySelfTest {
         System.out.println("INFO 长 " + bs.length() + " 的模糊音整句平均 " + String.format("%.3f", per) + " ms/次(成句 " + okc + "/500)");
         check(per < 5.0, "模糊音整句 < 5ms");
 
+        // 逐词扣分:写对了的词不扣,写错的词(xiang 打成 xian)扣一点——词频只差一点时,按原样打的那个在前
+        Dict dp = build(new String[] {"我\two\t8000", "去\tqu\t9000", "先\txian\t7000", "想\txiang\t8000"});
+        Fuzzy.Index pi = Fuzzy.Index.build(dp.compact, dp.sl, dp.start, ALL);
+        List<SentenceDecoder.Result> pr = dp.dec.decodeFuzzyTop("woxianqu", Fuzzy.canon("woxianqu", ALL), pi.keys, pi.ids, null, null, 3);
+        check(!pr.isEmpty() && pr.get(0).text.equals("我先去"), "词频接近时写对的 先 排在 想 前面 " + (pr.isEmpty() ? "[]" : pr.get(0).text));
+        boolean hasXiang = false;
+        for (SentenceDecoder.Result x : pr) if (x.text.equals("我想去")) hasXiang = true;
+        check(hasXiang, "写错的 我想去 仍在模糊整句里");
+        // 模糊的整句明显更好时排在前面:打 wobuzidao 想要 我不知道(zi 当 zhi),不能被精确的 我步子道 压在后面
+        Dict dz = build(new String[] {"我\two\t8000", "不知道\tbu zhi dao\t9000", "步子\tbu zi\t100", "道\tdao\t3000", "不\tbu\t5000"});
+        Fuzzy.Index zi = Fuzzy.Index.build(dz.compact, dz.sl, dz.start, Fuzzy.ZH);
+        List<SentenceDecoder.Result> exactZ = dz.dec.decodeTop("wobuzidao", null, null, null, 3);
+        List<SentenceDecoder.Result> fuzzyZ = dz.dec.decodeFuzzyTop("wobuzidao", Fuzzy.canon("wobuzidao", Fuzzy.ZH), zi.keys, zi.ids, null, null, 2);
+        check(!exactZ.isEmpty() && exactZ.get(0).text.equals("我步子道"), "精确整句只能给 我步子道 " + (exactZ.isEmpty() ? "[]" : exactZ.get(0).text));
+        check(!fuzzyZ.isEmpty() && fuzzyZ.get(0).text.equals("我不知道"), "模糊整句给出 我不知道 " + (fuzzyZ.isEmpty() ? "[]" : fuzzyZ.get(0).text));
+        if (!exactZ.isEmpty() && !fuzzyZ.isEmpty()) {
+            check(fuzzyZ.get(0).score > exactZ.get(0).score, "我不知道 的分(" + fuzzyZ.get(0).score + ")高于 我步子道(" + exactZ.get(0).score + "),合并后排前面");
+            StringBuilder sb = new StringBuilder();
+            for (String c : fuzzyZ.get(0).codes) sb.append(c);
+            check(sb.toString().equals("wobuzidao"), "codes 仍是打的 " + Arrays.toString(fuzzyZ.get(0).codes));
+        }
+
         System.out.println(fails == 0 ? "ALL PASS" : (fails + " FAILED"));
         System.exit(fails == 0 ? 0 : 1);
     }
