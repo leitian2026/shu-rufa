@@ -211,6 +211,16 @@ public final class SentenceDecoder {
      */
     public java.util.List<Result> decodeFuzzyTop(String orig, Fuzzy.Canon cn, String[] fKeys, int[] fIds,
                                                  UserFreq user, Map<String, Long> ctx, int k, UserChain chain) {
+        return decodeFuzzyTop(orig, cn, fKeys, fIds, user, ctx, k, chain, null);
+    }
+
+    /**
+     * 同上,另外把我自己造的词也一起拼:sn 必须是折叠视图(UserWords.Snapshot.folded(mask),mask 和 cn 用的一样),
+     * 这样打的 zi 也能用我造的「不知道」(buzhidao)。写法和打的不一样的造词同样逐个扣 FUZZY_WORD_PENALTY。
+     */
+    public java.util.List<Result> decodeFuzzyTop(String orig, Fuzzy.Canon cn, String[] fKeys, int[] fIds,
+                                                 UserFreq user, Map<String, Long> ctx, int k, UserChain chain,
+                                                 UserWords.Snapshot sn) {
         if (cn == null || !cn.tailComplete) return EMPTY;
         int on = orig.length();
         if (on < MIN_LETTERS || on > MAX_LETTERS) return EMPTY;
@@ -225,7 +235,7 @@ public final class SentenceDecoder {
             pre[cn.canonEnds[m]] = true;
             posMap[cn.canonEnds[m]] = cn.origEnds[m];
         }
-        return core(q, null, user, ctx, k, fKeys, fIds, pre, n, true, posMap, orig, null, chain);
+        return core(q, null, user, ctx, k, fKeys, fIds, pre, n, true, posMap, orig, sn, chain);
     }
 
     /** 把 (id, 分) 放进这条边的前 per 名里,返回现在有几个。 */
@@ -329,10 +339,10 @@ public final class SentenceDecoder {
                 if (!dictHas && !userHas) break;
                 if (!pre[j]) continue;
                 int ec = 0;
+                // 模糊音:这一段原输入怎么打的,用来看词的真实拼音是不是一样
+                String typed = posMap == null ? null : orig.substring(posMap[i], posMap[j]);
                 if (dictHas) {
                     int hi = lowerBound(kArr, sub + '\u0000');
-                    // 模糊音:这一段原输入怎么打的,用来看词的真实拼音是不是一样
-                    String typed = posMap == null ? null : orig.substring(posMap[i], posMap[j]);
                     for (int x = lo; x < hi; x++) {
                         int id = iArr[x];
                         if (!cutsOk(id, cuts, i, j)) continue;
@@ -345,7 +355,9 @@ public final class SentenceDecoder {
                     int uhi = lowerBound(sn.keys, sub + '\u0000');
                     for (int x = ulo; x < uhi; x++) {
                         if (!lensCutsOk(sn.lens[x], cuts, i, j)) continue;
-                        ec = offer(eid, esc, ec, per, base + x, userWordScore(sn, x));
+                        double us = userWordScore(sn, x);
+                        if (typed != null && sn.origKeys != null && !sn.origKeys[x].equals(typed)) us -= FUZZY_WORD_PENALTY;
+                        ec = offer(eid, esc, ec, per, base + x, us);
                     }
                 }
                 if (ec == 0) continue;
