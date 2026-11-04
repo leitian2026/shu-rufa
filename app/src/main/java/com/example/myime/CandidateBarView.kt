@@ -20,6 +20,8 @@ import android.widget.TextView
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 
+private val NO_SPANS = IntArray(0)
+
 /**
  * 键盘上方的三条白色区域(高度固定,不会跳动):
  *  - 上条:拼音 / 笔画的预览文字
@@ -52,6 +54,7 @@ class CandidateBarView(
     private var pinPopup: PopupWindow? = null   // 长按弹出的信息条:不会自己消失,只在候选变了 / 点别处 / 键盘收起时收起
 
     private var composing = ""
+    private var done: IntArray = IntArray(0)   // 预览里「自动补上的字母」的范围(开始, 结束, 开始, 结束 …),用强调色画
     private var hlStart = -1   // 预览里高亮的一段(点中的词块的拼音),-1 = 没有
     private var hlEnd = -1
     private var hint: String? = null   // 出错原因(小红字,显示在预览行右边)
@@ -258,12 +261,13 @@ class CandidateBarView(
     }
 
     /** hlFrom ~ hlTo:预览里要高亮的一段(点中的那一块的拼音),后面带一根光标线;不要高亮传 -1。 */
-    fun setComposing(text: String, hlFrom: Int = -1, hlTo: Int = -1) {
+    fun setComposing(text: String, hlFrom: Int = -1, hlTo: Int = -1, doneSpans: IntArray = NO_SPANS) {
         val ok = hlFrom >= 0 && hlTo > hlFrom && hlTo <= text.length
         val from = if (ok) hlFrom else -1
         val to = if (ok) hlTo else -1
-        if (text == composing && from == hlStart && to == hlEnd) return
+        if (text == composing && from == hlStart && to == hlEnd && doneSpans.contentEquals(done)) return
         composing = text
+        done = doneSpans
         hlStart = from
         hlEnd = to
         invalidate()
@@ -456,17 +460,15 @@ class CandidateBarView(
                 pillPaint.alpha = 40
                 tmp.set(xMid - gap, stripH * 0.10f, xMid + wMid + gap, stripH * 0.90f)
                 canvas.drawRoundRect(tmp, context.dpf(6f), context.dpf(6f), pillPaint)
-                canvas.drawText(before, tx, ty, composePaint)
-                composePaint.color = palette.accent
-                canvas.drawText(mid, xMid, ty, composePaint)
-                composePaint.color = palette.text
-                canvas.drawText(composing.substring(hlEnd), xMid + wMid, ty, composePaint)
+                drawComposeRange(canvas, 0, hlStart, tx, ty, palette.text)
+                drawComposeRange(canvas, hlStart, hlEnd, xMid, ty, palette.accent)
+                drawComposeRange(canvas, hlEnd, composing.length, xMid + wMid, ty, palette.text)
                 pillPaint.alpha = 255
                 val cx = xMid + wMid + gap * 0.5f
                 tmp.set(cx, stripH * 0.18f, cx + context.dpf(1.5f), stripH * 0.82f)
                 canvas.drawRect(tmp, pillPaint)
             } else {
-                canvas.drawText(composing, tx, ty, composePaint)
+                drawComposeRange(canvas, 0, composing.length, tx, ty, palette.text)
             }
         }
         // 出错 / 状态提示(小字,预览条右边):预览条是空的(词块行已经显示读音)时也要画
@@ -493,6 +495,24 @@ class CandidateBarView(
             canvas.restore()
             drawClose(canvas)
         }
+    }
+
+    /** 画预览的 [a, b) 一段:自动补上的字母(done 里的范围)用强调色,其余用 base;返回画完的 x。 */
+    private fun drawComposeRange(canvas: Canvas, a: Int, b: Int, x0: Float, y: Float, base: Int): Float {
+        var x = x0
+        var pos = a
+        var d = 0
+        while (pos < b) {
+            while (d < done.size && done[d + 1] <= pos) d += 2
+            val inDone = d < done.size && done[d] <= pos
+            val stop = if (inDone) minOf(b, done[d + 1]) else minOf(b, if (d < done.size) done[d] else b)
+            composePaint.color = if (inDone) palette.accent else base
+            canvas.drawText(composing, pos, stop, x, y, composePaint)
+            x += composePaint.measureText(composing, pos, stop)
+            pos = stop
+        }
+        composePaint.color = palette.text
+        return x
     }
 
     /** 圆圈里一个 ×。 */
