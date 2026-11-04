@@ -143,7 +143,6 @@ class PinyinEngine(
     @Volatile private var lastSentenceP: String? = null
 
     /** 模糊音:哪些规则打开了(Fuzzy.ZH 等按位或),0 = 全关。由键盘服务设置。 */
-    private val FUZZY_SENT_PENALTY = 2.0   // 模糊音整句的分数扣这么多再和精确整句比(分是对数概率,2 ≈ 词频差 7 倍)
     @Volatile var fuzzyMask: Int = 0
     @Volatile private var fuzzyIdx: Fuzzy.Index? = null
     @Volatile private var fuzzyFailed = false
@@ -151,6 +150,15 @@ class PinyinEngine(
 
     /** 排好的顺序的磁盘缓存;DictLoader 在引擎一造好就设上(早于任何一次联想 / 模糊音使用)。 */
     @Volatile var orderCache: OrderCache? = null
+
+    /** 模糊音开着、但这会儿没生效时,给一句原因(显示在预览条右边的小字);正常生效或没开返回 null。 */
+    fun fuzzyStatus(): String? {
+        val m = fuzzyMask
+        if (m == 0 || fuzzyIdx?.mask == m) return null
+        if (fuzzyFailed) return "模糊音没生效:索引建立失败(内存不足)"
+        if (lowPower) return "模糊音没生效:系统省电模式下关闭"
+        return "模糊音索引建立中…"
+    }
 
     private fun buildFuzzy(mask: Int) {
         if (!fuzzyBuilding.compareAndSet(false, true)) return
@@ -627,7 +635,8 @@ class PinyinEngine(
 
         val end0 = p + '\u0000'
         val endF = p + '\uffff'
-        add(top(compactKeys, compactIds, p, end0, cutsArr, ctx, p, accept), p.length, maxC)
+        val fuzzyRoom = if (fi != null && cn != null) maxOf(maxC / 3, 1) else 0   // 给模糊匹配的词留位置(同 queryRaw)
+        add(top(compactKeys, compactIds, p, end0, cutsArr, ctx, p, accept), p.length, maxC - fuzzyRoom)
         if (fi != null && cn != null) {
             add(top(fi.keys, fi.ids, cn.canon, cn.canon + '\u0000', emptyList(), ctx, p, accept), p.length, maxC)
         }
@@ -635,7 +644,7 @@ class PinyinEngine(
         if (uw != null) {
             for (t in uw.prefix(p, USER_WORD_PREFIX)) if (accept.accept(t) && seen.add(t)) out.add(Candidate(t, whole))
         }
-        add(top(compactKeys, compactIds, p, endF, cutsArr, ctx, p, accept), p.length, maxC)
+        add(top(compactKeys, compactIds, p, endF, cutsArr, ctx, p, accept), p.length, maxC - fuzzyRoom)
         if (p.length >= 2) add(top(initialKeys, initialIds, p, endF, emptyList(), ctx, p, accept), p.length, maxC)
         if (fi != null && cn != null) {
             add(top(fi.keys, fi.ids, cn.canon, cn.canon + '\uffff', emptyList(), ctx, p, accept), p.length, maxC)
@@ -707,7 +716,9 @@ class PinyinEngine(
 
         val end0 = p + '\u0000'
         val endF = p + '\uffff'
-        add(top(compactKeys, compactIds, p, end0, cuts, ctx), p.length, maxC)
+        // 开着模糊音时给模糊匹配的词留位置:常见音节(zi / si …)精确匹配的词就能塞满候选上限,不留的话模糊的词永远排不进来
+        val fuzzyRoom = if (fi != null && cn != null) maxOf(maxC / 3, 1) else 0
+        add(top(compactKeys, compactIds, p, end0, cuts, ctx), p.length, maxC - fuzzyRoom)
         val hadExact = out.isNotEmpty()   // 整串正好是词库里的一个词
         val exactCount = out.size
         if (fi != null && cn != null) {
@@ -719,7 +730,7 @@ class PinyinEngine(
             val whole = rawConsumed(raw, p.length, p.length)
             for (t in uw.prefix(p, USER_WORD_PREFIX)) if (seen.add(t)) out.add(Candidate(t, whole))
         }
-        add(top(compactKeys, compactIds, p, endF, cuts, ctx), p.length, maxC)
+        add(top(compactKeys, compactIds, p, endF, cuts, ctx), p.length, maxC - fuzzyRoom)
         if (p.length >= 2) add(top(initialKeys, initialIds, p, endF, emptyList(), ctx), p.length, maxC)
         if (fi != null && cn != null) {
             add(top(fi.keys, fi.ids, cn.canon, cn.canon + '\uffff', emptyList(), ctx, p), p.length, maxC)
@@ -737,14 +748,12 @@ class PinyinEngine(
         }
         val nExactSents = sents.size
         if (!low && fi != null && cn != null && p.length >= SENTENCE_MIN && !cancelled()) {
-            sents.addAll(sentence.decodeFuzzyTop(p, cn, fi.keys, fi.ids, lu, ctx, 2))
+            sents.addAll(sentence.decodeFuzzyTop(p, cn, fi.keys, fi.ids, lu, ctx, 2, chain))
         }
         if (sents.size > nExactSents && nExactSents > 0) {
-            // 模糊音整句和精确整句按分数一起排(模糊的扣 FUZZY_SENT_PENALTY 分,同样好时还是精确的在前);
-            // 以前模糊的永远排在精确的后面,打 sang 想要「今天晚上」却先给「今天晚丧」
-            val ranked = sents.withIndex().sortedByDescending { it.value.score - (if (it.index >= nExactSents) FUZZY_SENT_PENALTY else 0.0) }.map { it.value }
-            sents.clear()
-            sents.addAll(ranked)
+            // 模糊音整句和精确整句按分数一起排(同分时精确的在前:排序是稳定的)。模糊整句里写错的词已经逐个扣过分了,
+            // 这里不再整体扣。以前模糊的永远排在精确的后面,打 sang 想要「今天晚上」却先给「今天晚丧」
+            sents.sortByDescending { it.score }
         }
         if (sents.isNotEmpty()) {
             val limit = if (hadExact) SENT_WITH_EXACT else SENT_SHOWN
