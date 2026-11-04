@@ -251,7 +251,7 @@ class CandidateBarView(
     fun setHint(text: String?) {
         if (text == hint) return
         hint = text
-        if (composing.isNotEmpty()) invalidate()
+        invalidate()
     }
 
     /** hlFrom ~ hlTo:预览里要高亮的一段(点中的那一块的拼音),后面带一根光标线;不要高亮传 -1。 */
@@ -450,15 +450,16 @@ class CandidateBarView(
             } else {
                 canvas.drawText(composing, tx, ty, composePaint)
             }
-            val h = hint
-            if (h != null) {
-                val left = inset + itemPad * 1.5f + composePaint.measureText(composing) + itemPad
-                val avail = width - inset - left
-                if (avail > hintPaint.textSize * 4) {
-                    val n = hintPaint.breakText(h, true, avail, null)
-                    val shown = if (n < h.length) h.substring(0, n) + "…" else h
-                    canvas.drawText(shown, width - inset, stripH / 2f + hintBase, hintPaint)
-                }
+        }
+        // 出错 / 状态提示(小字,预览条右边):预览条是空的(词块行已经显示读音)时也要画
+        val h = if (composing.isNotEmpty() || chunkTexts.isNotEmpty()) hint else null
+        if (h != null) {
+            val left = inset + itemPad * 1.5f + (if (composing.isNotEmpty()) composePaint.measureText(composing) + itemPad else 0f)
+            val avail = width - inset - left
+            if (avail > hintPaint.textSize * 4) {
+                val n = hintPaint.breakText(h, true, avail, null)
+                val shown = if (n < h.length) h.substring(0, n) + "…" else h
+                canvas.drawText(shown, width - inset, stripH / 2f + hintBase, hintPaint)
             }
         }
 
