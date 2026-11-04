@@ -150,7 +150,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             InputType.TYPE_CLASS_NUMBER -> "NUMBER"
             InputType.TYPE_CLASS_PHONE -> "PHONE"
             InputType.TYPE_CLASS_DATETIME -> "DATETIME"
-            0 -> "NULL(不是真输入框,多半是容器抢了焦点)"
+            0 -> if (type == 0) "NULL(不是真输入框,多半是容器抢了焦点)" else "TEXT(应用漏填类别,按文本框处理)"
             else -> "?"
         }
         val action = when (info.imeOptions and EditorInfo.IME_MASK_ACTION) {
@@ -1093,6 +1093,30 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
+    /**
+     * 输入框的类别,按「默认当文本框」认:只有数字 / 电话 / 日期是明确的别的类别,
+     * 其余(包括应用漏填类别、只带了「多行」之类标记的,如抖音直播间评论框 0x20000)都当文本框,英文候选和翻译框才会开。
+     * 只有 inputType 整个是 0(游戏、终端、容器抢焦点,什么信息都没给)才算「不是输入框」,保持原样不开英文补全。
+     * 密码、邮箱等要关的,仍由下面按变体位单独判断。
+     */
+    private fun effectiveInputClass(type: Int): Int {
+        if (type == 0) return 0
+        return when (val cls = type and InputType.TYPE_MASK_CLASS) {
+            InputType.TYPE_CLASS_NUMBER, InputType.TYPE_CLASS_PHONE, InputType.TYPE_CLASS_DATETIME -> cls
+            else -> InputType.TYPE_CLASS_TEXT
+        }
+    }
+
+    /** 提示文字 / 字段名里带「密码」「password」等:应用把密码框报成普通文本时,靠这个认出来(弹出时判断一次,不耗电)。 */
+    private val secretHint = Regex("密码|password|passwd|passcode|\\bpwd\\b|\\bpin\\b", RegexOption.IGNORE_CASE)
+
+    private fun hintLooksSecret(info: EditorInfo): Boolean {
+        val hint = info.hintText
+        if (!hint.isNullOrEmpty() && secretHint.containsMatchIn(hint)) return true
+        val name = info.fieldName
+        return !name.isNullOrEmpty() && secretHint.containsMatchIn(name)
+    }
+
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         curSelS = minOf(info.initialSelStart, info.initialSelEnd)
@@ -1146,7 +1170,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
         }
 
-        val cls = info.inputType and InputType.TYPE_MASK_CLASS
+        val cls = effectiveInputClass(info.inputType)
         val variation = info.inputType and InputType.TYPE_MASK_VARIATION
         secureField = false
         var uriField = false
@@ -1174,6 +1198,12 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                     uriField = true
                 }
             }
+        }
+
+        // 应用把密码框报成普通文本的(提示文字写着「密码」等):也按密码框处理,不出候选、不学习、不翻译
+        if (!secureField && hintLooksSecret(info)) {
+            secureField = true
+            if (cls == InputType.TYPE_CLASS_TEXT) forced = Mode.ENGLISH
         }
 
         // 英文补全只用在普通文本框;密码、网址、邮箱、数字框不用。应用声明"不要个性化学习"(无痕等)时不记录我的用词
