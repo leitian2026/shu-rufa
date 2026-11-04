@@ -47,7 +47,7 @@ run_test() {
   fi
 }
 
-PIN="Syllabary SafeFile LearnShare UserFreq UserChain UserWords UserChars"
+PIN="Syllabary SafeFile LearnShare UserFreq UserChain UserWords UserChars Fuzzy"   # UserWords 的模糊音折叠视图用到 Fuzzy
 
 run_test BackupNamesSelfTest "BackupNames"
 run_test BackupSelfTest "SafeFile BackupCrypto BackupScope"
@@ -61,12 +61,12 @@ run_test StrokeRankSelfTest "StrokeRank"
 run_test TypoSelfTest "Syllabary Typo"
 run_test GramPackSelfTest "GramPack"
 run_test DictZipSelfTest "DictZip"
-run_test SentenceSelfTest "$PIN Fuzzy GramPack SentenceDecoder"
-run_test FuzzySelfTest "$PIN Fuzzy GramPack SentenceDecoder"
-run_test UserWordsSelfTest "$PIN Fuzzy GramPack SentenceDecoder" "" SentenceSelfTest
+run_test SentenceSelfTest "$PIN GramPack SentenceDecoder"
+run_test FuzzySelfTest "$PIN GramPack SentenceDecoder"
+run_test UserWordsSelfTest "$PIN GramPack SentenceDecoder" "" SentenceSelfTest
 run_test WordsSyncSelfTest "$PIN"
 run_test CharsSelfTest "$PIN"
-run_test PerfSelfTest "$PIN Fuzzy Typo GramPack SentenceDecoder" "" SentenceSelfTest
+run_test PerfSelfTest "$PIN Typo GramPack SentenceDecoder" "" SentenceSelfTest
 
 
 
