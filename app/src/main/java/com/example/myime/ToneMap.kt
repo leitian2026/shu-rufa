@@ -101,14 +101,17 @@ object ToneMap {
         val e = t.end[k]
         var from = a
         var near: String? = null   // 模糊音下读音相近的(zi ≈ zhī):没有一模一样的才用
-        val want = if (mask != 0) Fuzzy.canonSyllable(syl, mask) else syl
+        var want: String? = null   // 模糊音折叠只在没有一模一样的读音时才算
         while (from < e) {
             var to = t.blob.indexOf(',', from)
             if (to < 0 || to > e) to = e
             val r = t.blob.substring(from, to)
             val pr = plain(r)
             if (pr == syl) return r
-            if (mask != 0 && near == null && Fuzzy.canonSyllable(pr, mask) == want) near = r
+            if (mask != 0 && near == null) {
+                if (want == null) want = Fuzzy.canonSyllable(syl, mask)
+                if (Fuzzy.canonSyllable(pr, mask) == want) near = r
+            }
             from = to + 1
         }
         return near
