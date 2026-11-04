@@ -670,7 +670,8 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 ## 读音按字放在字上方 + 模糊音(0.39.0)
 
 - **词块行永远带声调读音**(拼音输入,不看「显示读音」开关):每个词块的每个字正上方是它自己的带声调音节(`jīn wǎn｜hái｜miè｜chī fàn｜ma`),词块不拆开,字之间按读音撑开;点中的那块读音是蓝色。读音在后台算好再刷新,算过的缓存在内存里(最多 400 条)。
-- **预览条不再堆一整串拼音**:有词块行时,预览条只留已选的词和正在改的那一块的拼音(蓝色加光标线);整串拼音由词块行上方的读音代替,没被吃掉的尾巴在词块行里是灰色。
+- **预览条保留打的字母,但分开显示**(0.39.3 改回来):`wobuzidao` 显示成 `wo bu zi dao`,简拼 `qws` 显示成 `q w s`,`wozgr` 显示成 `wo z g r`(能切成音节的按音节分,切不开的认得出音节的认音节、认不出的一个字母一格);分词符 `'` 原样保留。点中词块时,这一块对应的字母在预览里高亮、末尾一根光标线(`MyImeService.spacedComposing` 同时记下输入串每个字符在预览串里的位置)。0.39.0 曾经把整串拼音从预览条拿掉,只留正在改的那块,打一个 q 就出两个字很突兀,所以改回来。
+- **功耗优化**(0.39.4):读音按字排版的结果(每个字的字宽、音节宽、格宽)排版时算一次存起来,滑动候选栏 / 词块行时每帧只画不再 `measureText`、`split`;字号变了词块行跟着重排;预览条的分音节结果按输入串缓存(一次按键会刷新好几次预览,不再每次重切);词块读音的后台任务排队时词块已换掉就跳过;声调表的模糊音折叠只在没有一模一样的读音时才算。
 - **候选行读音**(功能页「显示读音」,默认关)也改成同样的按字排版:一个字一格,音节在字正上方,词仍是一个候选。个数对不上字数(混了表情、符号)的仍是整串居中。
 - **模糊音**:① 读音来源(刚打的拼音)认模糊音:打 `zi` 也能对上「知」的 zhī、打 `shi` 对上「四」的 sì(`ToneMap.annotate(..., mask)`);② 点中词块查备选 / 改块里的拼音时,`wordsFor` 不再「精确匹配排满就不查模糊」:先放前 12 个精确的,紧接着放最多 14 个模糊音相近的,再接剩下的。没开规则、或模糊音索引还没建好(开了规则后第一次要在后台建一次)时不会有模糊的。
 - 代码:`CandidateBarView`(`sylsOf / rubyWidth / drawRuby`)、`Util.kt`(`BarRows.read`、`chunkRowH`)、`ToneMap`、`PinyinEngine.wordsFor`、`MyImeService.pushChunks / pushPreview / fillChunkReads / chunkReading`。依赖界面和字体,没有电脑上能跑的自测,需要在手机上验证。
@@ -684,5 +685,5 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 - **整句打分不公平**:模糊整句以前拿不到「词接词」加分,又在排序里整体扣 2 分,所以 `wobuzidao` 总是先给 我步子道。现在:① 模糊整句也用词接词记录(`decodeFuzzyTop(..., chain)`);② 不再整体扣分,改成**逐词**扣——模糊整句里每个「真实拼音和打的不一样」的词扣 1 分(`FUZZY_WORD_PENALTY`,写对的词不扣),所以词频只差一点时,按原样打的在前,语言上明显更好的(我不知道 vs 我步子道)模糊整句排前面;③ 精确和模糊整句合并后按分数稳定排序(同分精确在前)。自测里用玩具词库验证了这两种情况。
 - **模糊音没生效时不再无声无息**:开了规则但没生效(索引还在后台建、省电模式、内存不够建失败),预览条右边会出一行小字说明原因(`PinyinEngine.fuzzyStatus`)。预览条没字(词块行已经显示读音)时这行小字也照样显示(之前会被藏起来)。
 - 点中词块查备选 / 改块里的拼音时,模糊音相近的词排进前面(0.39.0 已有);读音按字对齐时认模糊音(0.39.0 已有)。
-- **还没做**:我自己造的词(`UserWords`)按打的拼音精确查,模糊音下打 `buzidao` 找不到造的词 `buzhidao`——那份数据没有折叠后的索引,要另建。
-- 自测:`FuzzySelfTest` 新增 6 项(逐词扣分、wobuzidao 例子、codes 仍是原输入);`Sentence / Rank / Typo / UserWords / ChunkEdit / Syllabary` 全部通过。词候选留位置那段和界面是 Kotlin,没有电脑上能跑的自测。
+- **我造的词也走模糊音**(0.39.2):`UserWords.Snapshot.folded(mask)` 给不可变快照按需建一份「折叠视图」(拼音按音节折叠后重新排序,`origKeys` 记着原拼音,每个 mask 只建一次,最多 3000 个词、毫秒级,随快照一起被换掉)。用到三处:① 词候选(`queryRaw` / `queryFilteredRaw`):打 `buzidao` 能查到造的 不知道(`exactSkip` / `prefixSkip`,写对了的那些普通查询已经给过,这里跳过),不靠大索引,所以索引还在建、省电模式下也能用;② 点词块查备选(`wordsFor`);③ 模糊整句(`decodeFuzzyTop(..., chain, sn)`):造的词和词库的词一起拼,写法和打的不一样的造词同样逐个扣 1 分。
+- 自测:`FuzzySelfTest` 新增 9 项(含造的词)、`UserWordsSelfTest` 新增 10 项(折叠视图);全部 20 个自测通过(`run_selftests.sh` 的公共源文件加了 Fuzzy,因为 UserWords 现在依赖它)。以前写的:`FuzzySelfTest` 新增 6 项(逐词扣分、wobuzidao 例子、codes 仍是原输入);`Sentence / Rank / Typo / UserWords / ChunkEdit / Syllabary` 全部通过。词候选留位置那段和界面是 Kotlin,没有电脑上能跑的自测。
