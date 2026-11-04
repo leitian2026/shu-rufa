@@ -22,6 +22,8 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import java.util.concurrent.Executors
 
+private val NO_INTS = IntArray(0)
+
 class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     private val main = Handler(Looper.getMainLooper())
@@ -1524,7 +1526,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     /** 候选栏上方的预览:拼音;笔筛开着时后面跟「 ｜」和已打的笔画。输入框里的组合区仍只有拼音。 */
     private fun previewText(): String {
-        val base = if (pending.isEmpty()) displayComposing() else pending.toString() + " " + displayComposing()
+        val disp = displayComposing()
+        val prefixLen = if (pending.isEmpty()) 0 else pending.length + 1   // 已选的词 + 一个空格
+        if (prefixLen > 0 && previewDone.isNotEmpty()) previewDone = IntArray(previewDone.size) { previewDone[it] + prefixLen }
+        val base = if (pending.isEmpty()) disp else pending.toString() + " " + disp
         if (exactActive()) return "$base ｜整字"
         if (!filterActive()) return base
         val sb = StringBuilder(base).append(" ｜")
@@ -1542,9 +1547,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (r != null && mode == Mode.PINYIN && map != null && r[1] <= composing.length && r[1] > r[0]) {
             val prefix = if (pending.isEmpty()) 0 else pending.length + 1   // previewText 里已选的词 + 一个空格
             from = prefix + map[r[0]]
-            to = prefix + map[r[1] - 1] + 1
+            to = prefix + (previewEnd?.get(r[1] - 1) ?: (map[r[1] - 1] + 1))
         }
-        candidateBar?.setComposing(base, from, to)
+        candidateBar?.setComposing(base, from, to, previewDone)
     }
 
     /** 分词键:在拼音输入里插入音节边界。 */
@@ -2031,15 +2036,150 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     private fun displayComposing(): String {
         previewMap = null
+        previewEnd = null
+        previewDone = NO_INTS
         return when (mode) {
             Mode.STROKE -> composing.map { strokeGlyph(it) }.joinToString("")
-            Mode.PINYIN -> spacedComposing()
+            Mode.PINYIN -> completedComposing() ?: spacedComposing()
             else -> composing.toString()
         }
     }
 
     /** spacedComposing 生成的预览串里,输入串第 k 个字符在预览串里的位置(最后一项是预览串长度);不是拼音预览时为 null。 */
     private var previewMap: IntArray? = null
+
+    /** 预览串里输入串第 k 个字符「所在这一格」的结束位置(高亮一块时要盖到自动补的字母);null = 用 previewMap[k] + 1。 */
+    private var previewEnd: IntArray? = null
+
+    /** 预览串里「自动补上的字母」的范围(开始, 结束, 开始, 结束 …),候选栏用颜色标出来。 */
+    private var previewDone: IntArray = NO_INTS
+
+    /**
+     * 拼音预览(整句已经切成词块、读音也算好了时):每个字对应的拼音一格,打了的字母照写,没打的自动补上并带声调,
+     * 补上的部分记在 previewDone 里(只打 s 的「世」显示 shì,hì 用颜色标出来)。
+     * 词块还没出来 / 读音还没算好 / 字母对不上的块,按原来的方式一格一格分开显示。对不上整体就返回 null。
+     */
+    private fun completedComposing(): String? {
+        val ce = chunkEdit ?: return null
+        if (ce.size() == 0) return null
+        val s = composing
+        val n = s.length
+        var letters = 0
+        for (c in s) if (c != '\'') letters++
+        var total = 0
+        for (i in 0 until ce.size()) total += ce.get(i).code.length
+        if (total != letters) return null   // 输入刚变、词块还没跟上
+        val lens = ArrayList<Int>()
+        val texts = ArrayList<String?>()
+        val dones = ArrayList<Int>()
+        for (i in 0 until ce.size()) {
+            val it = ce.get(i)
+            var ok = false
+            if (!it.raw) {
+                val rd = chunkReadCache[it.text + "\u0001" + it.code]
+                if (!rd.isNullOrEmpty()) {
+                    val syl = rd.split(' ')
+                    if (syl.size == it.text.length) ok = alignChunk(it.code, syl, lens, texts, dones)
+                }
+            }
+            if (!ok) plainPieces(it.code, lens, texts, dones)
+        }
+        val sb = StringBuilder(n * 2)
+        val map = IntArray(n + 1)
+        val end = IntArray(n + 1)
+        val doneList = ArrayList<Int>()
+        var ci = 0
+        fun apostrophes() {   // 分词符自己占一格
+            while (ci < n && s[ci] == '\'') {
+                if (sb.isNotEmpty()) sb.append(' ')
+                map[ci] = sb.length
+                sb.append('\'')
+                end[ci] = sb.length
+                ci++
+            }
+        }
+        for (k in lens.indices) {
+            apostrophes()
+            val m = lens[k]
+            if (sb.isNotEmpty()) sb.append(' ')
+            val st = sb.length
+            val idx = IntArray(m)
+            var t = 0
+            while (t < m && ci < n) {
+                if (s[ci] == '\'') { map[ci] = st; end[ci] = st; ci++; continue }   // 夹在一格中间的分词符
+                idx[t++] = ci
+                ci++
+            }
+            if (t < m) return null
+            val shown = texts[k] ?: String(CharArray(m) { s[idx[it]] })
+            sb.append(shown)
+            val en = sb.length
+            for (q in 0 until m) {
+                map[idx[q]] = st + minOf(q, shown.length - 1)
+                end[idx[q]] = if (q == m - 1) en else minOf(st + q + 1, en)
+            }
+            val d = dones[k]
+            if (d in 0 until shown.length) { doneList.add(st + d); doneList.add(en) }
+        }
+        apostrophes()
+        map[n] = sb.length
+        end[n] = sb.length
+        previewMap = map
+        previewEnd = end
+        previewDone = if (doneList.isEmpty()) NO_INTS else doneList.toIntArray()
+        return sb.toString()
+    }
+
+    /**
+     * 一个词块的拼音对到每个字:打的字母按顺序分给每个字(取能对上这个字读音开头的最长一段),
+     * 没打完的字显示完整带声调的读音(没打的部分记下位置)。对不上(模糊音、字母多余)返回 false,什么都不加。
+     */
+    private fun alignChunk(code: String, syl: List<String>, lens: MutableList<Int>, texts: MutableList<String?>, dones: MutableList<Int>): Boolean {
+        val k = syl.size
+        val total = code.length
+        val tl = ArrayList<Int>(k)
+        val tt = ArrayList<String?>(k)
+        val td = ArrayList<Int>(k)
+        var p = 0
+        for (j in 0 until k) {
+            val maxLen = total - p - (k - j - 1)
+            if (maxLen < 1) return false
+            val plain = ToneMap.plain(syl[j]).lowercase()
+            if (plain.length != syl[j].length) return false
+            var l = minOf(maxLen, plain.length)
+            while (l >= 1 && !code.regionMatches(p, plain, 0, l)) l--
+            if (l >= 1) {
+                tl.add(l); tt.add(syl[j]); td.add(if (l < syl[j].length) l else -1)
+                p += l
+            } else {
+                tl.add(1); tt.add(null); td.add(-1)   // 对不上读音开头(模糊音等):这个字只显示打的字母
+                p += 1
+            }
+        }
+        if (p != total) return false
+        lens.addAll(tl); texts.addAll(tt); dones.addAll(td)
+        return true
+    }
+
+    /** 没有读音可补的块(拼音块、符号、读音还没算好):和原来一样,能切成音节的按音节分,切不开的一个字母一格。 */
+    private fun plainPieces(code: String, lens: MutableList<Int>, texts: MutableList<String?>, dones: MutableList<Int>) {
+        val ends = Syllabary.segment(code)
+        if (ends != null) {
+            var from = 0
+            for (e in ends) {
+                lens.add(e - from); texts.add(null); dones.add(-1)
+                from = e
+            }
+        } else {
+            var k = 0
+            while (k < code.length) {
+                var len = minOf(Syllabary.MAX_LEN, code.length - k)
+                while (len > 1 && !Syllabary.isSyllable(code.substring(k, k + len))) len--
+                lens.add(len); texts.add(null); dones.add(-1)
+                k += len
+            }
+        }
+    }
 
     /**
      * 拼音预览:打的字母分开显示,不挤成一串。能切成音节的按音节分(wobuzidao → wo bu zi dao),
@@ -2511,8 +2651,8 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             raws.add(it.raw)
         }
         var reads: List<String> = emptyList()
-        if (BarRows.read) {
-            // 每块的读音(带声调,按字对应)。已经算过的直接用;没算过的交给后台线程,算好再刷新一次
+        if (BarRows.chunk) {
+            // 每块的读音(带声调,按字对应):预览条里自动补字母要用,词块行上方显不显示由 BarRows.read 管。已经算过的直接用;没算过的交给后台线程,算好再刷新一次
             val rl = ArrayList<String>(ce.size())
             var missing = false
             for (i in 0 until ce.size()) {
@@ -2522,7 +2662,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 if (v == null) missing = true
                 rl.add(v ?: "")
             }
-            reads = rl
+            if (BarRows.read) reads = rl
             if (missing) fillChunkReads(ce)
         }
         candidateBar?.setChunks(texts, raws, chunkSel, reads)
@@ -2549,7 +2689,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             main.post {
                 if (chunkReadCache.size > 400) chunkReadCache.clear()
                 for (d in done) chunkReadCache[d[0] + "\u0001" + d[1]] = d[2]
-                if (chunkEdit === ce && BarRows.read) pushChunks()
+                if (chunkEdit === ce && BarRows.chunk) pushChunks()
             }
         }
     }
@@ -3679,7 +3819,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun refreshLayout(animate: Boolean) {
         // 笔画用户(最近用的中文方式是笔画)不要词块行:候选行贴着预览的笔画;拼音有。切换中英文不变,所以不会跳
         val wantChunk = chineseMode != Mode.STROKE
-        val wantRead = wantChunk   // 拼音:词块行每个字上方永远带声调读音(不看「显示读音」开关,那个只管候选行)
+        val wantRead = false   // 词块行的字上方不再放拼音:拼音改在预览条里自动补全显示(声调读音照常算,预览用)
         if (BarRows.chunk != wantChunk || BarRows.read != wantRead) {
             val readChanged = BarRows.read != wantRead
             BarRows.chunk = wantChunk
