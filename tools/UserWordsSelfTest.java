@@ -125,6 +125,28 @@ public class UserWordsSelfTest {
         wp.add("张伟", S("zhang", "wei"), false);
         check(wp.snapshot() == null, "次数 1 的不在快照里");
 
+        // 模糊音折叠视图:打 buzidao 也能用我造的 不知道(buzhidao)
+        UserWords wf = new UserWords(new File(dir, "wf.txt"));
+        wf.add("不知道", S("bu", "zhi", "dao"), true);
+        UserWords.Snapshot sf = wf.snapshot();
+        UserWords.Snapshot ff = sf.folded(Fuzzy.ZH);
+        check(sf.folded(0) == sf, "mask 0 返回自己");
+        check(sf.folded(Fuzzy.ZH) == ff, "同一个 mask 只建一次");
+        check(ff.size() == 1 && ff.keys[0].equals("buzidao") && ff.origKeys[0].equals("buzhidao") && ff.texts[0].equals("不知道"), "折叠视图:键折叠、记着原拼音");
+        check(sf.origKeys == null, "普通快照没有原拼音");
+        check(Arrays.equals(ff.exactSkip("buzidao", "buzidao"), new String[] {"不知道"}), "打 buzidao(写错)能查到 不知道");
+        check(ff.exactSkip("buzidao", "buzhidao").length == 0, "打对了(buzhidao)时这里不重复给");
+        check(Arrays.asList(ff.prefixSkip("buzi", "buzi", 5)).contains("不知道"), "补全 buzi → 不知道");
+        check(ff.prefixSkip("buzi", "buzhi", 5).length == 0, "打对了的前缀补全这里不重复给");
+        check(ff.exactSkip("bushi", "bushi").length == 0, "不相干的不命中");
+        // 折叠视图里排序:同样折叠成 buzidao 的两个词,次数多的在前
+        UserWords wg = new UserWords(new File(dir, "wg.txt"));
+        wg.add("不知道", S("bu", "zhi", "dao"), true);
+        wg.add("步子道", S("bu", "zi", "dao"), true);
+        wg.add("步子道", S("bu", "zi", "dao"), true);
+        String[] fx = wg.snapshot().folded(Fuzzy.ZH).exactSkip("buzidao", "nothing");
+        check(fx.length == 2 && fx[0].equals("步子道"), "折叠视图同键按次数排序 " + Arrays.toString(fx));
+
         // 速度:3000 个词的快照,整句用到它们
         UserWords big = new UserWords(new File(dir, "big.txt"));
         String[] syl = {"zhang", "wei", "li", "wang", "liu", "chen", "yang", "zhao", "huang", "zhou"};
