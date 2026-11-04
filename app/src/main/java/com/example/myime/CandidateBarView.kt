@@ -74,6 +74,8 @@ class CandidateBarView(
     private var chunkRaw: List<Boolean> = emptyList()
     private var chunkSel = -1
     private var chunkXs = FloatArray(1)
+    private var chunkRuby: Array<Ruby?> = emptyArray()
+    private var candRuby: Array<Ruby?> = emptyArray()
     private var chunkContentW = 0f
     private var chunkOffset = 0f
     private var scrollingChunks = false   // 这一次手势是在词块行上开始的
@@ -235,6 +237,7 @@ class CandidateBarView(
         palette = Palette(context)
         applyMetrics()
         relayout()
+        layoutChunks()
         requestLayout()
         invalidate()
     }
@@ -267,6 +270,23 @@ class CandidateBarView(
     }
 
     /** 词块行:整句按词切成的文字、哪些是没被吃掉的拼音(只显示)、点中的那块(-1 = 没有)。 */
+    /** 词块行排版(字号/读音行变了也要重排,所以单独拿出来)。 */
+    private fun layoutChunks() {
+        val n = chunkTexts.size
+        chunkXs = FloatArray(n + 1)
+        chunkRuby = if (chunkReads.isEmpty()) emptyArray() else arrayOfNulls(n)
+        var x = 0f
+        val pad = itemPad * 0.55f
+        for (i in 0 until n) {
+            chunkXs[i] = x
+            val rb = if (chunkReads.isNotEmpty() && !chunkRaw[i]) buildRuby(chunkTexts[i], chunkReads[i], chunkPaint) else null
+            if (rb != null) chunkRuby[i] = rb
+            x += (rb?.width ?: chunkPaint.measureText(chunkTexts[i])) + pad * 2 + itemPad * 0.25f
+        }
+        chunkXs[n] = x
+        chunkContentW = x
+    }
+
     fun setChunks(texts: List<String>, raws: List<Boolean>, sel: Int, readings: List<String> = emptyList()) {
         val rd = if (readings.size == texts.size) readings else emptyList()
         if (texts == chunkTexts && raws == chunkRaw && sel == chunkSel && rd == chunkReads) return
@@ -276,17 +296,7 @@ class CandidateBarView(
         chunkReads = rd
         chunkRaw = raws
         chunkSel = sel
-        chunkXs = FloatArray(texts.size + 1)
-        var x = 0f
-        val pad = itemPad * 0.55f
-        for (i in texts.indices) {
-            chunkXs[i] = x
-            val sy = if (rd.isNotEmpty()) sylsOf(texts[i], rd[i]) else null
-            val tw = if (sy != null) rubyWidth(texts[i], sy, chunkPaint) else chunkPaint.measureText(texts[i])
-            x += tw + pad * 2 + itemPad * 0.25f
-        }
-        chunkXs[texts.size] = x
-        chunkContentW = x
+        layoutChunks()
         if (!sameList) chunkOffset = 0f
         // 点中的那块要看得见:不在屏幕里就滚到它
         if (sel in texts.indices) {
@@ -363,34 +373,41 @@ class CandidateBarView(
     /** 有读音时每个候选左右留的空白小一点(读音比字宽,不然候选栏一屏放不下几个)。 */
     private fun padNow(): Float = if (reads.isEmpty()) itemPad else itemPad * 0.75f
 
-    /** 读音按空格切开,个数正好等于字数才能一个字配一个音节;对不上返回 null(整串读音居中放在词上方)。 */
-    private fun sylsOf(text: String, read: String): List<String>? {
+    /** 一个词的按字排版结果:排版时算一次存起来,画的时候不再 measureText / split(滑动时每帧都在画)。 */
+    private class Ruby(val syls: Array<String>, val cw: FloatArray, val rw: FloatArray, val cell: FloatArray, val width: Float)
+
+    /** 读音按空格切开,个数正好等于字数才能一个字配一个音节;对不上返回 null(整串读音居中放在词上方)。
+     *  每个字一格,格宽 = 字宽和它的音节宽中大的那个,音节在字的正上方、字在格里居中。词仍是一个整体。 */
+    private fun buildRuby(text: String, read: String, tp: Paint): Ruby? {
         if (read.isEmpty() || text.isEmpty()) return null
         val s = read.split(' ')
-        return if (s.size == text.length) s else null
-    }
-
-    /** 一个词按字排:每个字一格,格宽 = 字宽和它的音节宽中大的那个,音节在字的正上方、字在格里居中。词仍是一个整体,只是字之间按读音撑开。 */
-    private fun rubyWidth(text: String, syls: List<String>, tp: Paint): Float {
+        if (s.size != text.length) return null
+        val n = text.length
+        val cw = FloatArray(n)
+        val rw = FloatArray(n)
+        val cell = FloatArray(n)
         var w = 0f
-        for (k in text.indices) w += maxOf(tp.measureText(text, k, k + 1), readPaint.measureText(syls[k]) + rubyGap)
-        return w
+        for (k in 0 until n) {
+            cw[k] = tp.measureText(text, k, k + 1)
+            rw[k] = readPaint.measureText(s[k])
+            cell[k] = maxOf(cw[k], rw[k] + rubyGap)
+            w += cell[k]
+        }
+        return Ruby(s.toTypedArray(), cw, rw, cell, w)
     }
 
-    private fun drawRuby(canvas: Canvas, text: String, syls: List<String>, x0: Float, yText: Float, yRead: Float, tp: Paint) {
+    private fun drawRuby(canvas: Canvas, text: String, rb: Ruby, x0: Float, yText: Float, yRead: Float, tp: Paint) {
         var x = x0
         for (k in text.indices) {
-            val cw = tp.measureText(text, k, k + 1)
-            val rw = readPaint.measureText(syls[k])
-            val cell = maxOf(cw, rw + rubyGap)
-            canvas.drawText(text, k, k + 1, x + (cell - cw) / 2f, yText, tp)
-            canvas.drawText(syls[k], x + (cell - rw) / 2f, yRead, readPaint)
-            x += cell
+            canvas.drawText(text, k, k + 1, x + (rb.cell[k] - rb.cw[k]) / 2f, yText, tp)
+            canvas.drawText(rb.syls[k], x + (rb.cell[k] - rb.rw[k]) / 2f, yRead, readPaint)
+            x += rb.cell[k]
         }
     }
 
     private fun relayout() {
         xs = FloatArray(items.size + 1)
+        candRuby = if (reads.isEmpty()) emptyArray() else arrayOfNulls(items.size)
         var x = 0f
         val pad = padNow()
         for (i in items.indices) {
@@ -399,8 +416,9 @@ class CandidateBarView(
             if (reads.isNotEmpty()) {
                 val r = reads[i]
                 if (r.isNotEmpty()) {
-                    val sy = sylsOf(items[i], r)
-                    w = if (sy != null) rubyWidth(items[i], sy, candPaint) else maxOf(w, readPaint.measureText(r))
+                    val rb = buildRuby(items[i], r, candPaint)
+                    candRuby[i] = rb
+                    w = if (rb != null) rb.width else maxOf(w, readPaint.measureText(r))
                 }
             }
             x += w + pad * 2
@@ -518,11 +536,11 @@ class CandidateBarView(
                 // 带读音的词块行:读音在上、字在下(和候选行一样);词块不拆开,每个字上方是自己的音节
                 val yt = stripH + chunkH * 0.68f + chunkBase
                 val yr = stripH + chunkH * 0.27f + readBase
-                val sy = if (chunkReads.isNotEmpty() && !chunkRaw[i]) sylsOf(chunkTexts[i], chunkReads[i]) else null
-                if (sy != null) {
+                val rb = chunkRuby.getOrNull(i)
+                if (rb != null) {
                     readPaint.color = if (i == chunkSel) palette.accent else palette.text   // 用正文色,声调符号才看得清
                     readPaint.alpha = 255
-                    drawRuby(canvas, chunkTexts[i], sy, x0 + pad, yt, yr, chunkPaint)
+                    drawRuby(canvas, chunkTexts[i], rb, x0 + pad, yt, yr, chunkPaint)
                 } else {
                     canvas.drawText(chunkTexts[i], x0 + pad, yt, chunkPaint)
                 }
@@ -549,12 +567,12 @@ class CandidateBarView(
             candPaint.color = if (first) palette.accent else palette.text
             candPaint.alpha = a
             val r = if (hasReads) reads[i] else ""
-            val sy = if (r.isNotEmpty()) sylsOf(items[i], r) else null
-            if (sy != null) {
+            val rb = candRuby.getOrNull(i)
+            if (rb != null) {
                 // 每个字上方是它自己的音节;词不拆开
                 readPaint.color = if (first) palette.accent else palette.icon
                 readPaint.alpha = a
-                drawRuby(canvas, items[i], sy, inset + xs[i] - offset + padNow(), y, ry, candPaint)
+                drawRuby(canvas, items[i], rb, inset + xs[i] - offset + padNow(), y, ry, candPaint)
                 continue
             }
             val tw = candPaint.measureText(items[i])
