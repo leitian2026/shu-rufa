@@ -287,6 +287,10 @@ class PinyinEngine(
         // 先放前 EXACT_HEAD 个精确的,紧接着放最多 FUZZY_SLOTS 个模糊的,再接着放剩下的精确的、剩下的模糊的。
         val fuzzy = LinkedHashSet<String>()
         if (fuzzyMask != 0) {
+            if (uw != null) {
+                val ucn = Fuzzy.canon(p, fuzzyMask, Syllabary.segment(p))
+                if (ucn != null) for (t in uw.folded(fuzzyMask).exactSkip(ucn.canon, p)) if (t !in exact) fuzzy.add(t)
+            }
             val fi = fuzzyIndex()
             val cn = if (fi != null) Fuzzy.canon(p, fi.mask, Syllabary.segment(p)) else null
             if (fi != null && cn != null) {
@@ -632,6 +636,13 @@ class PinyinEngine(
         }
         val fi = if (cuts.isEmpty()) fuzzyIndex() else null
         val cn = if (fi != null) Fuzzy.canon(p, fi.mask, Syllabary.segment(p)) else null
+        // 我造的词的模糊音(同 queryRaw):折叠视图,不靠大索引
+        val fm = if (cuts.isEmpty()) fuzzyMask else 0
+        val ucn = if (uw != null && fm != 0) Fuzzy.canon(p, fm, Syllabary.segment(p)) else null
+        val uwf = if (ucn != null) uw?.folded(fm) else null
+        if (uwf != null && ucn != null) {
+            for (t in uwf.exactSkip(ucn.canon, p)) if (accept.accept(t) && seen.add(t)) out.add(Candidate(t, whole))
+        }
 
         val end0 = p + '\u0000'
         val endF = p + '\uffff'
@@ -643,6 +654,9 @@ class PinyinEngine(
         if (p.length >= 2) add(top(initialKeys, initialIds, p, end0, emptyList(), ctx, p, accept), p.length, maxC)
         if (uw != null) {
             for (t in uw.prefix(p, USER_WORD_PREFIX)) if (accept.accept(t) && seen.add(t)) out.add(Candidate(t, whole))
+            if (uwf != null && ucn != null) {
+                for (t in uwf.prefixSkip(ucn.canon, p, USER_WORD_PREFIX)) if (accept.accept(t) && seen.add(t)) out.add(Candidate(t, whole))
+            }
         }
         add(top(compactKeys, compactIds, p, endF, cutsArr, ctx, p, accept), p.length, maxC - fuzzyRoom)
         if (p.length >= 2) add(top(initialKeys, initialIds, p, endF, emptyList(), ctx, p, accept), p.length, maxC)
@@ -712,6 +726,14 @@ class PinyinEngine(
         val fi = if (cuts.isEmpty()) fuzzyIndex() else null
         val seg: IntArray? by lazy { Syllabary.segment(p) }   // 音节切分最多算一次(模糊音、混拼都要用)
         val cn = if (fi != null) Fuzzy.canon(p, fi.mask, seg) else null
+        // 我造的词的模糊音:不靠大索引(只有几千个词,按需折叠一份),所以索引还在建、省电模式下也能用
+        val fm = if (cuts.isEmpty()) fuzzyMask else 0
+        val ucn = if (uw != null && fm != 0) Fuzzy.canon(p, fm, seg) else null
+        val uwf = if (ucn != null) uw?.folded(fm) else null
+        if (uwf != null && ucn != null) {
+            val whole = rawConsumed(raw, p.length, p.length)
+            for (t in uwf.exactSkip(ucn.canon, p)) if (seen.add(t)) out.add(Candidate(t, whole))
+        }
         val low = lowPower
 
         val end0 = p + '\u0000'
@@ -729,6 +751,9 @@ class PinyinEngine(
             // 我造的词里以打出来的开头的(补全),排在词库的补全前面
             val whole = rawConsumed(raw, p.length, p.length)
             for (t in uw.prefix(p, USER_WORD_PREFIX)) if (seen.add(t)) out.add(Candidate(t, whole))
+            if (uwf != null && ucn != null) {
+                for (t in uwf.prefixSkip(ucn.canon, p, USER_WORD_PREFIX)) if (seen.add(t)) out.add(Candidate(t, whole))
+            }
         }
         add(top(compactKeys, compactIds, p, endF, cuts, ctx), p.length, maxC - fuzzyRoom)
         if (p.length >= 2) add(top(initialKeys, initialIds, p, endF, emptyList(), ctx), p.length, maxC)
@@ -748,7 +773,7 @@ class PinyinEngine(
         }
         val nExactSents = sents.size
         if (!low && fi != null && cn != null && p.length >= SENTENCE_MIN && !cancelled()) {
-            sents.addAll(sentence.decodeFuzzyTop(p, cn, fi.keys, fi.ids, lu, ctx, 2, chain))
+            sents.addAll(sentence.decodeFuzzyTop(p, cn, fi.keys, fi.ids, lu, ctx, 2, chain, uw?.folded(fi.mask)))
         }
         if (sents.size > nExactSents && nExactSents > 0) {
             // 模糊音整句和精确整句按分数一起排(同分时精确的在前:排序是稳定的)。模糊整句里写错的词已经逐个扣过分了,
