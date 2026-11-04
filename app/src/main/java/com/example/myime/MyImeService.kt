@@ -2247,7 +2247,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 Mode.PINYIN -> ErrorHint.get("pinyin") ?: if (filterQueryOn()) {
                     ErrorHint.get("stroke") ?: if (strokeEngine == null && dictState[KIND_STROKE] == 2) "笔画词库不可用,筛选没生效" else null
                 } else {
-                    null
+                    (pinyinEngine as? PinyinEngine)?.fuzzyStatus()   // 模糊音开着却没生效时说明原因
                 }
                 Mode.STROKE -> ErrorHint.get("stroke")
                 Mode.ENGLISH -> ErrorHint.get("english")
