@@ -225,6 +225,23 @@ public class FuzzySelfTest {
             check(sb.toString().equals("wobuzidao"), "codes 仍是打的 " + Arrays.toString(fuzzyZ.get(0).codes));
         }
 
+        // 我造的词也走模糊音:词库里没有 不知道,造过一个(buzhidao),打 wobuzidao 模糊整句能用它
+        Dict du = build(new String[] {"我\two\t8000", "道\tdao\t3000", "步子\tbu zi\t100"});
+        Fuzzy.Index ui = Fuzzy.Index.build(du.compact, du.sl, du.start, Fuzzy.ZH);
+        java.io.File udir = java.nio.file.Files.createTempDirectory("fuzzyuw").toFile();
+        UserWords uw = new UserWords(new java.io.File(udir, "words.txt"));
+        uw.add("不知道", new String[] {"bu", "zhi", "dao"}, true);
+        Fuzzy.Canon uc = Fuzzy.canon("wobuzidao", Fuzzy.ZH);
+        List<SentenceDecoder.Result> noUw = du.dec.decodeFuzzyTop("wobuzidao", uc, ui.keys, ui.ids, null, null, 2);
+        List<SentenceDecoder.Result> withUw = du.dec.decodeFuzzyTop("wobuzidao", uc, ui.keys, ui.ids, null, null, 2, null, uw.snapshot().folded(Fuzzy.ZH));
+        check(!noUw.isEmpty() && noUw.get(0).text.equals("我步子道"), "没有造的词时只能 我步子道 " + (noUw.isEmpty() ? "[]" : noUw.get(0).text));
+        check(!withUw.isEmpty() && withUw.get(0).text.equals("我不知道"), "有造的词时模糊整句用它 " + (withUw.isEmpty() ? "[]" : withUw.get(0).text));
+        if (!withUw.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            for (String c : withUw.get(0).codes) sb.append(c);
+            check(sb.toString().equals("wobuzidao") && withUw.get(0).letters == 9, "codes / letters 仍是打的 " + Arrays.toString(withUw.get(0).codes));
+        }
+
         System.out.println(fails == 0 ? "ALL PASS" : (fails + " FAILED"));
         System.exit(fails == 0 ? 0 : 1);
     }
