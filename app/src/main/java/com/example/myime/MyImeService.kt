@@ -1504,22 +1504,17 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     /** 把预览交给候选栏;点中了一个词块时,顺便告诉它这一块的拼音在预览里的位置(高亮 + 光标)。 */
     private fun pushPreview() {
+        val base = previewText()   // 拼音时会顺便算出 previewMap(输入串字符 → 预览串位置)
         var from = -1
         var to = -1
         val r = chunkRange()
-        if (chunkEdit != null && BarRows.read && mode == Mode.PINYIN && !filterActive() && !exactActive()) {
-            // 词块行已经把读音按字放在每个字上方:预览条不再堆一整串拼音,只留已选的词和正在改的那一块的拼音(带光标)
-            val pre = if (pending.isEmpty()) "" else pending.toString() + " "
-            val sel = if (r != null) composing.substring(r[0], r[1]) else ""
-            candidateBar?.setComposing(pre + sel, if (sel.isNotEmpty()) pre.length else -1, pre.length + sel.length)
-            return
-        }
-        if (r != null && mode == Mode.PINYIN) {
+        val map = previewMap
+        if (r != null && mode == Mode.PINYIN && map != null && r[1] <= composing.length && r[1] > r[0]) {
             val prefix = if (pending.isEmpty()) 0 else pending.length + 1   // previewText 里已选的词 + 一个空格
-            from = prefix + r[0]
-            to = prefix + r[1]
+            from = prefix + map[r[0]]
+            to = prefix + map[r[1] - 1] + 1
         }
-        candidateBar?.setComposing(previewText(), from, to)
+        candidateBar?.setComposing(base, from, to)
     }
 
     /** 分词键:在拼音输入里插入音节边界。 */
@@ -2004,12 +1999,79 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         else -> null
     }
 
-    private fun displayComposing(): String =
-        if (mode == Mode.STROKE) {
-            composing.map { strokeGlyph(it) }.joinToString("")
-        } else {
-            composing.toString()
+    private fun displayComposing(): String {
+        previewMap = null
+        return when (mode) {
+            Mode.STROKE -> composing.map { strokeGlyph(it) }.joinToString("")
+            Mode.PINYIN -> spacedComposing()
+            else -> composing.toString()
         }
+    }
+
+    /** spacedComposing 生成的预览串里,输入串第 k 个字符在预览串里的位置(最后一项是预览串长度);不是拼音预览时为 null。 */
+    private var previewMap: IntArray? = null
+
+    /**
+     * 拼音预览:打的字母分开显示,不挤成一串。能切成音节的按音节分(wobuzidao → wo bu zi dao),
+     * 切不开的(简拼 qws、wozgr)能认出音节的认音节、认不出的一个字母一格(q w s、wo z g r)。分词符 ' 原样保留,左右也留空。
+     * 同时记下输入串每个字符在预览串里的位置(previewMap),点中词块时预览里高亮它的拼音用。
+     */
+    private var spacedSrc: String? = null
+    private var spacedOut = ""
+    private var spacedMap: IntArray? = null
+
+    private fun spacedComposing(): String {
+        val s = composing
+        val n = s.length
+        // 一次按键会触发好几次预览刷新,输入串没变就直接用上次的结果,不重新切音节
+        val last = spacedSrc
+        if (last != null && last.length == n && last.contentEquals(s)) {
+            previewMap = spacedMap
+            return spacedOut
+        }
+        val map = IntArray(n + 1)
+        val sb = StringBuilder(n * 2)
+        var i = 0
+        fun token(a: Int, b: Int) {   // 输入串 [a, b) 放成一格
+            if (sb.isNotEmpty()) sb.append(' ')
+            val d = sb.length
+            for (k in a until b) map[k] = d + (k - a)
+            sb.append(s, a, b)
+        }
+        while (i < n) {
+            if (s[i] == '\'') {
+                token(i, i + 1)
+                i++
+                continue
+            }
+            var j = i
+            while (j < n && s[j] != '\'') j++
+            val run = s.substring(i, j)
+            val ends = Syllabary.segment(run)
+            if (ends != null) {
+                var from = 0
+                for (e in ends) {
+                    token(i + from, i + e)
+                    from = e
+                }
+            } else {
+                var k = 0
+                while (k < run.length) {
+                    var len = minOf(Syllabary.MAX_LEN, run.length - k)
+                    while (len > 1 && !Syllabary.isSyllable(run.substring(k, k + len))) len--
+                    token(i + k, i + k + len)
+                    k += len
+                }
+            }
+            i = j
+        }
+        map[n] = sb.length
+        previewMap = map
+        spacedSrc = s.toString()
+        spacedMap = map
+        spacedOut = sb.toString()
+        return spacedOut
+    }
 
     private fun strokeGlyph(c: Char): Char = when (c) {
         'h' -> '一'
@@ -2381,7 +2443,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     // ------------------------------------------------------------ 词块(候选栏上方的第二行)
 
     /** 当前整句切成的词块;null = 没有(不是拼音输入 / 还没有候选)。用户改过(换词、拆、并)后 edited() 为 true。 */
-    private var chunkEdit: ChunkEdit? = null
+    @Volatile private var chunkEdit: ChunkEdit? = null
     private val CHUNK_CODE_MAX = 24   // 一块拼音最多这么多字母(在块里打字时的上限)
     private var chunkSel = -1   // 点中的那一块;-1 = 没有。有的话候选栏显示这一块的备选
     private var keepChunks = false   // 下一次 requery 不要丢掉词块(换完词、退出备选时用)
@@ -2450,6 +2512,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val pe = pinyinEngine as? PinyinEngine
         val ctx = applicationContext
         worker.execute {
+            if (chunkEdit !== ce) return@execute   // 排队期间这套词块已经换掉了,这批不用算
             ToneMap.ensure(ctx)
             val done = ArrayList<Array<String>>(todo.size)
             for (t in todo) done.add(arrayOf(t[0], t[1], chunkReading(t[0], t[1], pe)))
