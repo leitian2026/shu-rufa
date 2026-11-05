@@ -4,9 +4,10 @@ import android.content.Context
 
 /**
  * consumed:这个候选消耗了输入串的前几个字符(拼音分段上屏时,剩余部分继续留在组合区)。
+ * show:候选栏上显示的字(null = 显示 text)。接着改过的块往后打字时,后面的候选只显示尾巴那个字 / 词,选中仍然上屏整句 text。
  * kind:只有英文用到。0 = 原样输入或补全,1 = 纠错,2 = 联想(下一个词),3 = 跟在中文候选词后面的表情(拼音/笔画用)。
  */
-class Candidate(val text: String, val consumed: Int, val kind: Int = 0)
+class Candidate(val text: String, val consumed: Int, val kind: Int = 0, val show: String? = null)
 
 interface Engine {
     fun query(code: String): List<Candidate>
