@@ -2439,10 +2439,20 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             if (gen != queryGen) return@execute   // 排队期间已有更新的输入:这个旧查询不用算了(最新一次的任务一定会跑)
             val dg = diag   // 查询过程中开关被改也不会算出离谱的耗时
             val tq = if (dg) android.os.SystemClock.elapsedRealtime() else 0L
-            // 先查「前一块的拼音 + 尾巴」,再查整串:整句切块要用最后一次整串解码留下的状态
+            // 尾巴(改过的块后面新打的字母)先单独查,再带着前一块查;最后查整串:整句切块要用最后一次整串解码留下的状态
             var tailInfo: TailInfo? = null
             if (tailJob != null && engine is PinyinEngine) {
                 try {
+                    engine.stale = { gen != queryGen }
+                    val tc = engine.query(tailJob.tail)
+                    val alts = ArrayList<Candidate>()
+                    for (c in tc) if (c.kind == 0 && c.consumed in 1..tailJob.tail.length && alts.size < 14) alts.add(c)
+                    var chunks: List<Pair<String, String>>? = null
+                    val f = tc.firstOrNull()
+                    if (f != null && f.kind == 0 && f.consumed >= tailJob.tail.length) {
+                        val segs = engine.sentenceChunks(tailJob.tail, f.text)
+                        if (segs != null) chunks = segs.map { Pair(it.text, it.code) }
+                    }
                     val c2 = tailJob.lastCode + tailJob.tail
                     val words = ArrayList<String>()
                     for (c in engine.query(c2)) {
@@ -2451,7 +2461,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                             if (w !in words) words.add(w)
                         }
                     }
-                    if (words.isNotEmpty()) tailInfo = TailInfo(tailJob.keep, tailJob.tail, words, tailJob.prefixText)
+                    tailInfo = TailInfo(tailJob.keep, tailJob.tail, tailJob.prefixText, alts, chunks, words)
                 } catch (t: Throwable) {
                     // 查不到就当没有,走整句切块
                 }
@@ -2497,12 +2507,16 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             buildChunks(list0)
             val ed = editedCandidate()
             val extras = tailExtra
+            val tm = tailMode
             tailExtra = emptyList()
+            tailMode = false
             if (ed != null) {
                 val l2 = ArrayList<Candidate>(list0.size + 1 + extras.size)
+                val seen = HashSet<String>()
                 l2.add(ed)
-                for (t in extras) if (t != ed.text) l2.add(Candidate(t, ed.consumed))   // 跟前面改过的字有关的接续:编→编译(译)
-                for (c in list0) if (c.text != ed.text && extras.none { it == c.text }) l2.add(c)
+                seen.add(ed.text)
+                for (c in extras) if (seen.add(c.text)) l2.add(c)   // 改过的字后面接着打:这里只显示尾巴那个字 / 词,不占满一整行
+                if (!tm) for (c in list0) if (seen.add(c.text)) l2.add(c)
                 list = l2
             }
         } else {
@@ -2538,7 +2552,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
      */
     private fun pushToBar(shown: List<Candidate>) {
         val bar = candidateBar ?: return
-        val texts = shown.map { it.text }
+        val texts = shown.map { it.show ?: it.text }
         val m = mode
         if (!readingOn || shown.isEmpty() || (m != Mode.PINYIN && m != Mode.STROKE)) {
             bar.setCandidates(texts)
@@ -2559,7 +2573,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     /** 一个候选的读音(带声调)。表情、非汉字、太长的不显示。 */
     private fun readingFor(c: Candidate, m: Mode, raw: String, pe: PinyinEngine?): String {
         val text = c.text
-        if (c.kind == 3 || text.isEmpty() || text.length > 16) return ""
+        if (c.kind == 3 || c.show != null || text.isEmpty() || text.length > 16) return ""
         var han = false
         for (ch in text) if (ch.code in 0x4E00..0x9FFF) { han = true; break }
         if (!han) return ""
@@ -2758,12 +2772,19 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     /** 一个新的候选结果到了:把第一个候选(整句)切成词块。用户已经改过的不重切。 */
     private var carryItems: List<ChunkEdit.Item>? = null   // 输入变化前用户改过的块(开头连续的非拼音块),等新整句出来合进去
 
-    /** 改过的块后面的尾巴:keep = 保留前几个旧块;words = 前一块的文字 + 尾巴的拼音 能组成的词(去掉前一块文字后剩下的部分),排好序。 */
-    private class TailInfo(val keep: Int, val tail: String, val words: List<String>, val prefixText: String)
+    /**
+     * 改过的块后面的尾巴:keep = 保留前几个旧块;alts = 尾巴单独查出来的备选;chunks = 尾巴自己切的词块;
+     * ctxWords = 前一块的文字 + 尾巴的拼音 能组成的词(去掉前一块文字后剩下的部分,编 + yi → 译),排好序。
+     */
+    private class TailInfo(
+        val keep: Int, val tail: String, val prefixText: String,
+        val alts: List<Candidate>, val chunks: List<Pair<String, String>>?, val ctxWords: List<String>,
+    )
     private class TailJob(val keep: Int, val lastText: String, val lastCode: String, val tail: String, val prefixText: String)
 
     @Volatile private var pendingTail: TailInfo? = null
-    private var tailExtra: List<String> = emptyList()   // 尾巴的其他接续,排在改过的整句后面
+    private var tailExtra: List<Candidate> = emptyList()   // 尾巴的接续和备选(只显示尾巴那个字 / 词),排在改过的整句后面
+    private var tailMode = false                            // 这一批候选是「改过的整句 + 尾巴备选」,不再列别的整句
 
     /** 有改过的旧块、旧块的拼音还是新输入的开头、后面又多了字母(尾巴):给出查尾巴要用的信息;其他情况 null。 */
     private fun makeTailJob(code: String): TailJob? {
@@ -2790,6 +2811,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val tailInfo = pendingTail
         pendingTail = null
         tailExtra = emptyList()
+        tailMode = false
         if (mode != Mode.PINYIN || composing.isEmpty()) {
             resetChunks()
             return
@@ -2835,16 +2857,41 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         // 这之前用旧块(改过的),这之后用新切出来的
         var outItems: List<ChunkEdit.Item> = items
         var carried = false
-        if (carry != null && tailInfo != null && tailInfo.keep in 1..carry.size && tailInfo.words.isNotEmpty()) {
-            // 尾巴带着前一个改过的字的上下文查到了接续:前面保留改过的块,尾巴用接续(编 + yi → 译)
-            val merged = ArrayList<ChunkEdit.Item>(tailInfo.keep + 1)
-            for (k in 0 until tailInfo.keep) merged.add(carry[k])
-            merged.add(ChunkEdit.Item(tailInfo.words[0], tailInfo.tail, false))
+        if (carry != null && tailInfo != null && tailInfo.keep in 1..carry.size) {
+            // 改过的块后面接着打字:前面保留改过的块;尾巴带着前一个字的上下文(编 + yi → 译),没有接续就用尾巴自己切的块
+            val merged = ArrayList<ChunkEdit.Item>(tailInfo.keep + 4)
+            var prefixLetters = 0
+            for (k in 0 until tailInfo.keep) {
+                merged.add(carry[k])
+                prefixLetters += carry[k].code.length
+            }
+            var tailText = ""
+            val ch = tailInfo.chunks
+            if (tailInfo.ctxWords.isNotEmpty()) {
+                tailText = tailInfo.ctxWords[0]
+                merged.add(ChunkEdit.Item(tailText, tailInfo.tail, false))
+            } else if (ch != null && ch.sumOf { it.second.length } == tailInfo.tail.length) {
+                for (c in ch) {
+                    merged.add(ChunkEdit.Item(c.first, c.second, false))
+                    tailText += c.first
+                }
+            } else {
+                merged.add(ChunkEdit.Item(tailInfo.tail, tailInfo.tail, true))
+            }
             outItems = merged
             carried = true
-            val ex = ArrayList<String>()
-            for (w in tailInfo.words.drop(1).take(5)) ex.add(tailInfo.prefixText + w)
+            // 尾巴的接续和备选:上屏的是「改过的前面 + 这个字 / 词」,候选栏上只显示这个字 / 词
+            val ex = ArrayList<Candidate>()
+            val seenT = HashSet<String>()
+            seenT.add(tailText)
+            val all = consumedForLetters(letters.length)
+            for (w in tailInfo.ctxWords.drop(1).take(5)) if (seenT.add(w)) ex.add(Candidate(tailInfo.prefixText + w, all, 0, w))
+            for (a in tailInfo.alts) {
+                if (!seenT.add(a.text)) continue
+                ex.add(Candidate(tailInfo.prefixText + a.text, consumedForLetters(prefixLetters + a.consumed), 0, a.text))
+            }
             tailExtra = ex
+            tailMode = true
         } else if (carry != null) {
             val newStart = HashMap<Int, Int>()   // 累计字母数 → 从第几块开始是这个位置之后的新块
             newStart[0] = 0
@@ -3236,7 +3283,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (candidatesFor != queryKey()) return false
         val c = candidates.getOrNull(index) ?: return false
         if (c.kind == 3 || c.text.isEmpty()) return false
-        val text = c.text
+        val text = c.show ?: c.text
         val pe = pinyinEngine as? PinyinEngine
         val se = strokeEngine as? StrokeEngine
         if (pe == null) loadKind(KIND_PINYIN)
