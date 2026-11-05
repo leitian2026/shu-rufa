@@ -58,7 +58,7 @@ object TradConv {
         for (c in list) {
             val c2 = if (c.kind == 3) c else {
                 val t = d.conv(c.text)
-                if (t == c.text) c else Candidate(t, c.consumed, c.kind)
+                if (t == c.text) c else Candidate(t, c.consumed, c.kind, c.show?.let { d.conv(it) })
             }
             if (seen.add((if (c2.kind == 3) "\u0001" else "") + c2.text)) out.add(c2)
         }
