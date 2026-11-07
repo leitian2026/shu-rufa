@@ -218,6 +218,9 @@ class PinyinEngine(
      */
     @Volatile var stale: (() -> Boolean)? = null
 
+    /** 拼错容错最近一次真的改对了:(用户打的输入, 改正后的拼音)。键盘用它在预览行给「是不是 xxx」;只有对得上当前输入才用。 */
+    @Volatile var typoFix: Pair<String, String>? = null
+
     /**
      * 拼音每次最多给几个词候选(整句、联想、表情不算在内),默认 30。由键盘服务按设置页的「候选数量」设置;
      * 少一点:查询时挑选和候选栏都少做事;多一点:能翻到更靠后的词。限制在 10~100。
@@ -828,6 +831,7 @@ class PinyinEngine(
             var found = 0
             var sentTried = 0
             val whole = rawConsumed(raw, p.length, p.length)
+            var fixV: String? = null
             for (v in Typo.variants(p, TYPO_VARIANTS)) {
                 if (found >= TYPO_MAX) break
                 // 学习记录按用户实际打的(带错的)写法记,所以下次同样打错也排在前面
@@ -836,6 +840,7 @@ class PinyinEngine(
                     if (found >= TYPO_MAX) break
                     if (seen.add(texts[id])) {
                         out.add(Candidate(texts[id], whole))
+                        if (fixV == null) fixV = v
                         found++
                     }
                 }
@@ -845,10 +850,20 @@ class PinyinEngine(
                     val s = sentence.decode(v, null, lu, ctx)
                     if (s != null && s.letters == v.length && seen.add(s.text)) {
                         out.add(Candidate(s.text, whole))
+                        if (fixV == null) fixV = v
                         found++
                     }
                 }
             }
+            // 给键盘的「是不是 xxx」提示:先在词库里找整体最接近的词(可以改好几处,按输入长度放宽,
+            // 写反 / 按错相邻键比多打漏打更像手滑);找不到再用上面改一处查到的写法。省电模式不做
+            var fixKey: String? = null
+            if (!low && p.length <= FUZZ_MAX_LEN && !cancelled()) {
+                val k = minOf(FUZZ_MAX_EDITS, maxOf(1, p.length / 3))
+                fixKey = FuzzyKey.find(p, compactKeys, compactIds, freqs, k * 3) { cancelled() }
+            }
+            if (fixKey == null) fixKey = fixV
+            if (fixKey != null) typoFix = Pair(raw, fixKey)
         }
 
         if (cancelled()) return out   // 已经有更新的按键:这次的结果会被丢掉,后面的分段不用做了
@@ -961,6 +976,8 @@ class PinyinEngine(
         const val TYPO_MIN = 3       // 少于这么多字母不做拼错容错(太短改什么都对得上)
         const val TYPO_VARIANTS = 8  // 最多试几个改过的写法
         const val TYPO_MAX = 6       // 容错最多给几个候选
+        const val FUZZ_MAX_LEN = 16  // 提示用的多处容错:输入超过这么多字母(整句)不找
+        const val FUZZ_MAX_EDITS = 5 // 提示用的多处容错:最多改几处(实际按长度放宽,每 3 个字母 1 处)
         const val TYPO_SENT = 3      // 最多对几个改过的写法拼整句
         const val SENT_SHOWN = 4     // 整句最多放几个到候选里(含模糊音的)
         const val SENT_WITH_EXACT = 2   // 整串本来就是词时,整句最多放几个
