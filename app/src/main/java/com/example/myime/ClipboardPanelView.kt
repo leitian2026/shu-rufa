@@ -17,6 +17,7 @@ import android.graphics.RectF
  *    回收箱里也能点一条粘贴、长按多选、全选、删除(这里的删除是真删)。回收箱里「返回」/点空白回到剪贴板。
  *  - 顶部有「清空系统剪贴板:开/关」开关(随时能点,不用进设置);剪贴板页(不含回收箱)在标题行下面常驻一行小字,
  *    写明「有的 app 粘贴不了」时怎么办 —— 这一行占一条的位置,所以剪贴板页一屏放 8 条,回收箱仍是 9 条。
+ *    多设备联动开着时,这一行改成联动状态(「联动:12:31 已同步」等),见 setSyncStatus。
  */
 class ClipboardPanelView(
     context: Context,
@@ -42,6 +43,7 @@ class ClipboardPanelView(
     private var trashItems: List<String> = emptyList()
     private var inTrash = false
     private var wipeOn = true
+    private var syncText: String? = null   // 联动状态小字;null = 显示原来的提示
     private var hintTop = 0f      // 常驻小字这一行占的高度(含下面的间距);回收箱里没有,为 0
     private var hintH = 0f
 
@@ -157,6 +159,16 @@ class ClipboardPanelView(
         hintBase = baseline(hintPaint)
         lockBase = baseline(lockPaint)
         titleBase = baseline(titlePaint)
+    }
+
+    /**
+     * 多设备联动的状态小字(联动开着时给,服务每次打开面板、同步开始 / 结束时调用):显示在标题行下面那一行,代替原来的提示。
+     * 联动关着传 null,那一行照旧显示提示。联动的开关和「立即同步」在备份页(标题行已经没有多余的位置放按键了)。
+     */
+    fun setSyncStatus(text: String?) {
+        if (syncText == text) return
+        syncText = text
+        invalidate()
     }
 
     /** 开关的当前状态(服务创建面板、每次打开面板时调用)。 */
@@ -288,7 +300,7 @@ class ClipboardPanelView(
         if (avail <= 0f) return
         noteText.color = palette.textFaint
         val base = noteText.textSize
-        var text = NOTE
+        var text = syncText ?: NOTE
         val w = noteText.measureText(text)
         if (w > avail) noteText.textSize = maxOf(base * avail / w, context.spf(8f))
         if (noteText.measureText(text) > avail) {
