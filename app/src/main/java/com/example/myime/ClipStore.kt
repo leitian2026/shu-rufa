@@ -25,6 +25,7 @@ import javax.crypto.spec.SecretKeySpec
 object ClipStore {
     private const val CLIP_FILE = "clips.txt"
     private const val TRASH_FILE = "trash.txt"
+    private const val META_FILE = "clipmeta.txt"   // 多设备联动的记录(每条内容的状态和时间,不含文字),见 ClipSyncCore.Model
 
     private const val LOCK_TAG = "k"   // 上锁的条目:和剪贴板在同一个文件里,每条一行 "k<Tab>文本"(老版本读到会直接跳过,不影响)
 
@@ -33,8 +34,8 @@ object ClipStore {
 
     class Data(val clips: List<String>, val trash: List<String>, val locked: List<String>)
 
-    /** 备份时要换成明文的两个文件(相对 filesDir 的路径)。 */
-    fun isClipFile(rel: String): Boolean = rel == "user/$CLIP_FILE" || rel == "user/$TRASH_FILE"
+    /** 备份时要换成明文的几个文件(相对 filesDir 的路径)。 */
+    fun isClipFile(rel: String): Boolean = rel == "user/$CLIP_FILE" || rel == "user/$TRASH_FILE" || rel == "user/$META_FILE"
 
     // ------------------------------------------------------------ 加密
 
@@ -217,6 +218,25 @@ object ClipStore {
             ErrorHint.clear("clip")
         } catch (e: Exception) {
             ErrorHint.set("clip", ErrorHint.of("剪贴板保存失败", e))
+        }
+    }
+
+    /**
+     * 多设备联动的记录:每行一条(ClipSyncCore.Model.writeMeta 的格式),同样加密保存、同样进备份(备份时解成明文)。
+     * 里面只有内容的哈希、状态和时间,没有文字本身。读不出来(文件没有 / 密钥丢了)就是空的,联动会把本机内容当成新的重新对账。
+     */
+    fun loadMeta(ctx: Context): List<String> {
+        val app = ctx.applicationContext
+        return readList(app, File(dir(app), META_FILE), "m", 20000).items
+    }
+
+    @Synchronized
+    fun saveMeta(ctx: Context, lines: List<String>) {
+        val app = ctx.applicationContext
+        try {
+            SafeFile.write(File(dir(app), META_FILE)) { w -> writeBody(app, w, META_FILE, listOf("m" to lines)) }
+        } catch (e: Exception) {
+            ErrorHint.set("clip", ErrorHint.of("剪贴板联动记录保存失败", e))
         }
     }
 }
