@@ -40,6 +40,72 @@ public final class FuzzyKey {
         return s.aborted ? null : s.bestKey;
     }
 
+    /** 输入和改正后的写法逐字对应的结果:每个字母属于第几处错(从 0 起,从左到右数),没错是 -1。 */
+    public static final class Align {
+        public final int[] typed;   // 用户打的每个字母
+        public final int[] fix;     // 改正后的每个字母
+        Align(int[] typed, int[] fix) { this.typed = typed; this.fix = fix; }
+    }
+
+    /**
+     * 把用户打的 typed 和改正后的 fix 一个字母一个字母对上,标出每一处错在哪(预览里 / 提示里用不同颜色画,看得出谁改成了谁)。
+     * 一处错 = 写反(两个字母算一处)、按到别的键(换成另一个字母)、多打(打的有、改正里没有)、漏打(改正里有、打的没有)。
+     * 代价和 find 用的一样,所以对出来的就是 find 认为的那种改法。输入很短(最多几十个字母),开销可以忽略。
+     */
+    public static Align align(String typed, String fix) {
+        int n = typed.length();
+        int m = fix.length();
+        int[][] dp = new int[n + 1][m + 1];
+        for (int i = 0; i <= n; i++) dp[i][0] = i * COST_INDEL;
+        for (int j = 0; j <= m; j++) dp[0][j] = j * COST_INDEL;
+        for (int i = 1; i <= n; i++) {
+            char t = typed.charAt(i - 1);
+            for (int j = 1; j <= m; j++) {
+                char f = fix.charAt(j - 1);
+                int v = dp[i - 1][j - 1] + (t == f ? 0 : (Typo.near(t, f) ? COST_NEAR : COST_SUB));
+                v = Math.min(v, dp[i - 1][j] + COST_INDEL);
+                v = Math.min(v, dp[i][j - 1] + COST_INDEL);
+                if (i >= 2 && j >= 2 && t != f && t == fix.charAt(j - 2) && typed.charAt(i - 2) == f) {
+                    v = Math.min(v, dp[i - 2][j - 2] + COST_SWAP);
+                }
+                dp[i][j] = v;
+            }
+        }
+        // 从右往左回溯,先记下每个字母属于哪一步,再从左到右给各处错编号
+        int[] tg = new int[n];
+        int[] fg = new int[m];
+        int[] stepT = new int[n];   // 临时:步号(从右往左数),0 = 没错
+        int[] stepF = new int[m];
+        int step = 0;
+        int i = n;
+        int j = m;
+        while (i > 0 || j > 0) {
+            char t = i > 0 ? typed.charAt(i - 1) : 0;
+            char f = j > 0 ? fix.charAt(j - 1) : 0;
+            if (i > 0 && j > 0 && t == f && dp[i][j] == dp[i - 1][j - 1]) {   // 没错
+                i--; j--;
+            } else if (i >= 2 && j >= 2 && t != f && t == fix.charAt(j - 2) && typed.charAt(i - 2) == f
+                    && dp[i][j] == dp[i - 2][j - 2] + COST_SWAP) {              // 写反
+                step++;
+                stepT[i - 1] = step; stepT[i - 2] = step;
+                stepF[j - 1] = step; stepF[j - 2] = step;
+                i -= 2; j -= 2;
+            } else if (i > 0 && dp[i][j] == dp[i - 1][j] + COST_INDEL) {        // 多打
+                step++; stepT[i - 1] = step;
+                i--;
+            } else if (j > 0 && dp[i][j] == dp[i][j - 1] + COST_INDEL) {        // 漏打
+                step++; stepF[j - 1] = step;
+                j--;
+            } else {                                                            // 按成了别的键
+                step++; stepT[i - 1] = step; stepF[j - 1] = step;
+                i--; j--;
+            }
+        }
+        for (int k = 0; k < n; k++) tg[k] = stepT[k] == 0 ? -1 : step - stepT[k];
+        for (int k = 0; k < m; k++) fg[k] = stepF[k] == 0 ? -1 : step - stepF[k];
+        return new Align(tg, fg);
+    }
+
     private static final class Search {
         final String p;
         final int n;
