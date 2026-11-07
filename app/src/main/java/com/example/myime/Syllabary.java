@@ -80,6 +80,19 @@ public final class Syllabary {
         return SYL.contains(s) || ALIAS.containsKey(s);
     }
 
+    private static String[] allSyllables;
+
+    /** 全部标准音节(约 410 个,已排序)。只读,别改里面的内容。 */
+    public static String[] syllables() {
+        String[] a = allSyllables;
+        if (a == null) {
+            a = SYL.toArray(new String[0]);
+            java.util.Arrays.sort(a);
+            allSyllables = a;
+        }
+        return a;
+    }
+
     /** 是不是某个音节的前半截(完整音节也算)。 */
     public static boolean isPrefix(String s) {
         return PREFIX.contains(s);
