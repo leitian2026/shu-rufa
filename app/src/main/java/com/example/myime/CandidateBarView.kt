@@ -23,6 +23,9 @@ import android.graphics.drawable.GradientDrawable
 private val NO_SPANS = IntArray(0)
 private const val HINT_RED = 0xFFE5484D.toInt()
 
+/** 拼错时每一处错用一种颜色(第一处红色),预览里打错的字母和「改正拼音」里对应的字母用同一种颜色,一眼对得上。 */
+private val ERR_COLORS = intArrayOf(0xFFFF1744.toInt(), 0xFFFF9100.toInt(), 0xFFAA00FF.toInt(), 0xFF00BFA5.toInt(), 0xFF2979FF.toInt())
+
 /**
  * 键盘上方的三条白色区域(高度固定,不会跳动):
  *  - 上条:拼音 / 笔画的预览文字
@@ -57,6 +60,13 @@ class CandidateBarView(
 
     private var composing = ""
     private var done: IntArray = IntArray(0)   // 预览里「自动补上的字母」的范围(开始, 结束, 开始, 结束 …),用强调色画
+    private var errs: IntArray = IntArray(0)   // 预览里「打错的字母」(开始, 结束, 第几处错, …):按第几处错用不同颜色画,带下划线
+
+    // 候选行最左边的「改正拼音」小块(gui qiu):拼错且能改对时才有,点一下就改;没有时 fixText = null
+    private var fixText: String? = null
+    private var fixColors: IntArray = IntArray(0)   // fixText 每个字符属于第几处错,-1 = 没错
+    private var fixLead = 0f                        // 这一块占的宽度(候选从它右边开始排)
+    private val fixPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.LEFT }
     private var hlStart = -1   // 预览里高亮的一段(点中的词块的拼音),-1 = 没有
     private var hlEnd = -1
     private var hint: String? = null   // 出错原因(小红字,显示在预览行右边)
@@ -190,6 +200,10 @@ class CandidateBarView(
                 return true
             }
             val x = e.x - inset + offset
+            if (fixText != null && x < fixLead) {   // 最左边的「改正拼音」
+                onHintFix()
+                return true
+            }
             for (i in items.indices) {
                 if (x >= xs[i] && x < xs[i + 1]) {
                     onPick(i)
@@ -226,6 +240,7 @@ class CandidateBarView(
 
         candPaint.textSize = context.spf(if (wide) 24f else 20f)
         composePaint.textSize = context.spf(if (wide) 22f else 18f)
+        fixPaint.textSize = context.spf(if (wide) 22f else 18f)
         iconPaint.strokeWidth = context.dpf(1.8f)
         iconPaint.pathEffect = CornerPathEffect(context.dpf(2.5f))
         candBase = baseline(candPaint)
@@ -275,13 +290,14 @@ class CandidateBarView(
     }
 
     /** hlFrom ~ hlTo:预览里要高亮的一段(点中的那一块的拼音),后面带一根光标线;不要高亮传 -1。 */
-    fun setComposing(text: String, hlFrom: Int = -1, hlTo: Int = -1, doneSpans: IntArray = NO_SPANS) {
+    fun setComposing(text: String, hlFrom: Int = -1, hlTo: Int = -1, doneSpans: IntArray = NO_SPANS, errSpans: IntArray = NO_SPANS) {
         val ok = hlFrom >= 0 && hlTo > hlFrom && hlTo <= text.length
         val from = if (ok) hlFrom else -1
         val to = if (ok) hlTo else -1
-        if (text == composing && from == hlStart && to == hlEnd && doneSpans.contentEquals(done)) return
+        if (text == composing && from == hlStart && to == hlEnd && doneSpans.contentEquals(done) && errSpans.contentEquals(errs)) return
         composing = text
         done = doneSpans
+        errs = errSpans
         hlStart = from
         hlEnd = to
         invalidate()
@@ -332,6 +348,15 @@ class CandidateBarView(
     fun setActiveTool(tool: Int) {
         if (tool == activeTool) return
         activeTool = tool
+        invalidate()
+    }
+
+    /** 候选行最左边的「改正拼音」:text 是改正后的拼音(音节之间已加空格),colors 是每个字符属于第几处错(-1 = 没错);text = null 去掉。 */
+    fun setFixChip(text: String?, colors: IntArray = NO_SPANS) {
+        if (text == fixText && colors.contentEquals(fixColors)) return
+        fixText = text
+        fixColors = colors
+        relayout()
         invalidate()
     }
 
@@ -426,7 +451,9 @@ class CandidateBarView(
     private fun relayout() {
         xs = FloatArray(items.size + 1)
         candRuby = if (reads.isEmpty()) emptyArray() else arrayOfNulls(items.size)
-        var x = 0f
+        val ft = fixText
+        fixLead = if (ft == null) 0f else fixPaint.measureText(ft) + itemPad * 1.2f + itemPad * 0.6f
+        var x = fixLead
         val pad = padNow()
         for (i in items.indices) {
             xs[i] = x
@@ -514,22 +541,68 @@ class CandidateBarView(
         }
     }
 
-    /** 画预览的 [a, b) 一段:自动补上的字母(done 里的范围)用强调色,其余用 base;返回画完的 x。 */
+    /** 预览第 pos 个字符属于第几处错,没错 -1。 */
+    private fun errAt(pos: Int): Int {
+        var k = 0
+        while (k + 2 < errs.size) {
+            if (pos >= errs[k] && pos < errs[k + 1]) return errs[k + 2]
+            k += 3
+        }
+        return -1
+    }
+
+    private fun doneAt(pos: Int): Boolean {
+        var k = 0
+        while (k + 1 < done.size) {
+            if (pos >= done[k] && pos < done[k + 1]) return true
+            k += 2
+        }
+        return false
+    }
+
+    /** 画预览的 [a, b) 一段:打错的字母按第几处错用不同颜色并加下划线;自动补上的字母(done 里的范围)用强调色,其余用 base;返回画完的 x。 */
     private fun drawComposeRange(canvas: Canvas, a: Int, b: Int, x0: Float, y: Float, base: Int): Float {
         var x = x0
         var pos = a
-        var d = 0
         while (pos < b) {
-            while (d < done.size && done[d + 1] <= pos) d += 2
-            val inDone = d < done.size && done[d] <= pos
-            val stop = if (inDone) minOf(b, done[d + 1]) else minOf(b, if (d < done.size) done[d] else b)
-            composePaint.color = if (inDone) palette.accent else base
+            val e = errAt(pos)
+            val d = doneAt(pos)
+            var stop = pos + 1
+            while (stop < b && errAt(stop) == e && doneAt(stop) == d) stop++
+            composePaint.color = if (e >= 0) ERR_COLORS[e % ERR_COLORS.size] else if (d) palette.accent else base
+            composePaint.isUnderlineText = e >= 0
             canvas.drawText(composing, pos, stop, x, y, composePaint)
             x += composePaint.measureText(composing, pos, stop)
             pos = stop
         }
+        composePaint.isUnderlineText = false
         composePaint.color = palette.text
         return x
+    }
+
+    /** 候选行最左边的「改正拼音」:淡红底的小块,没错的字母红色,错的字母按第几处错用对应颜色加下划线(和预览里打错的字母同色)。 */
+    private fun drawFixChip(canvas: Canvas) {
+        val t = fixText ?: return
+        val x0 = inset - offset
+        val w = fixLead - itemPad * 0.6f
+        if (x0 + w < 0f) return
+        val a = (contentAlpha * 255f * (if (stale) 0.45f else 1f)).toInt()
+        pillPaint.color = HINT_RED
+        pillPaint.alpha = (a * 0.14f).toInt()
+        tmp.set(x0, candTop + rowH * 0.14f, x0 + w, candTop + rowH * 0.86f)
+        canvas.drawRoundRect(tmp, rowH * 0.3f, rowH * 0.3f, pillPaint)
+        pillPaint.alpha = 255
+        val y = candTop + rowH * 0.5f + baseline(fixPaint)
+        var x = x0 + itemPad * 0.6f
+        for (k in t.indices) {
+            val g = fixColors.getOrElse(k) { -1 }
+            fixPaint.color = if (g >= 0) ERR_COLORS[g % ERR_COLORS.size] else HINT_RED
+            fixPaint.alpha = a
+            fixPaint.isUnderlineText = g >= 0
+            canvas.drawText(t, k, k + 1, x, y, fixPaint)
+            x += fixPaint.measureText(t, k, k + 1)
+        }
+        fixPaint.isUnderlineText = false
     }
 
     /** 圆圈里一个 ×。 */
@@ -596,6 +669,7 @@ class CandidateBarView(
         val y = candTop + rowH * (if (hasReads) 0.68f else 0.5f) + candBase
         val ry = candTop + rowH * 0.27f + readBase
         val a = (contentAlpha * 255f * (if (stale) 0.45f else 1f)).toInt()
+        drawFixChip(canvas)
         for (i in items.indices) {
             if (xs[i + 1] < left) continue
             if (xs[i] > right) break
