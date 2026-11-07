@@ -35,6 +35,15 @@ public class FuzzyKeySelfTest {
         check(find("guiqiuuuuu", 1) == null, "预算不够不给");
         check(FuzzyKey.find("guiqui", keys, ids, freqs, 6, () -> true) != null, "取消只在每 256 个节点检查一次,小词库不受影响");
 
+        // 逐字对应(align):每一处错编号,写反算一处
+        FuzzyKey.Align al = FuzzyKey.align("guiquij", "guiqiu");
+        check(Arrays.toString(al.typed).equals("[-1, -1, -1, -1, 0, 0, 1]"), "guiquij 对应:ui 写反是第 0 处,多打的 j 是第 1 处: " + Arrays.toString(al.typed));
+        check(Arrays.toString(al.fix).equals("[-1, -1, -1, -1, 0, 0]"), "guiqiu 对应:iu 是第 0 处: " + Arrays.toString(al.fix));
+        al = FuzzyKey.align("nhao", "nihao");
+        check(Arrays.toString(al.fix).equals("[-1, 0, -1, -1, -1]") && Arrays.toString(al.typed).equals("[-1, -1, -1, -1]"), "漏打 nhao → nihao:补上的 i 是第 0 处");
+        al = FuzzyKey.align("womwn", "women");
+        check(Arrays.toString(al.typed).equals("[-1, -1, -1, 0, -1]") && Arrays.toString(al.fix).equals("[-1, -1, -1, 0, -1]"), "按错相邻键 womwn → women");
+
         // 同样代价取词频高的
         dict(new String[]{"kanwa", "kanwo"}, new int[]{10, 99});
         check("kanwo".equals(find("kanwe", 2)), "同代价取词频高的 kanwe → kanwo: " + find("kanwe", 2));
