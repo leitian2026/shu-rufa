@@ -353,6 +353,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         loadedStamp = DictStore.stamp(applicationContext)
         clipWipe = getSharedPreferences("clipcfg", MODE_PRIVATE).getBoolean("wipe", true)
         loadClips()
+        ClipSync.attach(applicationContext, clipSyncHost)   // 剪贴板多设备联动(默认关着;开了才会联网)
         AppLog.init(applicationContext)
         refreshDiag()
         if (diag) AppLog.d("MyIme", "service created (进程新启动或服务重建;之后若还要重新加载词库就是冷启动)")
@@ -388,6 +389,39 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (urgent && !clipSavePending) {
             clipSavePending = true
             main.postDelayed(clipFlush, CLIP_SAVE_DELAY_MS)
+        }
+        if (!clipSyncApplying) ClipSync.onLocalChange(applicationContext, urgent)   // 联动开着:几秒后同步(别的设备传来的改动不算,免得白传一轮)
+    }
+
+    private var clipSyncApplying = false
+
+    /** 剪贴板多设备联动用:读出 / 换掉三份列表(都在主线程)。换掉之后照常落盘、刷新剪贴板页。 */
+    private val clipSyncHost = object : ClipSync.Host {
+        override val maxItems: Int get() = 500
+        override val maxChars: Int get() = MAX_CLIP_TOTAL
+        override val maxTrash: Int get() = TRASH_MAX
+
+        override fun lists(): ClipSyncCore.Lists = ClipSyncCore.Lists(ArrayList(clips), LinkedHashSet(locked), ArrayList(trash))
+
+        override fun apply(l: ClipSyncCore.Lists) {
+            clipSyncApplying = true
+            try {
+                clips.clear(); clips.addAll(l.clips)
+                locked.clear(); locked.addAll(l.locked)
+                trash.clear(); trash.addAll(l.trash)
+                markClips(clipsChanged = true, trashChanged = true, urgent = true)
+            } finally {
+                clipSyncApplying = false
+            }
+            if (mode == Mode.CLIPBOARD) {
+                clipPanel?.setLocked(locked.toSet())
+                clipPanel?.setItems(clips.toList())
+                clipPanel?.setTrash(trash.toList())
+            }
+        }
+
+        override fun onStatus() {
+            if (mode == Mode.CLIPBOARD) clipPanel?.setSyncStatus(ClipSync.statusLine(applicationContext))
         }
     }
 
@@ -526,12 +560,16 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             UserData.saveAll()                          // 学习数据只在键盘隐藏时落盘,打字过程中不写文件
             BackupManager.maybeAuto(applicationContext) // 开着自动备份、数据有变化、距上次够久时,另开线程备份一次
             LearnSync.maybe(applicationContext, true)   // 多机同步:新学的攒够了、距上次上传够久,先拉取合并再上传(另开线程;不满足条件几步判断就返回)
+            ClipSync.onHidden(applicationContext)       // 剪贴板联动:本机有还没传出去的改动就传(默认关着;不满足条件几步判断就返回)
         }
     }
 
     override fun onWindowShown() {
         super.onWindowShown()
-        ioPool.execute { LearnSync.maybe(applicationContext, false) }   // 多机同步:距上次拉取够久就拉一次别的手机的更新(没变化只列一次目录)
+        ioPool.execute {
+            LearnSync.maybe(applicationContext, false)   // 多机同步:距上次拉取够久就拉一次别的手机的更新(没变化只列一次目录)
+            ClipSync.onShown(applicationContext)         // 剪贴板联动:距上次够久(15 秒)就拉一次别的设备的新内容(默认关着)
+        }
         // 收起前翻译框里还有没翻完的字:现在补翻一次
         if (transActive && transBuf.isNotBlank() && transBuf.toString() != transSrc) {
             transStatus = TranslateBarView.STATUS_NONE
@@ -563,6 +601,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         unwatchNetwork()
         netPool.shutdownNow()
         UserData.saveAll()
+        ClipSync.detach(clipSyncHost)
         flushClips(sync = true)   // 还没写的剪贴板改动同步写掉,服务马上要销毁了
         worker.shutdownNow()
         ioPool.shutdown()   // 不打断正在写的文件,让排队的保存写完
@@ -4026,6 +4065,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             Mode.SYMBOL -> showPanel(symbolPanel, animate)
             Mode.CLIPBOARD -> {
                 clipPanel?.setWipe(clipWipe)
+                clipPanel?.setSyncStatus(ClipSync.statusLine(applicationContext))
                 clipPanel?.setLocked(locked.toSet())
                 clipPanel?.setItems(clips.toList())
                 clipPanel?.setTrash(trash.toList())
