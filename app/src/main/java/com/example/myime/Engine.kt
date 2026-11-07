@@ -858,9 +858,29 @@ class PinyinEngine(
             // 给键盘的「是不是 xxx」提示:先在词库里找整体最接近的词(可以改好几处,按输入长度放宽,
             // 写反 / 按错相邻键比多打漏打更像手滑);找不到再用上面改一处查到的写法。省电模式不做
             var fixKey: String? = null
-            if (!low && p.length <= FUZZ_MAX_LEN && !cancelled()) {
+            if (!low && !cancelled()) {
                 val k = minOf(FUZZ_MAX_EDITS, maxOf(1, p.length / 3))
-                fixKey = FuzzyKey.find(p, compactKeys, compactIds, freqs, k * 3) { cancelled() }
+                if (p.length <= FUZZ_MAX_LEN) fixKey = FuzzyKey.find(p, compactKeys, compactIds, freqs, k * 3) { cancelled() }
+                // 整串对不上哪个词(一句话、好几处错):整串切成音节,每个音节允许几处错,结果一定是合法拼音。
+                // 改出来的拼音必须真能查到词 / 拼成整句才用(查到的放在候选最前面),不然不提示
+                if (fixKey == null && !cancelled()) {
+                    val rv = SyllableFix.repair(p, k * 3) { cancelled() }
+                    if (rv != null && rv != p) {
+                        val w = ArrayList<Candidate>()
+                        for (id in top(compactKeys, compactIds, rv, rv + '\u0000', emptyList(), ctx, p)) {
+                            if (w.size >= TYPO_MAX) break
+                            if (seen.add(texts[id])) w.add(Candidate(texts[id], whole))
+                        }
+                        if (w.isEmpty() && rv.length >= SENTENCE_MIN && !cancelled()) {
+                            val s = sentence.decode(rv, null, lu, ctx)
+                            if (s != null && s.letters == rv.length && seen.add(s.text)) w.add(Candidate(s.text, whole))
+                        }
+                        if (w.isNotEmpty()) {
+                            out.addAll(0, w)
+                            fixKey = rv
+                        }
+                    }
+                }
             }
             if (fixKey == null) fixKey = fixV
             if (fixKey != null) typoFix = Pair(raw, fixKey)
@@ -976,7 +996,7 @@ class PinyinEngine(
         const val TYPO_MIN = 3       // 少于这么多字母不做拼错容错(太短改什么都对得上)
         const val TYPO_VARIANTS = 8  // 最多试几个改过的写法
         const val TYPO_MAX = 6       // 容错最多给几个候选
-        const val FUZZ_MAX_LEN = 16  // 提示用的多处容错:输入超过这么多字母(整句)不找
+        const val FUZZ_MAX_LEN = 16  // 提示用的多处容错(按词找):输入超过这么多字母不按词找,只按整句改(SyllableFix 最多 24 个)
         const val FUZZ_MAX_EDITS = 5 // 提示用的多处容错:最多改几处(实际按长度放宽,每 3 个字母 1 处)
         const val TYPO_SENT = 3      // 最多对几个改过的写法拼整句
         const val SENT_SHOWN = 4     // 整句最多放几个到候选里(含模糊音的)
