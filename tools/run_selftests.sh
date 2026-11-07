@@ -65,13 +65,14 @@ run_test SentenceSelfTest "$PIN GramPack SentenceDecoder"
 run_test FuzzySelfTest "$PIN GramPack SentenceDecoder"
 run_test UserWordsSelfTest "$PIN GramPack SentenceDecoder" "" SentenceSelfTest
 run_test WordsSyncSelfTest "$PIN"
+run_test ClipSyncSelfTest "ClipSyncCore BackupCrypto WebDavClient"
 run_test CharsSelfTest "$PIN"
 run_test PerfSelfTest "$PIN Typo GramPack SentenceDecoder" "" SentenceSelfTest
 
 
 
 
-# 带本机假 WebDAV 服务器的两项(需要 python3)
+# 带本机假 WebDAV 服务器的几项(需要 python3)
 run_dav() {  # 名字 端口 "源文件 ..."
   local name=$1 port=$2 srcs=$3
   want "$name" || return 0
@@ -85,6 +86,7 @@ run_dav() {  # 名字 端口 "源文件 ..."
 }
 run_dav WebDavSelfTest 18080 "WebDavClient"
 run_dav LearnSyncE2E 18091 "$PIN LearnSyncCore BackupCrypto WebDavClient"
+run_dav ClipSyncE2E 18092 "ClipSyncCore BackupCrypto WebDavClient"
 
 echo
 echo "================ 汇总 ================"
