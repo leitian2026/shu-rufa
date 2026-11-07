@@ -21,6 +21,7 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 
 private val NO_SPANS = IntArray(0)
+private const val HINT_RED = 0xFFE5484D.toInt()
 
 /**
  * 键盘上方的三条白色区域(高度固定,不会跳动):
@@ -36,6 +37,7 @@ class CandidateBarView(
     private val onTool: (Int) -> Unit,
     private val onClose: () -> Unit,
     private val onChunk: (Int) -> Unit = {},
+    private val onHintFix: () -> Unit = {},   // 点了预览行右边的「是不是 xxx」改正提示
 ) : View(context) {
 
     private var palette = Palette(context)
@@ -58,6 +60,8 @@ class CandidateBarView(
     private var hlStart = -1   // 预览里高亮的一段(点中的词块的拼音),-1 = 没有
     private var hlEnd = -1
     private var hint: String? = null   // 出错原因(小红字,显示在预览行右边)
+    private var hintFix = false        // 这条提示是「改正拼音」建议:用强调色画,点一下就改(画的时候记下可点范围)
+    private var hintTapLeft = -1f      // 可点范围的左边界,-1 = 现在没画出来,点不了
     private var activeTool = -1
 
     private var contentAlpha = 0f
@@ -96,7 +100,7 @@ class CandidateBarView(
     private var readBase = 0f
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.RIGHT
-        color = 0xFFE5484D.toInt()
+        color = HINT_RED
     }
     private var hintBase = 0f
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -163,7 +167,14 @@ class CandidateBarView(
         }
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            if (!targetVisible || e.y < stripH) return false
+            if (!targetVisible) return false
+            if (e.y < stripH) {   // 预览行:只有右边的「改正拼音」提示可点
+                if (hintTapLeft >= 0f && e.x >= hintTapLeft) {
+                    onHintFix()
+                    return true
+                }
+                return false
+            }
             if (e.y < candTop) {   // 词块行
                 val cx = e.x - inset + chunkOffset
                 for (i in chunkTexts.indices) {
@@ -254,9 +265,12 @@ class CandidateBarView(
         if (items.isNotEmpty()) invalidate()
     }
 
-    fun setHint(text: String?) {
-        if (text == hint) return
+    /** fix = true:这是「改正拼音」的建议(可点),用强调色画;否则是普通出错提示(小红字,不可点)。 */
+    fun setHint(text: String?, fix: Boolean = false) {
+        val f = fix && text != null
+        if (text == hint && f == hintFix) return
         hint = text
+        hintFix = f
         invalidate()
     }
 
@@ -473,13 +487,16 @@ class CandidateBarView(
         }
         // 出错 / 状态提示(小字,预览条右边):预览条是空的(词块行已经显示读音)时也要画
         val h = if (composing.isNotEmpty() || chunkTexts.isNotEmpty()) hint else null
+        hintTapLeft = -1f
         if (h != null) {
             val left = inset + itemPad * 1.5f + (if (composing.isNotEmpty()) composePaint.measureText(composing) + itemPad else 0f)
             val avail = width - inset - left
             if (avail > hintPaint.textSize * 4) {
                 val n = hintPaint.breakText(h, true, avail, null)
                 val shown = if (n < h.length) h.substring(0, n) + "…" else h
+                hintPaint.color = if (hintFix) palette.accent else HINT_RED
                 canvas.drawText(shown, width - inset, stripH / 2f + hintBase, hintPaint)
+                if (hintFix) hintTapLeft = width - inset - hintPaint.measureText(shown) - itemPad   // 左边多留一点,好点
             }
         }
 
