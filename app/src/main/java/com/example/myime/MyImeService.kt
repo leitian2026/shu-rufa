@@ -1589,7 +1589,62 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             from = prefix + map[r[0]]
             to = prefix + (previewEnd?.get(r[1] - 1) ?: (map[r[1] - 1] + 1))
         }
-        candidateBar?.setComposing(base, from, to, previewDone)
+        // 拼错时:打错的字母按第几处错标颜色(预览串位置 = 已选词前缀 + previewMap)
+        var errs = NO_INTS
+        val fx = if (mode == Mode.PINYIN && map != null) hintFixNow() else null
+        if (fx != null && map != null) {
+            val typed = composing.toString()
+            val al = alignFor(typed, fx)
+            val prefix = if (pending.isEmpty()) 0 else pending.length + 1
+            val l = ArrayList<Int>()
+            for (k in typed.indices) {
+                val g = al.typed[k]
+                if (g < 0 || k >= map.size) continue
+                val pos = prefix + map[k]
+                l.add(pos); l.add(pos + 1); l.add(g)
+            }
+            if (l.isNotEmpty()) errs = l.toIntArray()
+        }
+        candidateBar?.setComposing(base, from, to, previewDone, errs)
+    }
+
+    private var alignKey = ""
+    private var alignRes: FuzzyKey.Align? = null
+
+    /** 打的和改正后的逐字对应(每一处错在哪)。同一对只算一次。 */
+    private fun alignFor(typed: String, fix: String): FuzzyKey.Align {
+        val k = typed + "\u0001" + fix
+        val r = alignRes
+        if (r != null && k == alignKey) return r
+        val n = FuzzyKey.align(typed, fix)
+        alignKey = k
+        alignRes = n
+        return n
+    }
+
+    /** 候选行最左边的「改正拼音」(gui qiu):有改正写法就按音节分开,错的字母标上和预览里同样的颜色;没有就去掉。 */
+    private fun pushFixChip() {
+        val bar = candidateBar ?: return
+        val fx = hintFixNow()
+        if (fx == null) {
+            bar.setFixChip(null, NO_INTS)
+            return
+        }
+        val al = alignFor(composing.toString(), fx)
+        val sb = StringBuilder(fx.length + 4)
+        val cols = ArrayList<Int>(fx.length + 4)
+        val ends = Syllabary.segment(fx)
+        if (ends == null) {
+            for (k in fx.indices) { sb.append(fx[k]); cols.add(al.fix[k]) }
+        } else {
+            var from = 0
+            for (e in ends) {
+                if (sb.isNotEmpty()) { sb.append(' '); cols.add(-1) }
+                for (k in from until e) { sb.append(fx[k]); cols.add(al.fix[k]) }
+                from = e
+            }
+        }
+        bar.setFixChip(sb.toString(), cols.toIntArray())
     }
 
     /** 分词键:在拼音输入里插入音节边界。 */
@@ -2571,15 +2626,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         candidates = shown
         candidateBar?.setStale(false)
         pushToBar(shown)
-        // 拼音打错了(qui)且能改成合法拼音(qiu):预览行右边给「是不是 guiqiu」,点一下就换成它。
-        // 改正写法来自引擎的拼错容错(只在整串怎么也解释不了、改一处又查到词时才有),所以简拼、混拼不会误提示;
-        // 只在候选刷新时取一次,查询出错的提示优先
-        val fixTo = hintFixNow()
-        if (fixTo != null) {
-            candidateBar?.setHint("是不是 $fixTo ?", fix = true)
-            onComposingChanged()
-            return
-        }
+        // 拼音打错了(qui)且能改成合法拼音(qiu):预览里打错的字母按第几处错用不同颜色画,候选行最左边给改正后的拼音(同色),点一下就换成它。
+        // 改正写法来自引擎的拼错容错(只在整串怎么也解释不了、能改成词库里的词时才有),所以简拼、混拼不会误提示;只在候选刷新时取一次
+        pushFixChip()
         candidateBar?.setHint(
             ErrorHint.get("query") ?: when (mode) {
                 Mode.PINYIN -> ErrorHint.get("pinyin") ?: if (filterQueryOn()) {
@@ -3023,6 +3072,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun applyHintFix() {
         if (mode != Mode.PINYIN || composing.isEmpty()) return
         val fix = hintFixNow() ?: return
+        candidateBar?.setFixChip(null, NO_INTS)   // 点了就消失,不等新候选出来
         composing.setLength(0)
         composing.append(fix)
         showComposing()
