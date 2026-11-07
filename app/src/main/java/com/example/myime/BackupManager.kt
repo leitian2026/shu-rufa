@@ -585,6 +585,7 @@ object BackupManager {
             val dictNote = if (hasDicts) "、词库包" else ""
             success = true
             LearnSync.afterRestore(app)   // 学习数据换成了备份里的内容:让下次同步把别的设备的数据重新合并一遍
+            ClipSync.afterRestore(app)    // 剪贴板也换成了备份里的内容:联动要重新读别的设备的文件、把本机内容整份重传
             return RestoreResult(true, "已还原:$fileCount 个数据文件、$prefCount 组设置$dictNote。\n还原前的数据留了一份在应用内的 user_before_restore 文件夹。")
         } catch (e: BackupCrypto.BadPasswordException) {
             return RestoreResult(false, "这个文件解不开:可能是旧版用自己的密码做的备份,或者文件已损坏。现有数据没有改动。")
