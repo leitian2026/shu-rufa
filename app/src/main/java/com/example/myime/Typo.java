@@ -49,7 +49,13 @@ public final class Typo {
         "asx",     // z
     };
 
-    private static final int WINDOW_BEFORE = 2;   // 出错位置往前看几个字母
+    /** a 和 b 是不是键盘上相邻的键(只认小写字母)。 */
+    static boolean near(char a, char b) {
+        if (a < 'a' || a > 'z') return false;
+        return NEAR[a - 'a'].indexOf(b) >= 0;
+    }
+
+    private static final int WINDOW_BEFORE = 2;  // 出错位置往前看几个字母
     private static final int WINDOW_AFTER = 1;    // 往后看几个字母
     private static final int MAX_LEN = 24;        // 太长不处理
 
