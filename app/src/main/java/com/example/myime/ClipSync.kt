@@ -23,21 +23,20 @@ import java.util.function.LongSupplier
 
 /**
  * 剪贴板多设备联动(几台都是你自己的设备,剪贴板像同一个)。核心(数据模型、合并、云端文件、拉取和上传)在 ClipSyncCore,
- * 纯 JDK、有自测;这里是 Android 一侧:什么时候同步、省电判断、联动口令和密钥、设置、切到主线程读写界面上的列表。
+ * 纯 JDK、有自测;这里是 Android 一侧:什么时候同步、判断条件、密钥、设置、切到主线程读写界面上的列表。
  *
  * 同步什么:剪贴板历史(含顺序)、上锁、回收箱、删除 —— 在任何一台设备上做的这些操作,别的设备也会照做。
  * 不同步:「清空系统剪贴板」那个开关(每台设备自己的 app 兼容情况不同)、被密码管理器标成敏感的内容(本来就不进历史)。
  *
  * 通道:复用备份用的坚果云账号,在备份文件夹下的 clip 子文件夹里,每台设备只写自己的文件(一份快照 + 若干小的增量),从不改别人的。
- * 密钥:默认从内置备份密码用固定盐派生(和学习数据同步一样,不用输入);也可以设一个「联动口令」,几台设备设成一样的,
- *       这样别人拿到安装包也解不开云端文件。
+ * 密钥:从内置备份密码用固定盐派生(和学习数据同步一样,不用手动输入)。前提:几台设备装的是同一个构建。
  *
  * 省电:没有定时器、没有后台常驻、不用 WorkManager。只在这几个时刻做几个便宜的判断(开关 → 退避时间 → 间隔 → 有没有在跑 →
- * 省电模式 / 电量 → 有没有网),全部满足才另开低优先级线程联网一次:
+ * 有没有网),全部满足才另开低优先级线程联网一次(省电模式、电量低时也照常同步,这是用户要求的):
  *   - 复制 / 删除 / 上锁等本机有变化:等 4 秒(期间的多次变化合并成一次)就同步,这次是"上传"(上传前顺带拉取一次);
  *   - 键盘弹出:距上次同步 ≥ 15 秒就拉取一次别的设备的更新(没有新内容只列一次目录,不下载);
  *   - 键盘收起:本机有还没传出去的改动就传。
- *   Wi-Fi 和移动流量都可以。失败不连续重试,5 分钟后再说;没网 / 省电时不联网,等下一次键盘事件。
+ *   Wi-Fi 和移动流量都可以。失败不连续重试,5 分钟后再说;没网时不联网,等下一次键盘事件。
  * 状态(游标、序号、密钥)都放在 backupcfg 里:设备专属、不进备份(设备 ID 不能跟着备份还原到另一台设备)。
  * 默认关闭:剪贴板里可能有账号、地址等敏感内容,要你自己打开。
  */
@@ -54,11 +53,11 @@ object ClipSync {
     private const val K_OK = "cs_ok"
     private const val K_MSG = "cs_msg"
     private const val K_NEXT = "cs_next"
-    private const val K_SRC = "cs_keysrc"      // "builtin"(默认)或 "pass"(联动口令)
-    private const val K_KEY = "cs_key"         // 联动口令派生出的密钥(用 Keystore 包起来,不存口令本身)
+    private const val K_SRC = "cs_keysrc"      // 0.40.0 里短暂有过联动口令:这两项只用来清理老设置,见 key()
+    private const val K_KEY = "cs_key"
     private const val K_BKEY = "cs_bkey"       // 内置密码派生出的密钥缓存
     private const val K_BKEYTAG = "cs_bkeytag"
-    private const val K_RESNAP = "cs_resnap"   // 下次上传一定传完整快照(换了口令、还原了备份)
+    private const val K_RESNAP = "cs_resnap"   // 下次上传一定传完整快照(还原了备份、清了云端文件)
 
     /** 服务(界面所在的主线程)提供:读出 / 换掉界面上的三份列表,以及上限。下面几个方法都在主线程里被调用。 */
     interface Host : ClipSyncCore.Host {
@@ -126,9 +125,7 @@ object ClipSync {
 
     fun lastMsg(ctx: Context): String = BackupConfig.prefs(ctx).getString(K_MSG, "") ?: ""
 
-    fun hasPassphrase(ctx: Context): Boolean = BackupConfig.prefs(ctx).getString(K_SRC, "builtin") == "pass"
-
-    /** 解不开的云端文件个数(多半是各设备的联动口令不一致)。 */
+    /** 解不开的云端文件个数(多半是别的设备装的不是同一个构建,内置密钥对不上)。 */
     fun badCount(ctx: Context): Int {
         var n = 0
         for (k in BackupConfig.prefs(ctx).all.keys) if (k.startsWith(K_BAD)) n++
@@ -141,10 +138,10 @@ object ClipSync {
         if (!enabled(app)) return null
         if (syncing.get()) return "联动:同步中…"
         val bad = badCount(app)
-        if (bad > 0) return "联动:有 $bad 个文件解不开(各设备的联动口令要一样)"
+        if (bad > 0) return "联动:有 $bad 个文件解不开(几台设备要装同一个构建)"
         val m = lastMsg(app)
         if (m.startsWith("失败")) return "联动:同步" + m.take(40)
-        if (m.startsWith("等待") || m.startsWith("省电")) return "联动:$m"
+        if (m.startsWith("等待")) return "联动:$m"
         val ok = lastOk(app)
         if (ok <= 0L) return "联动:已开启,还没同步过"
         return "联动:" + SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ok)) + " 已同步"
@@ -159,33 +156,6 @@ object ClipSync {
         if (p.getString(K_MSG, "") == msg) return
         p.edit().putString(K_MSG, msg).apply()
         notifyStatus()
-    }
-
-    /**
-     * 设置联动口令(几台设备要设成一样的);null 或空 = 退回默认(内置密钥)。要算几秒,在后台线程调用。
-     * 换了口令以后:别的设备用旧口令传的文件这里解不开,这里传的别的设备也解不开 —— 直到它们设成同一个口令。
-     * 所以这里清掉"已经收到哪里了"和"解不开"的记录,下次同步时重新读一遍,并把本机的内容整份重传。
-     */
-    fun setPassphrase(ctx: Context, pass: String?): Outcome {
-        val app = ctx.applicationContext
-        val p = BackupConfig.prefs(app)
-        return try {
-            if (pass.isNullOrEmpty()) {
-                p.edit().putString(K_SRC, "builtin").remove(K_KEY).commit()
-            } else {
-                val master = BackupCrypto.deriveMaster(pass.toCharArray(), salt(), BackupCrypto.ITERATIONS)
-                if (!p.edit().putString(K_SRC, "pass").putString(K_KEY, BackupVault.seal(master)).commit()) {
-                    return Outcome(false, "失败:这台手机的安全存储写不进去")
-                }
-            }
-            resetRemoteState(p)
-            p.edit().putBoolean(K_RESNAP, true).putLong(K_NEXT, 0L).apply()
-            unsent = true
-            notifyStatus()
-            Outcome(true, if (pass.isNullOrEmpty()) "已改回默认密钥(不用联动口令)" else "联动口令已设置。别的设备也要设成同一个口令,联动才能互相读到。")
-        } catch (e: Exception) {
-            Outcome(false, "失败:" + why(e))
-        }
     }
 
     /** 清掉"已经收到别的设备哪里了"和"解不开的文件"的记录:下次同步把别的设备的文件重新读一遍(合并是幂等的,重复读无害)。 */
@@ -251,7 +221,7 @@ object ClipSync {
         request(app, push = true, manual = false, minGap = 0L)
     }
 
-    /** 备份页的「立即同步」:不看间隔和省电,拉取 + 上传都做。后台线程调用。 */
+    /** 备份页的「立即同步」:不看间隔,拉取 + 上传都做。后台线程调用。 */
     fun syncNow(ctx: Context): Outcome {
         val app = ctx.applicationContext
         if (!online(app)) return Outcome(false, "失败:现在没有网络")
@@ -259,7 +229,8 @@ object ClipSync {
     }
 
     /**
-     * 按"从便宜到贵"的顺序判断,哪一步不满足就立刻返回 false;全满足才开低优先级线程同步一次。manual = 用户主动要求(跳过间隔、退避、省电判断)。
+     * 按"从便宜到贵"的顺序判断,哪一步不满足就立刻返回 false;全满足才开低优先级线程同步一次。manual = 用户主动要求(跳过间隔和退避)。
+     * 省电模式、电量低时也照常同步(用户要求),所以这里不看电量。
      */
     private fun request(app: Context, push: Boolean, manual: Boolean, minGap: Long): Boolean {
         try {
@@ -277,10 +248,6 @@ object ClipSync {
             }
             if (host == null) return false
             if (!manual) {
-                if (BackupManager.lowPower(app)) {
-                    setMsg(app, "省电模式或电量低,先不同步")
-                    return false
-                }
                 if (!online(app)) {
                     setMsg(app, "等待网络")
                     return false
@@ -435,19 +402,19 @@ object ClipSync {
         MessageDigest.getInstance("SHA-256").digest("myime-clip-sync-v1".toByteArray(Charsets.UTF_8)).copyOf(16)
 
     /**
-     * 联动密钥(master, 固定盐):设了联动口令就用它派生的密钥;没设就用内置备份密码派生(算一次要几秒,用 Keystore 包起来缓存,
-     * 内置密码变了就重算)。固定盐是必须的:几台设备要算出同一把。后台线程调用。
+     * 联动密钥(master, 固定盐):内置备份密码 → PBKDF2(固定盐, 最低迭代次数) → 32 字节。算一次要几秒,用 Keystore 里取不出来的密钥包起来缓存,
+     * 内置密码变了(标记对不上)就重算。固定盐是必须的:几台设备要算出同一把。后台线程调用。
+     * 0.40.0 里短暂有过「联动口令」:这台设备如果设过,这里清掉旧设置、清掉"已收到哪里了"的记录,并让下次整份重传(云端本机的旧文件是用口令加密的)。
      */
     private fun key(app: Context): Pair<ByteArray, ByteArray> {
         val salt = salt()
         val p = BackupConfig.prefs(app)
-        if (p.getString(K_SRC, "builtin") == "pass") {
-            val k = p.getString(K_KEY, null)?.let { BackupVault.unseal(it) }
-            if (k != null && k.size == 32) return Pair(k, salt)
-            throw IOException("联动口令在这台手机上取不出来了,请重新设置联动口令")
+        if (p.contains(K_SRC) || p.contains(K_KEY)) {
+            resetRemoteState(p)
+            p.edit().remove(K_SRC).remove(K_KEY).putBoolean(K_RESNAP, true).commit()
         }
         val pw = BackupVault.defaultPassword()
-        if (pw.isEmpty()) throw IOException("这个构建没有内置备份密码,请先设置联动口令")
+        if (pw.isEmpty()) throw IOException("这个构建没有内置备份密码,无法加密同步")
         val tag = Base64.encodeToString(
             MessageDigest.getInstance("SHA-256").digest(("myime-cs-tag:" + String(pw)).toByteArray(Charsets.UTF_8)).copyOf(8),
             Base64.NO_WRAP,
