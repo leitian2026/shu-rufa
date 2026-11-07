@@ -82,8 +82,11 @@ public final class Typo {
 
         // 离出错位置近的优先:按到 e 的距离从小到大排位置
         int[] order = positions(from, to, e);
-        // ① 写反
-        for (int i : order) {
+        // ① 写反:出错的字母是「前面某个字母写错连带出来的」,所以先试写反的是出错字母前面的(qui 的 u 和 i),
+        //    再试出错字母本身和它后面那个(i 和后面的 j),不然 guiquijuming 会被改成 guiqujiuming
+        int[] swapOrder = {e - 1, e - 2, e, e + 1};
+        for (int i : swapOrder) {
+            if (i < from || i > to) continue;
             if (i + 1 >= n || p.charAt(i) == p.charAt(i + 1)) continue;
             sb.setLength(0);
             sb.append(p, 0, i).append(p.charAt(i + 1)).append(p.charAt(i)).append(p, i + 2, n);
