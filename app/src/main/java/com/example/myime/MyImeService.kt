@@ -636,6 +636,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             { tool -> onTool(tool) },
             { closeCandidates() },
             { index -> onChunkTap(index) },
+            { applyHintFix() },
         )
         val kb = KeyboardView(this, this)
         val emoji = EmojiPanelView(this, object : EmojiPanelView.Listener {
@@ -2570,6 +2571,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         candidates = shown
         candidateBar?.setStale(false)
         pushToBar(shown)
+        // 拼音打错了(qui)且能改成合法拼音(qiu):预览行右边给「是不是 guiqiu」,点一下就换成它。
+        // 改正写法来自引擎的拼错容错(只在整串怎么也解释不了、改一处又查到词时才有),所以简拼、混拼不会误提示;
+        // 只在候选刷新时取一次,查询出错的提示优先
+        val fixTo = hintFixNow()
+        if (fixTo != null) {
+            candidateBar?.setHint("是不是 $fixTo ?", fix = true)
+            onComposingChanged()
+            return
+        }
         candidateBar?.setHint(
             ErrorHint.get("query") ?: when (mode) {
                 Mode.PINYIN -> ErrorHint.get("pinyin") ?: if (filterQueryOn()) {
@@ -3000,6 +3010,23 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val t = ce.text()
         if (t.isEmpty()) return null
         return Candidate(t, consumedForLetters(ce.letters()))
+    }
+
+    /** 当前输入有可提示的改正写法就返回它:引擎记的「输入 → 改正」必须正好对得上现在的输入(过期的不用)。 */
+    private fun hintFixNow(): String? {
+        if (mode != Mode.PINYIN || composing.isEmpty() || ErrorHint.get("query") != null || filterQueryOn()) return null
+        val f = (pinyinEngine as? PinyinEngine)?.typoFix ?: return null
+        return if (f.first == composing.toString() && f.second != f.first) f.second else null
+    }
+
+    /** 点了预览行右边的「是不是 xxx」:把输入串换成改正后的拼音,重新查词。点的时候现算,不用存旧结果。 */
+    private fun applyHintFix() {
+        if (mode != Mode.PINYIN || composing.isEmpty()) return
+        val fix = hintFixNow() ?: return
+        composing.setLength(0)
+        composing.append(fix)
+        showComposing()
+        requery()
     }
 
     private fun onChunkTap(i: Int) {
