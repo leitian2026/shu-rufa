@@ -37,6 +37,7 @@ class BackupActivity : Activity() {
     private lateinit var autoBox: Switch
     private lateinit var dictsBox: Switch
     private lateinit var syncBox: Switch
+    private lateinit var clipBox: Switch
     private var busy = false
 
     private companion object {
@@ -128,7 +129,7 @@ class BackupActivity : Activity() {
         val sync = settingsCard()
         sync.addView(
             foldNote(
-                "几台都是你自己的手机,可以共享选词记录(拼音、笔画)和联想词,打得越多越准。只同步这些;剪贴板、回收箱、设置、英文用词都不会同步。" +
+                "几台都是你自己的手机,可以共享选词记录(拼音、笔画)和联想词,打得越多越准。只同步这些;设置、英文用词都不会同步(剪贴板有单独的联动,见下面第 5 项)。" +
                     "用上面的坚果云账号,每台手机只写自己的一个加密文件(自动加密,不用设密码)。要求几台手机装的是同一个构建,并且都设好了坚果云账号。" +
                     "键盘收起时检查:新学了 300 次以上且距上次上传满 1 天(或有新学的、超过 7 天)就上传;键盘弹出时每天拉取一次别的手机的更新。没有定时器,Wi-Fi 和流量都可以。" +
                     "在一台手机上清除学习数据只清这一台,不会清掉别的手机。",
@@ -144,6 +145,49 @@ class BackupActivity : Activity() {
             }
         })
         root.addView(sync, cardParams())
+
+        // ---- 5. 剪贴板联动
+        root.addView(sectionHeader("5. 剪贴板联动"))
+        val clip = settingsCard()
+        clip.addView(
+            foldNote(
+                "几台都是你自己的设备,剪贴板像同一个:在一台上复制、删除、上锁、从回收箱恢复、挪顺序,别的设备也一样。" +
+                    "用上面的坚果云账号,在备份文件夹下的 clip 子文件夹里,每台设备只写自己的加密文件:第一次传整份,之后只传新变化(很小)。" +
+                    "复制后几秒内就传;键盘弹出时去看一次别的设备有没有新内容(间隔至少 15 秒,没有新内容只列一次目录);键盘收起时补传没传出去的。" +
+                    "没有定时器,Wi-Fi 和流量都可以;省电模式、电量低、没网时先不联网。" +
+                    "别的设备传来的内容只放进剪贴板历史,不会去改系统剪贴板。「清空系统剪贴板」开关每台设备各管各的;被密码管理器标成敏感的内容本来就不存历史,也不会上传。" +
+                    "剪贴板里可能有账号、地址等敏感内容,所以默认关闭。默认的加密密钥来自这个构建(几台设备装同一个构建就行);想更稳可以设「联动口令」,几台设备要设成同一个。" +
+                    "剪贴板页标题行下面那行小字会显示联动状态。",
+            ),
+        )
+        clipBox = styledSwitch(ClipSync.enabled(this)) { v ->
+            ClipSync.setEnabled(this, v)
+            if (v && !BackupConfig.davConfigured(this)) toast("先设置上面的坚果云账号,联动才能工作")
+            refresh()
+        }
+        clip.addView(switchRowFor("剪贴板联动", "打开后,这台设备的剪贴板和别的设备保持一致", clipBox))
+        clip.addView(rowDivider())
+        clip.addView(settingsRow("立即同步剪贴板", null) {
+            runBg("正在同步剪贴板(第一次要多等几秒)…") {
+                val r = ClipSync.syncNow(this@BackupActivity)
+                ui.post { say(r.msg) }
+            }
+        })
+        clip.addView(rowDivider())
+        clip.addView(settingsRow("联动口令…", "几台设备要设成一样的;留空保存 = 用默认密钥") { askClipPass() })
+        clip.addView(rowDivider())
+        clip.addView(settingsRow("删除云端本机的联动文件", "只删这台设备传上去的,不影响别的设备和本机剪贴板") {
+            AlertDialog.Builder(this).setTitle("删除云端本机的联动文件?")
+                .setMessage("别的设备已经收到的内容不会受影响。之后如果再开联动,会重新整份上传。")
+                .setPositiveButton("删除") { _, _ ->
+                    runBg("正在删除云端的联动文件…") {
+                        val r = ClipSync.clearCloud(this@BackupActivity)
+                        ui.post { say(r.msg) }
+                    }
+                }
+                .setNegativeButton("取消", null).showPage()
+        })
+        root.addView(clip, cardParams())
 
         // ---- 操作结果(有内容时才显示)
         result = label("", 14f).apply {
@@ -199,6 +243,15 @@ class BackupActivity : Activity() {
             sb.append("\n    自上次上传新学:").append(LearnSync.pendingNew(this)).append(" 次")
             val lm = LearnSync.lastMsg(this)
             if (lm.startsWith("失败")) sb.append("\n    最近一次").append(lm)
+        }
+        sb.append("\n剪贴板联动:").append(if (ClipSync.enabled(this)) "已开启" else "已关闭")
+        if (ClipSync.enabled(this)) {
+            sb.append("\n    上次成功:").append(fmt(ClipSync.lastOk(this)))
+            sb.append("\n    加密密钥:").append(if (ClipSync.hasPassphrase(this)) "联动口令" else "默认(内置)")
+            val bad = ClipSync.badCount(this)
+            if (bad > 0) sb.append("\n    有 ").append(bad).append(" 个别的设备的文件解不开(联动口令是不是不一致?)")
+            val cm = ClipSync.lastMsg(this)
+            if (cm.startsWith("失败") || cm.startsWith("等待") || cm.startsWith("省电")) sb.append("\n    最近一次").append(cm)
         }
         status.text = sb.toString()
     }
@@ -307,6 +360,32 @@ class BackupActivity : Activity() {
                         refresh()
                         testDav()
                     }
+                }
+            }
+            .setNegativeButton("取消", null).showPage()
+    }
+
+    private fun askClipPass() {
+        val a = passwordField("联动口令(留空 = 用默认密钥)")
+        val b = passwordField("再输一遍")
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpi(20f), dpi(8f), dpi(20f), 0)
+            addView(a)
+            addView(b)
+        }
+        AlertDialog.Builder(this).setTitle("联动口令")
+            .setMessage("几台设备要设成同一个口令,联动才能互相读到。设了以后,云端的联动文件只有知道口令的设备才解得开。口令本身不保存,只保存算出来的密钥;忘了就在每台设备上重设一个。算一次要几秒。留空保存 = 改回默认密钥。")
+            .setView(box)
+            .setPositiveButton("保存") { _, _ ->
+                val x = a.text.toString()
+                if (x != b.text.toString()) {
+                    toast("两次输入的口令不一样")
+                    return@setPositiveButton
+                }
+                runBg("正在设置联动口令(要几秒)…") {
+                    val r = ClipSync.setPassphrase(this@BackupActivity, x)
+                    ui.post { say(r.msg) }
                 }
             }
             .setNegativeButton("取消", null).showPage()
