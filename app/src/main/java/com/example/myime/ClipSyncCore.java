@@ -1,11 +1,6 @@
 package com.example.myime;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -25,17 +20,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.function.LongSupplier;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.zip.Deflater;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 /**
- * 剪贴板多设备联动的核心。纯 JDK 代码(不依赖 Android),可以脱离手机和假的 WebDAV 服务器一起测试(见 tools/ClipSyncSelfTest.java、
- * tools/ClipSyncE2E.java)。什么时候同步、省电判断、口令和密钥、设置存取、主线程切换,在 ClipSync.kt 里。
+ * 剪贴板多设备联动的数据核心。纯 JDK 代码(不依赖 Android),可以脱离手机一起测试(见 tools/ClipSyncSelfTest.java)。
+ * 传输(Cloudflare Worker 的 WebSocket + R2)在 ClipRelayCore;什么时候连、省电判断、设置、主线程切换在 ClipSync.kt。
  *
  * <h3>数据模型:每条剪贴板内容一条记录(Rec)</h3>
  * id = 文字的 SHA-256 前 8 字节(16 位十六进制);st = 状态:a 正常 / l 上了锁 / t 在回收箱 / x 已彻底删除(只留 id 和时间,不留文字);
@@ -43,20 +35,15 @@ import java.util.zip.GZIPOutputStream;
  * 合并:同一条内容,谁的 mt 大听谁的;mt 一样时 x &gt; t &gt; l &gt; a。这样删除、恢复、上锁、挪到最前、清空都是普通的"状态变化",
  * 没有特殊规则,几台设备按什么顺序读到都会得到同一个结果(顺序无关、重复读也无害)。
  *
- * <h3>云端:每台设备一份快照 + 一串增量,只写自己的文件,从不改别人的</h3>
- *   s-设备ID-序号.snp   快照:这台设备此刻"窗口内"的全部记录(最近 WINDOW 条 + 上锁的 + 回收箱 + 最近 30 天的删除记录)。序号 = 它覆盖到的增量序号。
- *   d-设备ID-序号.dlt   增量:这台设备自上次上传以来改动过的记录(很小)。序号每次上传 +1。
- * 第一次(云端还没有本机快照)传整份快照;之后每次只传增量;增量攒到 COMPACT_AT 个就并成一份新快照、删掉自己的旧文件。
- * 拉取:列一次目录 → 每台别的设备只下载自己还没收过的增量(游标 = 已经收到的最大序号);游标落后于快照、或增量中间缺号
- * (对方并过快照了)就读快照。文件名里带序号,所以没有新内容时只列目录,不下载任何东西。
- * 所有文件都是 gzip + AES-256-GCM(BackupCrypto)。解不开的文件(口令不一致、损坏、格式太新)跳过,记下来不反复重试。
+ * <h3>记录怎么传</h3>
+ * 增量:本机改过的记录(dirty)打成一包,gzip + AES-256-GCM(BackupCrypto)后放进通知发给别的设备;
+ * 快照:本机"窗口内"的全部记录(最近 WINDOW 条 + 上了锁的 + 回收箱 + 最近 30 天的删除记录),同样加密后存在 R2,
+ * 新设备第一次加入、或者错过了一段增量的设备读它来追上。
  */
 public final class ClipSyncCore {
-    public static final String SUBFOLDER = "clip";
     public static final int WINDOW = 200;                       // 快照里放最近多少条(上了锁的、回收箱的另算)
     public static final int MAX_TOMBS = 1000;                   // 快照里最多放多少条删除记录
     public static final long TOMB_KEEP_MS = 30L * 24 * 3600 * 1000;   // 删除记录保留 30 天(更久没上线的设备,删掉的条目可能再冒出来)
-    public static final int COMPACT_AT = 20;                    // 本机增量攒到这么多个就并成新快照
     private static final long FUTURE_SKEW_MS = 10L * 60 * 1000; // 别的设备的时间比现在晚超过 10 分钟的,按"现在 + 10 分钟"算
     private static final int MAX_TEXT = 200_000;                // 远端来的单条文字上限(防止被构造的文件撑爆内存)
 
@@ -504,55 +491,6 @@ public final class ClipSyncCore {
         }
     }
 
-    // ------------------------------------------------------------ 文件名
-
-    private static final Pattern NAME = Pattern.compile("^([sd])-([0-9a-f]{1,32})-([0-9]{1,15})\\.(snp|dlt)$");
-
-    static String snapName(String dev, long seq) {
-        return "s-" + dev + "-" + seq + ".snp";
-    }
-
-    static String deltaName(String dev, long seq) {
-        return "d-" + dev + "-" + seq + ".dlt";
-    }
-
-    private static final class Named {
-        final boolean snap;
-        final String dev;
-        final long seq;
-
-        Named(boolean snap, String dev, long seq) {
-            this.snap = snap;
-            this.dev = dev;
-            this.seq = seq;
-        }
-    }
-
-    private static Named parseName(String name) {
-        Matcher m = NAME.matcher(name);
-        if (!m.matches()) return null;
-        boolean snap = m.group(1).equals("s");
-        if (snap != m.group(4).equals("snp")) return null;
-        return new Named(snap, m.group(2), Long.parseLong(m.group(3)));
-    }
-
-    /** 一台设备在云端的文件。 */
-    private static final class Dev {
-        long snapSeq = -1;
-        final TreeMap<Long, String> snaps = new TreeMap<>();   // 序号 → 文件名(正常只会有一份)
-        final TreeMap<Long, String> deltas = new TreeMap<>();
-
-        long latest() {
-            long l = snapSeq;
-            if (!deltas.isEmpty()) l = Math.max(l, deltas.lastKey());
-            return l;
-        }
-
-        String snapName() {
-            return snaps.isEmpty() ? null : snaps.get(snaps.lastKey());
-        }
-    }
-
     // ------------------------------------------------------------ 文件内容
 
     private static String esc(String s) {
@@ -584,10 +522,11 @@ public final class ClipSyncCore {
         return b.toString();
     }
 
-    private static final class Parsed {
-        boolean snap;
-        long seq = -1;
-        final List<Rec> recs = new ArrayList<>();
+    /** 解出来的一份记录:snap = 快照(true)还是增量(false),seq = 发送设备的序号。 */
+    public static final class Decoded {
+        public boolean snap;
+        public long seq = -1;
+        public final List<Rec> recs = new ArrayList<>();
     }
 
     static void writeRecs(Writer w, boolean snap, String dev, long seq, Collection<Rec> recs) throws IOException {
@@ -601,9 +540,9 @@ public final class ClipSyncCore {
         w.write("#end\n");
     }
 
-    private static Parsed readRecs(InputStream in) throws IOException {
+    private static Decoded readRecs(InputStream in) throws IOException {
         BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8), 1 << 16);
-        Parsed p = new Parsed();
+        Decoded p = new Decoded();
         String first = br.readLine();
         if (first == null || !first.startsWith("#clipsync\t")) throw new IOException("不是联动文件");
         if (!first.equals("#clipsync\t1")) throw new IOException("联动文件格式太新");
@@ -638,249 +577,33 @@ public final class ClipSyncCore {
         return p;
     }
 
-    private static void encode(File dst, byte[] master, byte[] salt, boolean snap, String dev, long seq, Collection<Rec> recs) throws IOException {
-        dst.delete();
-        try (OutputStream fo = new BufferedOutputStream(new FileOutputStream(dst), 1 << 16)) {
-            OutputStream enc = BackupCrypto.encrypt(fo, master, salt, BackupCrypto.MIN_ITERATIONS);
-            GZIPOutputStream gz = new GZIPOutputStream(enc, 1 << 16) {
-                {
-                    def.setLevel(Deflater.BEST_SPEED);   // 省电:压缩用最快档
-                }
-            };
-            try (Writer w = new OutputStreamWriter(gz, StandardCharsets.UTF_8)) {
-                writeRecs(w, snap, dev, seq, recs);
+    /**
+     * 记录 → 加密字节:gzip(最快档,省电)→ AES-256-GCM(BackupCrypto)。消息里再转 base64,快照直接存 R2。
+     * 编码完马上自己解一遍校验,确保别的设备读得出来。
+     */
+    public static byte[] encode(byte[] master, byte[] salt, boolean snap, String dev, long seq, Collection<Rec> recs) throws IOException {
+        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream(1 << 12);
+        OutputStream enc = BackupCrypto.encrypt(bo, master, salt, BackupCrypto.MIN_ITERATIONS);
+        GZIPOutputStream gz = new GZIPOutputStream(enc, 1 << 14) {
+            {
+                def.setLevel(Deflater.BEST_SPEED);
             }
+        };
+        try (Writer w = new OutputStreamWriter(gz, StandardCharsets.UTF_8)) {
+            writeRecs(w, snap, dev, seq, recs);
         }
-        // 读回来整个解密 + 解压 + 解析一遍,确认真的能被别的设备读出来
-        Parsed back = decode(dst, master);
+        byte[] out = bo.toByteArray();
+        Decoded back = decode(out, master);
         if (back.recs.size() != recs.size() || back.seq != seq) throw new IOException("读回校验失败:内容对不上");
+        return out;
     }
 
-    private static Parsed decode(File src, byte[] master) throws IOException {
-        try (InputStream fi = new BufferedInputStream(new FileInputStream(src), 1 << 16);
+    /** 加密字节 → 记录。解不开(密钥不对、损坏、格式太新)抛 IOException。 */
+    public static Decoded decode(byte[] data, byte[] master) throws IOException {
+        try (InputStream fi = new java.io.ByteArrayInputStream(data);
              InputStream dec = BackupCrypto.decryptWithMaster(fi, master);
-             InputStream in = new GZIPInputStream(dec, 1 << 16)) {
+             InputStream in = new GZIPInputStream(dec, 1 << 14)) {
             return readRecs(in);
-        }
-    }
-
-    // ------------------------------------------------------------ 同步流程
-
-    /** 同步状态的存取(Android 那边放在设备专属的设置里,不进备份)。 */
-    public interface State {
-        /** 已经收到这台设备的哪个序号为止;没收过返回 -1。 */
-        long cursor(String dev);
-
-        void setCursor(String dev, long seq);
-
-        /** 这个云端文件以前解不开 / 读不了,跳过。 */
-        boolean bad(String fileName);
-
-        void markBad(String fileName);
-
-        /** 本机上次上传用到的序号(0 = 还没传过)。 */
-        long mySeq();
-
-        void setMySeq(long seq);
-    }
-
-    public static final class Result {
-        public final int filesRead;
-        public final int filesSkipped;
-        public final int changed;
-        public final String pushed;   // "" 没传 / "delta" 传了增量 / "snap" 传了快照
-
-        Result(int filesRead, int filesSkipped, int changed, String pushed) {
-            this.filesRead = filesRead;
-            this.filesSkipped = filesSkipped;
-            this.changed = changed;
-            this.pushed = pushed;
-        }
-
-        public String summary() {
-            StringBuilder sb = new StringBuilder();
-            if (filesRead > 0) sb.append("收到 ").append(filesRead).append(" 个更新文件(合并 ").append(changed).append(" 条)");
-            else sb.append("别的设备没有新内容");
-            if (filesSkipped > 0) sb.append(";").append(filesSkipped).append(" 个文件解不开,已跳过(联动口令是不是不一致?)");
-            if (pushed.equals("delta")) sb.append(";已上传本机的新变化");
-            else if (pushed.equals("snap")) sb.append(";已上传本机的完整快照");
-            return sb.toString();
-        }
-    }
-
-    /**
-     * 做一次同步:先拉取合并,push 为 true 时再上传本机的新变化。网络 / 服务器出错抛 IOException(这次整体失败,下次再试)。
-     * folder 是联动用的云端子文件夹(备份文件夹下的 clip)。
-     */
-    public static Result run(WebDavClient client, List<String> folder, String deviceId, byte[] master, byte[] salt,
-                             Store store, File tmpDir, State state, boolean push, final long now) throws IOException {
-        return run(client, folder, deviceId, master, salt, store, tmpDir, state, push, false, now);
-    }
-
-    /**
-     * forceSnap = true:上传时一定传完整快照(换了联动口令、从备份还原之后用:云端本机的旧文件别人解不开或已经过时,要整份重传)。
-     */
-    public static Result run(WebDavClient client, List<String> folder, String deviceId, byte[] master, byte[] salt,
-                             Store store, File tmpDir, State state, boolean push, boolean forceSnap, final long now) throws IOException {
-        List<WebDavClient.Entry> entries = client.list(folder);
-        Map<String, Dev> devs = new TreeMap<>();
-        for (WebDavClient.Entry e : entries) {
-            if (e.dir) continue;
-            Named n = parseName(e.name);
-            if (n == null) continue;
-            Dev d = devs.get(n.dev);
-            if (d == null) {
-                d = new Dev();
-                devs.put(n.dev, d);
-            }
-            if (n.snap) {
-                d.snaps.put(n.seq, e.name);
-                d.snapSeq = Math.max(d.snapSeq, n.seq);
-            } else {
-                d.deltas.put(n.seq, e.name);
-            }
-        }
-
-        // ---- 拉取
-        final List<Rec> incoming = new ArrayList<>();
-        Map<String, Long> newCursor = new LinkedHashMap<>();
-        int read = 0;
-        int skipped = 0;
-        File dl = new File(tmpDir, "clipsync_download.tmp");
-        try {
-            for (Map.Entry<String, Dev> de : devs.entrySet()) {
-                String dev = de.getKey();
-                if (dev.equals(deviceId)) continue;
-                Dev v = de.getValue();
-                long latest = v.latest();
-                long cur = state.cursor(dev);
-                if (cur >= latest) continue;
-                // 从游标往后的增量一个不缺才能只读增量;缺了(对方并过快照、删掉了旧增量)就得读快照
-                boolean contiguous = v.deltas.subMap(cur + 1, true, latest, true).size() == latest - cur;
-                boolean needSnap = v.snapName() != null && (cur < v.snapSeq || !contiguous);
-                boolean incomplete = false;
-                long from = cur;
-                if (needSnap) {
-                    String sn = v.snapName();
-                    if (!state.bad(sn)) {
-                        int r = fetch(client, folder, sn, dl, master, incoming, state);
-                        if (r == 1) read++;
-                        else if (r == 0) skipped++;
-                        else incomplete = true;
-                    }
-                    from = v.snapSeq;
-                }
-                for (Map.Entry<Long, String> d : v.deltas.entrySet()) {
-                    if (d.getKey() <= from) continue;
-                    if (state.bad(d.getValue())) continue;
-                    int r = fetch(client, folder, d.getValue(), dl, master, incoming, state);
-                    if (r == 1) read++;
-                    else if (r == 0) skipped++;
-                    else incomplete = true;
-                }
-                if (!incomplete) newCursor.put(dev, latest);
-            }
-        } finally {
-            dl.delete();
-        }
-        int changed = 0;
-        if (!incoming.isEmpty()) {
-            changed = store.atomically(new Op<Integer>() {
-                @Override
-                public Integer run(Model m) {
-                    return m.merge(incoming, now);
-                }
-            });
-        }
-        for (Map.Entry<String, Long> c : newCursor.entrySet()) state.setCursor(c.getKey(), c.getValue());
-
-        // ---- 上传
-        String pushed = "";
-        if (push) {
-            final List<Rec> dirty = store.atomically(new Op<List<Rec>>() {
-                @Override
-                public List<Rec> run(Model m) {
-                    return m.takeDirty();
-                }
-            });
-            Dev own = devs.get(deviceId);
-            boolean haveSnap = own != null && own.snapName() != null;
-            if (!dirty.isEmpty() || !haveSnap || forceSnap) {
-                long seq = state.mySeq() + 1;
-                if (own != null && own.latest() >= seq) seq = own.latest() + 1;   // 本机的序号记录丢了 / 回退了:接着云端已有的往后排
-                boolean snap = forceSnap || !haveSnap || own.deltas.size() + 1 >= COMPACT_AT;
-                File up = new File(tmpDir, "clipsync_upload.tmp");
-                try {
-                    if (entries.isEmpty()) client.ensureFolder(folder);
-                    if (snap) {
-                        List<Rec> win = store.atomically(new Op<List<Rec>>() {
-                            @Override
-                            public List<Rec> run(Model m) {
-                                return m.window(WINDOW, now);
-                            }
-                        });
-                        encode(up, master, salt, true, deviceId, seq, win);
-                        put(client, folder, snapName(deviceId, seq), up);
-                        // 新快照已经覆盖了之前所有的增量:删掉自己的旧文件(删不掉不要紧,下次再清,别人读到旧文件也无害)
-                        if (own != null) {
-                            for (String n : own.snaps.values()) quietDelete(client, folder, n);
-                            for (String n : own.deltas.values()) quietDelete(client, folder, n);
-                        }
-                    } else {
-                        encode(up, master, salt, false, deviceId, seq, dirty);
-                        put(client, folder, deltaName(deviceId, seq), up);
-                    }
-                } finally {
-                    up.delete();
-                }
-                state.setMySeq(seq);
-                store.atomically(new Op<Object>() {
-                    @Override
-                    public Object run(Model m) {
-                        m.clearDirty(dirty);
-                        return null;
-                    }
-                });
-                pushed = snap ? "snap" : "delta";
-            }
-        }
-        return new Result(read, skipped, changed, pushed);
-    }
-
-    /** 下载并解开一个云端文件,把里面的记录放进 out。返回 1 = 读到了,0 = 解不开(已标记跳过),-1 = 文件刚被删掉了(这台设备这次先别推进游标)。 */
-    private static int fetch(WebDavClient client, List<String> folder, String name, File dl, byte[] master, List<Rec> out, State state) throws IOException {
-        dl.delete();
-        try {
-            client.get(folder, name, dl);
-        } catch (WebDavClient.DavException ex) {
-            if (ex.code == 404) return -1;
-            throw ex;
-        }
-        try {
-            Parsed p = decode(dl, master);
-            out.addAll(p.recs);
-            return 1;
-        } catch (IOException ex) {
-            state.markBad(name);   // 解不开:跳过,不反复下载;口令改了以后游标和这些标记会一起清掉
-            return 0;
-        }
-    }
-
-    private static void put(WebDavClient client, List<String> folder, String name, File f) throws IOException {
-        try {
-            client.put(folder, name, f);
-        } catch (WebDavClient.DavException ex) {
-            if (ex.code != 404 && ex.code != 409) throw ex;
-            client.ensureFolder(folder);   // 文件夹不见了:建好再传一次
-            client.put(folder, name, f);
-        }
-    }
-
-    private static void quietDelete(WebDavClient client, List<String> folder, String name) {
-        try {
-            client.delete(folder, name);
-        } catch (IOException ignored) {
-            // 删不掉就留着
         }
     }
 }
