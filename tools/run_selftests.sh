@@ -2,7 +2,7 @@
 # 在电脑上一次跑完所有自测(纯 JDK,不需要 Android)。
 # 用法(在工程根目录):  bash tools/run_selftests.sh            # 全部
 #                       bash tools/run_selftests.sh Sentence Typo   # 只跑名字里带这些词的
-# 需要 JDK 17+;含 WebDAV 的两项还需要 python3(没有就跳过这两项)。
+# 需要 JDK 17+;含 WebDAV 的两项还需要 python3、剪贴板联动的两项还需要 node 22+(没有就跳过对应的项)。
 # 环境变量:JAVAC(编译命令,默认 javac)、JAVA(运行命令,默认 java)。
 # 每个测试单独编译、单独运行,最后给出汇总;有任何一项失败,脚本以非 0 退出。
 set -u
@@ -67,14 +67,14 @@ run_test SentenceSelfTest "$PIN GramPack SentenceDecoder"
 run_test FuzzySelfTest "$PIN GramPack SentenceDecoder"
 run_test UserWordsSelfTest "$PIN GramPack SentenceDecoder" "" SentenceSelfTest
 run_test WordsSyncSelfTest "$PIN"
-run_test ClipSyncSelfTest "ClipSyncCore BackupCrypto WebDavClient"
+run_test ClipSyncSelfTest "ClipSyncCore BackupCrypto"
 run_test CharsSelfTest "$PIN"
 run_test PerfSelfTest "$PIN Typo GramPack SentenceDecoder" "" SentenceSelfTest
 
 
 
 
-# 带本机假 WebDAV 服务器的几项(需要 python3)
+# 带本机假 WebDAV 服务器的两项(需要 python3)
 run_dav() {  # 名字 端口 "源文件 ..."
   local name=$1 port=$2 srcs=$3
   want "$name" || return 0
@@ -88,7 +88,33 @@ run_dav() {  # 名字 端口 "源文件 ..."
 }
 run_dav WebDavSelfTest 18080 "WebDavClient"
 run_dav LearnSyncE2E 18091 "$PIN LearnSyncCore BackupCrypto WebDavClient"
-run_dav ClipSyncE2E 18092 "ClipSyncCore BackupCrypto WebDavClient"
+
+# 剪贴板联动走 Cloudflare Worker 的两项(需要 node 22+:自带 node:sqlite)。用 Cloudflare 环境的最小模拟跑真正的 Worker 脚本(tools/worker/)
+node_ok() { command -v node >/dev/null 2>&1 && node --experimental-sqlite --no-warnings -e "require('node:sqlite')" >/dev/null 2>&1; }
+
+# Worker 脚本自测:老 App 的行为和原版(hulian-worker.v1.js)逐条一致 + 命名空间隔离 / 跨 App 规则 / R2 前缀限制
+if want WorkerSelfTest; then
+  if ! node_ok; then echo "== WorkerSelfTest: 跳过(没有 node 22+)"; SKIP=$((SKIP+1)); record WorkerSelfTest "跳过(没有 node 22+)"
+  else
+    if node --experimental-sqlite --no-warnings tools/worker/worker_test.mjs tools/worker/hulian-worker.js tools/worker/hulian-worker.v1.js >"$OUT/WorkerSelfTest.log" 2>&1 && tail -1 "$OUT/WorkerSelfTest.log" | grep -q "ALL PASS"; then
+      echo "== WorkerSelfTest: ALL PASS ($(grep -c '^PASS' "$OUT/WorkerSelfTest.log") 项)"; PASS=$((PASS+1)); record WorkerSelfTest "通过 ($(grep -c '^PASS' "$OUT/WorkerSelfTest.log") 项)"
+    else
+      echo "== WorkerSelfTest: 失败"; grep -v '^PASS' "$OUT/WorkerSelfTest.log" | tail -20; FAIL=$((FAIL+1)); record WorkerSelfTest "失败"
+    fi
+  fi
+fi
+
+# 剪贴板联动完整流程:本机用真 Worker 脚本起一个能用真 WebSocket / HTTP 连的服务,几台模拟设备(JDK 自带的 WebSocket)互相同步
+if want ClipRelayE2E; then
+  if ! node_ok; then echo "== ClipRelayE2E: 跳过(没有 node 22+)"; SKIP=$((SKIP+1)); record ClipRelayE2E "跳过(没有 node 22+)"
+  else
+    node --experimental-sqlite --no-warnings tools/worker/server.mjs tools/worker/hulian-worker.js 18093 >"$OUT/worker_server.log" 2>&1 &
+    wpid=$!
+    sleep 1.5
+    run_test ClipRelayE2E "ClipRelayCore ClipSyncCore BackupCrypto" 18093
+    kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+  fi
+fi
 
 echo
 echo "================ 汇总 ================"
