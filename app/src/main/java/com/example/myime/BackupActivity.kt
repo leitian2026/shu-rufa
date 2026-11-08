@@ -152,9 +152,11 @@ class BackupActivity : Activity() {
         clip.addView(
             foldNote(
                 "几台都是你自己的设备,剪贴板像同一个:在一台上复制、删除、上锁、从回收箱恢复、挪顺序,别的设备也一样。" +
-                    "用上面的坚果云账号,在备份文件夹下的 clip 子文件夹里,每台设备只写自己的加密文件:第一次传整份,之后只传新变化(很小)。" +
-                    "复制后几秒内就传;键盘弹出时去看一次别的设备有没有新内容(间隔至少 15 秒,没有新内容只列一次目录);键盘收起时补传没传出去的。" +
-                    "没有定时器,Wi-Fi 和流量都可以;省电模式、电量低时也照常同步,没网时等下一次键盘事件。" +
+                    "走你自己的 Cloudflare Worker(地址和口令在构建时内置,不用填),不再用坚果云:每次变化发一条很小的加密通知给别的设备," +
+                    "对方在线秒到,不在线由 Worker 先存着,对方上线时补发;完整内容的加密快照放在 R2 里,新设备第一次加入时读它。" +
+                    "没有定时器、不轮询:键盘弹出时才连上 Worker(连着的时候别的设备的改动直接推过来),Worker 在没动静后 90~120 秒自己断开,下次再连。" +
+                    "复制、删除、上锁等本机的变化不到 1 秒就发,连续操作合并;只是挪了顺序的,等键盘收起时再发。" +
+                    "省电模式、电量低时也照常同步;Wi-Fi 和流量都可以;没网时不去连,失败后 5 分钟内不再试。" +
                     "别的设备传来的内容只放进剪贴板历史,不会去改系统剪贴板。「清空系统剪贴板」开关每台设备各管各的;被密码管理器标成敏感的内容本来就不存历史,也不会上传。" +
                     "剪贴板里可能有账号、地址等敏感内容,所以默认关闭。加密密钥内置(来自这个构建,不用手动输入),几台设备要装同一个构建。" +
                     "剪贴板页标题行下面那行小字会显示联动状态。",
@@ -162,7 +164,7 @@ class BackupActivity : Activity() {
         )
         clipBox = styledSwitch(ClipSync.enabled(this)) { v ->
             ClipSync.setEnabled(this, v)
-            if (v && !BackupConfig.davConfigured(this)) toast("先设置上面的坚果云账号,联动才能工作")
+            if (v) ClipSync.relayError()?.let { toast("联动没法用:$it") }
             refresh()
         }
         clip.addView(switchRowFor("剪贴板联动", "打开后,这台设备的剪贴板和别的设备保持一致", clipBox))
@@ -174,11 +176,11 @@ class BackupActivity : Activity() {
             }
         })
         clip.addView(rowDivider())
-        clip.addView(settingsRow("删除云端本机的联动文件", "只删这台设备传上去的,不影响别的设备和本机剪贴板") {
-            AlertDialog.Builder(this).setTitle("删除云端本机的联动文件?")
-                .setMessage("别的设备已经收到的内容不会受影响。之后如果再开联动,会重新整份上传。")
+        clip.addView(settingsRow("删除云端本机的快照", "只删这台设备放在 R2 里的快照,不影响别的设备和本机剪贴板") {
+            AlertDialog.Builder(this).setTitle("删除云端本机的快照?")
+                .setMessage("别的设备已经收到的内容不会受影响。之后如果再开联动,会当作第一次加入,重新读别的设备的快照、重新传自己的。")
                 .setPositiveButton("删除") { _, _ ->
-                    runBg("正在删除云端的联动文件…") {
+                    runBg("正在删除云端的快照…") {
                         val r = ClipSync.clearCloud(this@BackupActivity)
                         ui.post { say(r.msg) }
                     }
@@ -244,9 +246,11 @@ class BackupActivity : Activity() {
         }
         sb.append("\n剪贴板联动:").append(if (ClipSync.enabled(this)) "已开启" else "已关闭")
         if (ClipSync.enabled(this)) {
+            sb.append("\n    连接:").append(if (ClipSync.connected()) "已连上 Worker(实时同步)" else "未连接(键盘弹出时连上)")
             sb.append("\n    上次成功:").append(fmt(ClipSync.lastOk(this)))
             val bad = ClipSync.badCount(this)
-            if (bad > 0) sb.append("\n    有 ").append(bad).append(" 个别的设备的文件解不开(别的设备装的是不是同一个构建?)")
+            if (bad > 0) sb.append("\n    收到 ").append(bad).append(" 条解不开的消息(别的设备装的是不是同一个构建?)")
+            ClipSync.relayError()?.let { sb.append("\n    ").append(it) }
             val cm = ClipSync.lastMsg(this)
             if (cm.startsWith("失败") || cm.startsWith("等待")) sb.append("\n    最近一次").append(cm)
         }
