@@ -53,8 +53,6 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
-          RELAY_URL: ${{ secrets.RELAY_URL }}          # 可选:剪贴板联动的 Cloudflare Worker 地址(https://…workers.dev 或自己的域名)
-          RELAY_SECRET: ${{ secrets.RELAY_SECRET }}    # 可选:Worker 的 SECRET
         run: gradle :app:assembleRelease --no-daemon
 
       - uses: actions/upload-artifact@v4

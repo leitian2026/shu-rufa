@@ -22,13 +22,9 @@ val buildNumber = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0).coerc
 // 覆盖安装要求每次构建用同一把密钥。以下环境变量由 GitHub Secrets 提供(见 .github/workflows/build-release.yml):
 //   KEYSTORE_PATH(工作流用 KEYSTORE_BASE64 解出的 .jks 路径) / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD
 //   BACKUP_PASSWORD  备份文件的加密密码(编进 BuildConfig,不写在源码里)
-//   RELAY_URL / RELAY_SECRET  剪贴板联动用的 Cloudflare Worker 的 https 地址和口令(Worker 的 SECRET;同样编进 BuildConfig)。
-//                    两项都是可选的:缺了不会让构建失败,只是这个构建里剪贴板联动用不了(开关旁会提示)
 // 打 release 包时任何一项缺失都会直接报错,避免悄悄用 debug 密钥打出无法覆盖安装的包。
 val envKeystore: String? = System.getenv("KEYSTORE_PATH")?.takeIf { file(it).exists() }
 val backupPassword: String = System.getenv("BACKUP_PASSWORD") ?: ""
-val relayUrl: String = System.getenv("RELAY_URL") ?: ""
-val relaySecret: String = System.getenv("RELAY_SECRET") ?: ""
 val hasReleaseKey: Boolean = envKeystore != null &&
     !System.getenv("KEYSTORE_PASSWORD").isNullOrEmpty() &&
     !System.getenv("KEY_ALIAS").isNullOrEmpty() &&
@@ -53,9 +49,6 @@ android {
         versionName = "$verMajor.$verMinor.$verPatch"
         val esc = backupPassword.replace("\\", "\\\\").replace("\"", "\\\"")
         buildConfigField("String", "BACKUP_PASSWORD", "\"$esc\"")
-        fun q(v: String) = "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
-        buildConfigField("String", "RELAY_URL", q(relayUrl.trim()))
-        buildConfigField("String", "RELAY_SECRET", q(relaySecret))
     }
 
     buildFeatures {
@@ -108,6 +101,7 @@ android {
 }
 
 dependencies {
-    // 剪贴板联动:WebSocket 连 Cloudflare Worker、HTTP 存取 R2(和互传 App 用同一个版本)
+    // 剪贴板联动:WebSocket 连 Cloudflare Worker、HTTP 存取 R2、自建 DoH(和互传 App 用同一个版本)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")   // 自建 DoH(版本要和 okhttp 一致)
 }

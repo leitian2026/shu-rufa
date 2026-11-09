@@ -29,7 +29,7 @@ import java.util.function.LongSupplier
  * 同步什么:剪贴板历史(含顺序)、上锁、回收箱、删除 —— 在任何一台设备上做的这些操作,别的设备也会照做。
  * 不同步:「清空系统剪贴板」那个开关(每台设备的 app 兼容情况不同)、被密码管理器标成敏感的内容(本来就不进历史)。
  *
- * 通道:你自己的 Cloudflare Worker(地址和口令在构建时内置:环境变量 RELAY_URL / RELAY_SECRET,和 BACKUP_PASSWORD 一样不写在源码里)。
+ * 通道:你自己的 Cloudflare Worker(地址、口令和域名解析在备份页「5. 剪贴板联动」里填,存在本机,见 RelayCfg;不再编进构建)。
  * 变化用 WebSocket 逐台通知,快照放在 R2 的 clip/snap/ 下;命名空间 clip,和互传等别的 App 互不干扰(规则见 Worker 脚本开头)。
  * 密钥:从内置备份密码用固定盐派生(不用手动输入);几台设备要装同一个构建。
  *
@@ -78,6 +78,8 @@ object ClipSync {
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var engine: ClipRelayCore.Engine? = null
     private var engineExec: ScheduledThreadPoolExecutor? = null
+    private var engineNet: ClipRelayNet? = null
+    private var dns: RelayDns? = null
 
     // ------------------------------------------------------------ 服务接入(主线程)
 
@@ -112,18 +114,14 @@ object ClipSync {
 
     fun enabled(ctx: Context): Boolean = BackupConfig.prefs(ctx).getBoolean(K_ON, false)
 
-    /** 这个构建有没有内置 Worker 地址和口令。 */
-    fun relayError(): String? {
-        ClipRelayNet.urlError(BuildConfig.RELAY_URL)?.let { return it }
-        if (BuildConfig.RELAY_SECRET.isEmpty()) return "这个构建没有内置中转口令"
-        return null
-    }
+    /** 没设置 Worker 地址和口令时的说明;设置好了返回 null。只看有没有,不碰 Keystore。 */
+    fun relayError(ctx: Context): String? = if (RelayCfg.has(ctx)) null else "还没有设置 Worker 地址和口令"
 
     fun setEnabled(ctx: Context, v: Boolean) {
         val app = ctx.applicationContext
         BackupConfig.prefs(app).edit().putBoolean(K_ON, v).putLong(K_NEXT, 0L).apply()
         if (v) {
-            if (relayError() == null) withEngine(app) { it.onShown() }   // 第一次加入:连上、读别的设备的快照、传自己的
+            if (relayError(app) == null) withEngine(app) { it.onShown() }   // 第一次加入:连上、读别的设备的快照、传自己的
         } else {
             closeEngine()
         }
@@ -143,7 +141,7 @@ object ClipSync {
     fun statusLine(ctx: Context): String? {
         val app = ctx.applicationContext
         if (!enabled(app)) return null
-        relayError()?.let { return "联动:$it" }
+        relayError(app)?.let { return "联动:$it" }
         val bad = badCount(app)
         if (bad > 0) return "联动:有 $bad 条别的设备的消息解不开(几台设备要装同一个构建)"
         val m = lastMsg(app)
@@ -181,7 +179,7 @@ object ClipSync {
     /** 删掉这台设备在 R2 里的快照(不影响别的设备、不影响本机的剪贴板)。后台线程调用。 */
     fun clearCloud(ctx: Context): Outcome {
         val app = ctx.applicationContext
-        relayError()?.let { return Outcome(false, "失败:$it") }
+        relayError(app)?.let { return Outcome(false, "失败:$it") }
         return try {
             val e = engineOrCreate(app) ?: return Outcome(false, "失败:联动没法启动(没有打开联动开关?)")
             val ok = e.deleteOwnCloud().get(30, TimeUnit.SECONDS)
@@ -194,7 +192,7 @@ object ClipSync {
     /** 备份页的「立即同步」:重新读一遍别的设备的快照、发出没发的改动、更新自己的快照。后台线程调用。 */
     fun syncNow(ctx: Context): Outcome {
         val app = ctx.applicationContext
-        relayError()?.let { return Outcome(false, "失败:$it") }
+        relayError(app)?.let { return Outcome(false, "失败:$it") }
         if (!online(app)) return Outcome(false, "失败:现在没有网络")
         return try {
             val e = engineOrCreate(app) ?: return Outcome(false, "失败:联动没法启动(没有打开联动开关?)")
@@ -203,6 +201,47 @@ object ClipSync {
         } catch (e: Exception) {
             Outcome(false, "失败:" + why(e))
         }
+    }
+
+    // ------------------------------------------------------------ Worker 设置变了
+
+    @Synchronized
+    private fun relayDns(app: Context): RelayDns = dns ?: RelayDns(app.applicationContext).also { dns = it }
+
+    /**
+     * 保存了新的 Worker 地址 / 口令之后调用:断开旧连接,清掉这台设备的联动状态(不同的 Worker 里序号和快照互不相关),
+     * 当作第一次加入重来。联动开着就马上连一次。
+     */
+    fun onRelayChanged(ctx: Context) {
+        val app = ctx.applicationContext
+        closeEngine()
+        relayDns(app).reset()
+        val p = BackupConfig.prefs(app)
+        val ed = p.edit().remove(K_INITED).remove(K_ROSTER).remove(K_ROSTERAT).remove(K_BAD).remove(K_MSG).putLong(K_NEXT, 0L).putBoolean(K_SNAPDIRTY, true)
+        for (k in p.all.keys) if (k.startsWith(K_LAST)) ed.remove(k)
+        ed.commit()
+        if (enabled(app) && relayError(app) == null) withEngine(app) { it.onShown() }
+        notifyStatus()
+    }
+
+    /** 保存了新的域名解析设置之后调用:清掉解析缓存,断开旧连接,下次连接按新设置解析(联动的状态不变)。 */
+    fun onDnsChanged(ctx: Context) {
+        val app = ctx.applicationContext
+        closeEngine()
+        relayDns(app).reset()
+        BackupConfig.prefs(app).edit().putLong(K_NEXT, 0L).apply()
+        notifyStatus()
+    }
+
+    /**
+     * 设置页的「测试连接」:用给定的地址和口令(口令留空就用已保存的)连一下 Worker,检查口令、R2 绑定、是不是 v2 脚本;
+     * 用的是已经保存的域名解析设置。后台线程调用。
+     */
+    fun testRelay(ctx: Context, normalizedUrl: String, secretOrNull: String?): Outcome {
+        val app = ctx.applicationContext
+        val secret = secretOrNull?.takeIf { it.isNotEmpty() } ?: RelayCfg.secret(app) ?: return Outcome(false, "失败:没有口令")
+        val err = ClipRelayNet.test(normalizedUrl, secret, relayDns(app))
+        return if (err == null) Outcome(true, "Worker 连接正常(口令对、R2 已绑定、是 v2 脚本)") else Outcome(false, "失败:$err")
     }
 
     // ------------------------------------------------------------ 触发(都很便宜:只丢给引擎的执行器,不在调用线程上联网)
@@ -234,7 +273,7 @@ object ClipSync {
     private fun usable(app: Context): Boolean {
         return try {
             val p = BackupConfig.prefs(app)
-            p.getBoolean(K_ON, false) && relayError() == null && System.currentTimeMillis() >= p.getLong(K_NEXT, 0L)
+            p.getBoolean(K_ON, false) && relayError(app) == null && System.currentTimeMillis() >= p.getLong(K_NEXT, 0L)
         } catch (e: Exception) {
             false   // 联动出任何问题都不能影响打字
         }
@@ -275,7 +314,7 @@ object ClipSync {
     @Synchronized
     private fun engineOrCreate(app: Context): ClipRelayCore.Engine? {
         engine?.let { return it }
-        if (relayError() != null || !enabled(app)) return null
+        if (relayError(app) != null || !enabled(app)) return null
         val k = key(app)
         val exec = ScheduledThreadPoolExecutor(1) { r ->
             Thread {
@@ -289,12 +328,14 @@ object ClipSync {
         exec.setKeepAliveTime(10, TimeUnit.SECONDS)   // 闲着的时候线程自己退出,不常驻
         exec.allowCoreThreadTimeOut(true)
         val dev = LearnSync.deviceId(app)
-        val net = ClipRelayNet(BuildConfig.RELAY_URL, BuildConfig.RELAY_SECRET, dev)
+        val secret = RelayCfg.secret(app) ?: throw IOException("Worker 口令在这台手机上取不出来了,请在设置里重新填一遍")
+        val net = ClipRelayNet(RelayCfg.url(app), secret, dev, relayDns(app))
         val e = ClipRelayCore.Engine(
             net, store, state(app), dev, k.first, k.second,
             LongSupplier { System.currentTimeMillis() }, exec, sink(app), ClipRelayCore.Config(),
         )
         engineExec = exec
+        engineNet = net
         engine = e
         return e
     }
@@ -303,14 +344,17 @@ object ClipSync {
     private fun closeEngine() {
         val e = engine
         val x = engineExec
+        val n = engineNet
         engine = null
         engineExec = null
+        engineNet = null
         try {
             e?.close()
         } catch (ex: Exception) {
             // 已经断了
         }
         x?.shutdownNow()
+        n?.dispose()
     }
 
     private fun sink(app: Context): ClipRelayCore.Sink = object : ClipRelayCore.Sink {

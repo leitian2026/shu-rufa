@@ -9,11 +9,13 @@ import android.os.Handler
 import android.os.Looper
 import android.graphics.drawable.GradientDrawable
 import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
@@ -152,7 +154,7 @@ class BackupActivity : Activity() {
         clip.addView(
             foldNote(
                 "几台都是你自己的设备,剪贴板像同一个:在一台上复制、删除、上锁、从回收箱恢复、挪顺序,别的设备也一样。" +
-                    "走你自己的 Cloudflare Worker(地址和口令在构建时内置,不用填),不再用坚果云:每次变化发一条很小的加密通知给别的设备," +
+                    "走你自己的 Cloudflare Worker(在下面的「Worker 地址和口令」里填,每台设备各填一次;Cloudflare 域名连不上时在「域名解析」里填 Host 映射等),不再用坚果云:每次变化发一条很小的加密通知给别的设备," +
                     "对方在线秒到,不在线由 Worker 先存着,对方上线时补发;完整内容的加密快照放在 R2 里,新设备第一次加入时读它。" +
                     "没有定时器、不轮询:键盘弹出时才连上 Worker(连着的时候别的设备的改动直接推过来),Worker 在没动静后 90~120 秒自己断开,下次再连。" +
                     "复制、删除、上锁等本机的变化不到 1 秒就发,连续操作合并;只是挪了顺序的,等键盘收起时再发。" +
@@ -164,10 +166,15 @@ class BackupActivity : Activity() {
         )
         clipBox = styledSwitch(ClipSync.enabled(this)) { v ->
             ClipSync.setEnabled(this, v)
-            if (v) ClipSync.relayError()?.let { toast("联动没法用:$it") }
+            if (v) ClipSync.relayError(this)?.let { toast("联动没法用:$it") }
             refresh()
         }
         clip.addView(switchRowFor("剪贴板联动", "打开后,这台设备的剪贴板和别的设备保持一致", clipBox))
+        clip.addView(rowDivider())
+        clip.addView(rowDivider())
+        clip.addView(settingsRow("Worker 地址和口令…", "填你的 Cloudflare Worker 的域名和口令,保存后自动测试连接;每台设备各填一次") { askRelay() })
+        clip.addView(rowDivider())
+        clip.addView(settingsRow("域名解析…", "Host 映射 / 自建 DoH / 系统 DNS:Cloudflare 域名被劫持、连不上时用") { askDns() })
         clip.addView(rowDivider())
         clip.addView(settingsRow("立即同步剪贴板", null) {
             runBg("正在同步剪贴板(第一次要多等几秒)…") {
@@ -246,11 +253,13 @@ class BackupActivity : Activity() {
         }
         sb.append("\n剪贴板联动:").append(if (ClipSync.enabled(this)) "已开启" else "已关闭")
         if (ClipSync.enabled(this)) {
+            sb.append("\n    Worker:").append(RelayCfg.url(this).ifEmpty { "还没设置" })
+            sb.append("\n    域名解析:").append(dnsSummary())
             sb.append("\n    连接:").append(if (ClipSync.connected()) "已连上 Worker(实时同步)" else "未连接(键盘弹出时连上)")
             sb.append("\n    上次成功:").append(fmt(ClipSync.lastOk(this)))
             val bad = ClipSync.badCount(this)
             if (bad > 0) sb.append("\n    收到 ").append(bad).append(" 条解不开的消息(别的设备装的是不是同一个构建?)")
-            ClipSync.relayError()?.let { sb.append("\n    ").append(it) }
+            ClipSync.relayError(this)?.let { sb.append("\n    ").append(it) }
             val cm = ClipSync.lastMsg(this)
             if (cm.startsWith("失败") || cm.startsWith("等待")) sb.append("\n    最近一次").append(cm)
         }
@@ -362,6 +371,123 @@ class BackupActivity : Activity() {
                         testDav()
                     }
                 }
+            }
+            .setNegativeButton("取消", null).showPage()
+    }
+
+    private fun dnsSummary(): String =
+        "Host 映射" + (if (RelayCfg.hostsOn(this)) "开" else "关") + " · 自建 DoH" + (if (RelayCfg.dohOn(this)) "开" else "关") +
+            " · 系统 DNS" + (if (RelayCfg.sysDns(this)) "开" else "关")
+
+    private fun askRelay() {
+        val addr = EditText(this).apply {
+            hint = "Worker 地址(域名或 xxx.workers.dev)"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setText(RelayCfg.url(this@BackupActivity))
+        }
+        val hasSecret = RelayCfg.has(this)
+        val sec = passwordField(if (hasSecret) "中转口令(留空表示不修改)" else "中转口令(Worker 的 SECRET)")
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpi(20f), dpi(8f), dpi(20f), 0)
+            addView(addr)
+            addView(sec)
+        }
+        AlertDialog.Builder(this).setTitle("设置 Worker 地址和口令")
+            .setMessage(
+                "地址填你的 Cloudflare Worker 的域名(自动补 https://,不用带路径);口令是 Worker 里设置的 SECRET。" +
+                    "Worker 要用 hulian-worker_v2.js,并绑定了 R2 桶(变量名 BUCKET)。口令加密后只存在这台手机上,不进备份,几台设备要各填一次。" +
+                    "改了地址或口令会断开连接,这台设备当作第一次加入重来。保存后自动测试连接。",
+            )
+            .setView(box)
+            .setPositiveButton("保存") { _, _ ->
+                val (url, err) = RelayCfg.normalize(addr.text.toString())
+                val s = sec.text.toString()
+                if (url == null) {
+                    toast(err ?: "地址不对")
+                    return@setPositiveButton
+                }
+                if (s.isEmpty() && RelayCfg.secret(this) == null) {
+                    toast("没有填口令")
+                    return@setPositiveButton
+                }
+                val changed = url != RelayCfg.url(this) || s.isNotEmpty()
+                RelayCfg.set(this, url, s.ifEmpty { null })
+                if (changed) ClipSync.onRelayChanged(this)
+                refresh()
+                testRelayConn()
+            }
+            .setNegativeButton("取消", null).showPage()
+    }
+
+    private fun testRelayConn() {
+        if (!RelayCfg.has(this)) {
+            toast("请先设置 Worker 地址和口令")
+            return
+        }
+        runBg("正在连接 Worker…") {
+            val r = ClipSync.testRelay(this, RelayCfg.url(this), null)
+            ui.post { say(r.msg) }
+        }
+    }
+
+    /** 域名解析设置(照互传的):Host 映射 → 自建 DoH → 系统 DNS,各有开关。参数是对话框里已经填的内容(检查不通过时原样再打开,不丢)。 */
+    private fun askDns(
+        hostsOn0: Boolean = RelayCfg.hostsOn(this),
+        hosts0: String = RelayCfg.hostsText(this),
+        dohOn0: Boolean = RelayCfg.dohOn(this),
+        doh0: String = RelayCfg.dohText(this),
+        sys0: Boolean = RelayCfg.sysDns(this),
+    ) {
+        val hostsSw = styledSwitch(hostsOn0) { }
+        val dohSw = styledSwitch(dohOn0) { }
+        val sysSw = styledSwitch(sys0) { }
+        fun multi(hint: String, text: String) = EditText(this).apply {
+            this.hint = hint
+            minLines = 3
+            gravity = Gravity.TOP
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setText(text)
+        }
+        val hostsEt = multi("每行:域名 IP [IP…]\n例:wo.example.com 45.139.193.125", hosts0)
+        val dohEt = multi("每行一个 https:// 地址\n例:https://dns.example.com/dns-query", doh0)
+        val note = TextView(this).apply {
+            text = "按顺序解析:① Host 映射(给域名指定 IP,命中就不查 DNS,连不上自动换下一个 IP)→ ② 自建 DoH(加密 DNS,只对没有映射的域名)→ " +
+                "③ 系统 DNS。三个都关着或都没解析出来就连不上。只管联动连 Worker 的这一路。"
+            setTextColor(0xFF666666.toInt())
+            textSize = 13f
+            setPadding(0, 0, 0, dpi(8f))
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpi(20f), dpi(8f), dpi(20f), 0)
+            addView(note)
+            addView(switchRowFor("使用 Host 映射", "关闭时下面填的内容保留但不使用", hostsSw))
+            addView(hostsEt)
+            addView(switchRowFor("使用自建 DoH", "没有 Host 映射的域名先用它解析;地址里常带随机路径,加密保存", dohSw))
+            addView(dohEt)
+            addView(switchRowFor("使用系统 DNS", "关闭后绝不用系统 DNS:没有映射、DoH 也解析不出来就直接连不上", sysSw))
+        }
+        AlertDialog.Builder(this).setTitle("域名解析")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("保存") { _, _ ->
+                val h = hostsEt.text.toString()
+                val d = dohEt.text.toString()
+                val hostsOn = hostsSw.isChecked
+                val dohOn = dohSw.isChecked
+                val sysOn = sysSw.isChecked
+                val bad = RelayDnsCore.parseHosts(h).error ?: RelayDnsCore.dohError(d) ?: (if (dohOn && d.isBlank()) "开了自建 DoH,但没填地址" else null)
+                if (bad != null) {
+                    toast(bad)
+                    askDns(hostsOn, h, dohOn, d, sysOn)
+                    return@setPositiveButton
+                }
+                RelayCfg.setDns(this, hostsOn, h.trim(), dohOn, d.trim(), sysOn)
+                ClipSync.onDnsChanged(this)
+                refresh()
+                val warn = if (dohOn) RelayDnsCore.dohWarning(d, if (hostsOn) h else "", sysOn) else null
+                say(warn ?: "域名解析设置已保存")
             }
             .setNegativeButton("取消", null).showPage()
     }
