@@ -59,7 +59,8 @@ public final class ClipSyncCore {
         public char st;
         public long ot;
         public long mt;
-        public boolean dirty;   // 本机改过、还没上传
+        public boolean dirty;    // 本机改过、还没发给 Worker(主通道)
+        public boolean dirty2;   // 本机改过、还没传到坚果云(备用通道)。两条通道各记各的,谁发完谁清自己的
 
         Rec(String id, String text, char st, long ot, long mt, boolean dirty) {
             this.id = id;
@@ -68,10 +69,13 @@ public final class ClipSyncCore {
             this.ot = ot;
             this.mt = mt;
             this.dirty = dirty;
+            this.dirty2 = dirty;
         }
 
         Rec copy() {
-            return new Rec(id, text, st, ot, mt, dirty);
+            Rec c = new Rec(id, text, st, ot, mt, dirty);
+            c.dirty2 = dirty2;
+            return c;
         }
     }
 
@@ -196,6 +200,7 @@ public final class ClipSyncCore {
                     r.text = t;
                     stamp(r, now);
                     r.dirty = true;
+                    r.dirty2 = true;
                     changed = true;
                 }
                 if (r.text == null) r.text = t;
@@ -204,6 +209,7 @@ public final class ClipSyncCore {
                     r.ot = front;
                     stamp(r, now);
                     r.dirty = true;
+                    r.dirty2 = true;
                     changed = true;
                 }
                 prev = r.ot;
@@ -226,6 +232,7 @@ public final class ClipSyncCore {
                     long mt = tprev == Long.MIN_VALUE ? now : Math.max(now, tprev + 1);
                     r.mt = Math.max(mt, r.mt + 1);
                     r.dirty = true;
+                    r.dirty2 = true;
                     changed = true;
                 } else if (r.text == null) {
                     r.text = t;
@@ -239,6 +246,7 @@ public final class ClipSyncCore {
                     r.text = null;
                     stamp(r, now);
                     r.dirty = true;
+                    r.dirty2 = true;
                     changed = true;
                 }
             }
@@ -268,7 +276,8 @@ public final class ClipSyncCore {
                 r.ot = ot;
                 r.mt = mt;
                 r.text = in.st == 'x' ? null : in.text;
-                r.dirty = false;   // 对方的更新,本机之前没传出去的改动已经过时了
+                r.dirty = false;   // 对方的更新,本机之前没传出去的改动已经过时了(两条通道都是)
+                r.dirty2 = false;
                 if (diff) changed++;
             }
             if (changed > 0) version++;
@@ -355,7 +364,39 @@ public final class ClipSyncCore {
             return false;
         }
 
-        /** 本机改过、还没上传的记录(拷贝),按修改时间从旧到新。 */
+        /** 备用通道(坚果云)有没有还没传的改动。 */
+        public boolean hasDirty2() {
+            for (Rec r : recs.values()) if (r.dirty2) return true;
+            return false;
+        }
+
+        /** 备用通道(坚果云)还没传的记录(拷贝),按修改时间从旧到新。 */
+        public List<Rec> takeDirty2() {
+            List<Rec> out = new ArrayList<>();
+            for (Rec r : recs.values()) if (r.dirty2) out.add(r.copy());
+            Collections.sort(out, new Comparator<Rec>() {
+                @Override
+                public int compare(Rec a, Rec b) {
+                    return Long.compare(a.mt, b.mt);
+                }
+            });
+            return out;
+        }
+
+        /** 备用通道传完以后:这些记录(拷贝时的样子)不再算"待传到坚果云";传的时候又改过的继续算。 */
+        public void clearDirty2(Collection<Rec> sent) {
+            boolean ch = false;
+            for (Rec s : sent) {
+                Rec r = recs.get(s.id);
+                if (r != null && r.dirty2 && r.mt == s.mt && r.st == s.st) {
+                    r.dirty2 = false;
+                    ch = true;
+                }
+            }
+            if (ch) version++;
+        }
+
+        /** 本机改过、还没发给 Worker 的记录(拷贝),按修改时间从旧到新。 */
         public List<Rec> takeDirty() {
             List<Rec> out = new ArrayList<>();
             for (Rec r : recs.values()) if (r.dirty) out.add(r.copy());
@@ -368,7 +409,7 @@ public final class ClipSyncCore {
             return out;
         }
 
-        /** 上传成功后:这些记录(拷贝时的样子)不再算"待上传";上传期间又改过的(mt 变了)继续算。 */
+        /** 发给 Worker 成功后:这些记录(拷贝时的样子)不再算"待发送";发送期间又改过的(mt 变了)继续算。 */
         public void clearDirty(Collection<Rec> sent) {
             boolean ch = false;
             for (Rec s : sent) {
@@ -412,7 +453,7 @@ public final class ClipSyncCore {
 
         public void writeMeta(Writer w) throws IOException {
             for (Rec r : recs.values()) {
-                w.write("M\t" + r.id + "\t" + r.st + "\t" + r.ot + "\t" + r.mt + "\t" + (r.dirty ? "1" : "0") + "\n");
+                w.write("M\t" + r.id + "\t" + r.st + "\t" + r.ot + "\t" + r.mt + "\t" + (r.dirty ? "1" : "0") + "\t" + (r.dirty2 ? "1" : "0") + "\n");
             }
         }
 
@@ -423,14 +464,17 @@ public final class ClipSyncCore {
             for (String t : texts) byId.put(idOf(t), t);
             for (String line : lines) {
                 String[] p = line.split("\t", -1);
-                if (p.length != 6 || !p[0].equals("M") || p[2].length() != 1 || !validSt(p[2].charAt(0))) continue;
+                // 6 个字段是旧版(没有备用通道的"待传"标记),按"没有待传"处理
+                if ((p.length != 6 && p.length != 7) || !p[0].equals("M") || p[2].length() != 1 || !validSt(p[2].charAt(0))) continue;
                 try {
                     char st = p[2].charAt(0);
                     long ot = Long.parseLong(p[3]);
                     long mt = Long.parseLong(p[4]);
                     String text = st == 'x' ? null : byId.get(p[1]);
                     if (st != 'x' && text == null) continue;
-                    m.recs.put(p[1], new Rec(p[1], text, st, ot, mt, p[5].equals("1")));
+                    Rec r = new Rec(p[1], text, st, ot, mt, p[5].equals("1"));
+                    r.dirty2 = p.length == 7 && p[6].equals("1");
+                    m.recs.put(p[1], r);
                 } catch (NumberFormatException e) {
                     // 跳过坏行
                 }

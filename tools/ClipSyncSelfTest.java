@@ -230,6 +230,30 @@ public class ClipSyncSelfTest {
         race.clearDirty(sent);
         check(race.get(id("r1")).dirty, "上传期间又改过的,仍然算待上传");
 
+        // ---- 两条通道(Worker / 坚果云)各记各的待发送
+        ClipSyncCore.Model two = new ClipSyncCore.Model();
+        two.reconcile(L("t1", "t2"), S(), L(), T0 + 100);
+        check(two.hasDirty() && two.hasDirty2() && two.takeDirty().size() == 2 && two.takeDirty2().size() == 2, "两条通道:新内容两条通道都算待发送");
+        two.clearDirty(two.takeDirty());
+        check(!two.hasDirty() && two.hasDirty2() && two.takeDirty2().size() == 2, "两条通道:Worker 发完只清自己的,坚果云这条仍然待传");
+        List<ClipSyncCore.Rec> sentDav = two.takeDirty2();
+        two.reconcile(L("t1", "t2"), S("t1"), L(), T0 + 200);   // 传的时候又上了锁
+        two.clearDirty2(sentDav);
+        check(two.get(id("t1")).dirty2 && !two.get(id("t2")).dirty2 && two.get(id("t1")).dirty, "两条通道:传的时候又改过的,两边都仍算待发送;没改过的清掉");
+        ClipSyncCore.Model src2 = new ClipSyncCore.Model();
+        src2.reconcile(L("t2"), S(), L(), T0 + 5000);
+        src2.reconcile(L(), S(), L("t2"), T0 + 6000);   // 对方把 t2 放进了回收箱(更新)
+        two.merge(src2.takeDirty(), T0 + 7000);
+        check(two.get(id("t2")).st == 't' && !two.get(id("t2")).dirty && !two.get(id("t2")).dirty2, "两条通道:对方更新的记录赢了,本机这条的两种待发送都作废");
+        StringWriter sw2 = new StringWriter();
+        two.writeMeta(sw2);
+        List<String> meta2 = Arrays.asList(sw2.toString().split("\n"));
+        ClipSyncCore.Model back2 = ClipSyncCore.Model.readMeta(meta2, Arrays.asList("t1", "t2"));
+        check(back2.get(id("t1")).dirty == two.get(id("t1")).dirty && back2.get(id("t1")).dirty2 == two.get(id("t1")).dirty2, "保存读回:两种待发送标记都保留");
+        String legacy = "M\t" + id("t1") + "\ta\t100\t200\t1";   // 旧版只有 6 个字段
+        ClipSyncCore.Model old2 = ClipSyncCore.Model.readMeta(Arrays.asList(legacy), Arrays.asList("t1"));
+        check(old2.get(id("t1")) != null && old2.get(id("t1")).dirty && !old2.get(id("t1")).dirty2, "保存读回:旧版 6 个字段的记录能读,坚果云那条按没有待传处理");
+
         System.out.println(fails == 0 ? "ALL PASS" : ("FAILED " + fails));
         if (fails != 0) System.exit(1);
     }

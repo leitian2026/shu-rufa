@@ -89,6 +89,7 @@ run_dav() {  # 名字 端口 "源文件 ..."
 }
 run_dav WebDavSelfTest 18080 "WebDavClient"
 run_dav LearnSyncE2E 18091 "$PIN LearnSyncCore BackupCrypto WebDavClient"
+run_dav ClipDavE2E 18094 "ClipDavCore ClipSyncCore BackupCrypto WebDavClient"   # 剪贴板联动的备用通道(坚果云)
 
 # 剪贴板联动走 Cloudflare Worker 的两项(需要 node 22+:自带 node:sqlite)。用 Cloudflare 环境的最小模拟跑真正的 Worker 脚本(tools/worker/)
 node_ok() { command -v node >/dev/null 2>&1 && node --experimental-sqlite --no-warnings -e "require('node:sqlite')" >/dev/null 2>&1; }
@@ -106,6 +107,21 @@ if want WorkerSelfTest; then
 fi
 
 # 剪贴板联动完整流程:本机用真 Worker 脚本起一个能用真 WebSocket / HTTP 连的服务,几台模拟设备(JDK 自带的 WebSocket)互相同步
+# 剪贴板联动两条通道同时开着(Worker + 坚果云):两个本机服务一起起(真 Worker 脚本 + 假的 WebDAV)
+if want ClipDualE2E; then
+  if ! node_ok || ! command -v python3 >/dev/null 2>&1; then echo "== ClipDualE2E: 跳过(需要 node 22+ 和 python3)"; SKIP=$((SKIP+1)); record ClipDualE2E "跳过(需要 node 22+ 和 python3)"
+  else
+    mkdir -p "$OUT/dav_18097"
+    node --experimental-sqlite --no-warnings tools/worker/server.mjs tools/worker/hulian-worker.js 18096 >"$OUT/dual_worker.log" 2>&1 &
+    dwpid=$!
+    python3 tools/fake_dav.py 18097 "$OUT/dav_18097" >"$OUT/dual_dav.log" 2>&1 &
+    ddpid=$!
+    sleep 1.8
+    run_test ClipDualE2E "ClipRelayCore ClipDavCore ClipSyncCore BackupCrypto WebDavClient" "18096 18097" "ClipRelayE2E"
+    kill "$dwpid" "$ddpid" 2>/dev/null; wait "$dwpid" "$ddpid" 2>/dev/null
+  fi
+fi
+
 if want ClipRelayE2E; then
   if ! node_ok; then echo "== ClipRelayE2E: 跳过(没有 node 22+)"; SKIP=$((SKIP+1)); record ClipRelayE2E "跳过(没有 node 22+)"
   else

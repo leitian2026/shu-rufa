@@ -20,6 +20,7 @@ import java.util.concurrent.FutureTask
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.function.LongSupplier
 
 /**
@@ -31,13 +32,17 @@ import java.util.function.LongSupplier
  *
  * 通道:你自己的 Cloudflare Worker(地址、口令和域名解析在备份页「5. 剪贴板联动」里填,存在本机,见 RelayCfg;不再编进构建)。
  * 变化用 WebSocket 逐台通知,快照放在 R2 的 clip/snap/ 下;命名空间 clip,和互传等别的 App 互不干扰(规则见 Worker 脚本开头)。
- * 密钥:从内置备份密码用固定盐派生(不用手动输入);几台设备要装同一个构建。
+ * 备用通道:坚果云(WebDAV,ClipDavCore),有单独的开关,用备份页「1. 坚果云账号」里的账号;和 Worker 可以同时开着,各记各的"待发送",
+ *   合并幂等所以不会重复。Worker 连不上(被屏蔽)的设备靠它照样同步;几台设备都要打开。
+ * 密钥:两条通道都从内置备份密码用固定盐派生(不用手动输入);几台设备要装同一个构建。
  *
  * 省电:没有定时器、没有后台常驻、不用 WorkManager、不轮询。
  *   - 键盘弹出:没连就连上一次(Worker 会把暂存的补发过来),发一个 ping;连接开着的时候别的设备的改动直接推过来;
  *   - 复制 / 删除 / 上锁等本机有变化:不到 1 秒就发(连续操作合并,两次发送至少隔 5 秒);只是挪了顺序这类不紧急的,等键盘收起时再发;
  *   - Worker 在最后一次动静之后 90~120 秒自己断开连接,这边不设定时器去关、也不自动重连;
  *   - 省电模式、电量低时也照常同步(用户要求),Wi-Fi 和移动流量都可以;没网时不去连,失败后 5 分钟内不再试。
+ *   - 坚果云备用通道(开着才有):本机有变化 5 秒后传一个很小的增量文件(连续操作合并);键盘弹出时去看一次(间隔至少 1 分钟,没有新内容只列一次目录);
+ *     键盘收起时补传没传出去的。
  * 状态(序号、收到哪里了、名册)放在 backupcfg 里:设备专属、不进备份(设备 ID 不能跟着备份还原到另一台设备)。
  * 默认关闭:剪贴板里可能有账号、地址等敏感内容,要你自己打开。
  */
@@ -57,6 +62,17 @@ object ClipSync {
     private const val K_ROSTERAT = "cr_rosterat"
     private const val K_SNAPDIRTY = "cr_snapdirty"
     private const val K_INITED = "cr_inited"
+    // 备用通道(坚果云)
+    private const val K_DAV_ON = "cs_dav_on"
+    private const val K_DSEQ = "cd_seq"
+    private const val K_DCUR = "cd_cur_"
+    private const val K_DBAD = "cd_bad_"
+    private const val K_DRESNAP = "cd_resnap"
+    private const val K_DOK = "cd_ok"
+    private const val K_DMSG = "cd_msg"
+    private const val K_DNEXT = "cd_next"
+    private const val DAV_PUSH_DELAY_MS = 5_000L
+    private const val DAV_PULL_GAP_MS = 60_000L
     private const val K_BAD = "cr_bad"
 
     /** 服务(界面所在的主线程)提供:读出 / 换掉界面上的三份列表,以及上限。下面几个方法都在主线程里被调用。 */
@@ -80,6 +96,14 @@ object ClipSync {
     private var engineExec: ScheduledThreadPoolExecutor? = null
     private var engineNet: ClipRelayNet? = null
     private var dns: RelayDns? = null
+    private val davSyncing = AtomicBoolean(false)
+    @Volatile private var davLastAttemptAt = 0L
+    @Volatile private var davPushPending = false
+    @Volatile private var unsentDav = true   // 本机可能有还没传到坚果云的改动(进程刚启动时也当作有)
+    private val davPushRun = Runnable {
+        davPushPending = false
+        appCtx?.let { davRequest(it, manual = false, minGap = 0L) }
+    }
 
     // ------------------------------------------------------------ 服务接入(主线程)
 
@@ -96,6 +120,8 @@ object ClipSync {
             host = null
             session = null
             closeEngine()
+            main.removeCallbacks(davPushRun)
+            davPushPending = false
         }
     }
 
@@ -122,11 +148,44 @@ object ClipSync {
         BackupConfig.prefs(app).edit().putBoolean(K_ON, v).putLong(K_NEXT, 0L).apply()
         if (v) {
             if (relayError(app) == null) withEngine(app) { it.onShown() }   // 第一次加入:连上、读别的设备的快照、传自己的
+            if (davReady(app)) {
+                unsentDav = true
+                davRequest(app, manual = true, minGap = 0L)
+            }
         } else {
             closeEngine()
+            main.removeCallbacks(davPushRun)
+            davPushPending = false
         }
         notifyStatus()
     }
+
+    // ---- 备用通道(坚果云)的开关和状态
+
+    fun davEnabled(ctx: Context): Boolean = BackupConfig.prefs(ctx).getBoolean(K_DAV_ON, false)
+
+    /** 没设置坚果云账号时的说明;设置好了返回 null。只看有没有,不碰 Keystore。 */
+    fun davError(ctx: Context): String? = if (BackupConfig.hasDav(ctx)) null else "还没有设置坚果云账号(备份页「1. 坚果云账号」)"
+
+    /** 备用通道现在能用:联动开着、备用开关开着、有坚果云账号。 */
+    fun davReady(ctx: Context): Boolean = enabled(ctx) && davEnabled(ctx) && davError(ctx) == null
+
+    fun setDavEnabled(ctx: Context, v: Boolean) {
+        val app = ctx.applicationContext
+        BackupConfig.prefs(app).edit().putBoolean(K_DAV_ON, v).putLong(K_DNEXT, 0L).apply()
+        if (v) {
+            unsentDav = true
+            if (davReady(app)) davRequest(app, manual = true, minGap = 0L)
+        } else {
+            main.removeCallbacks(davPushRun)
+            davPushPending = false
+        }
+        notifyStatus()
+    }
+
+    fun davLastOk(ctx: Context): Long = BackupConfig.prefs(ctx).getLong(K_DOK, 0L)
+
+    fun davLastMsg(ctx: Context): String = BackupConfig.prefs(ctx).getString(K_DMSG, "") ?: ""
 
     fun lastOk(ctx: Context): Long = BackupConfig.prefs(ctx).getLong(K_OK, 0L)
 
@@ -141,17 +200,24 @@ object ClipSync {
     fun statusLine(ctx: Context): String? {
         val app = ctx.applicationContext
         if (!enabled(app)) return null
-        relayError(app)?.let { return "联动:$it" }
+        val relayErr = relayError(app)
+        val dav = davReady(app)
+        val davText = if (davLastMsg(app).startsWith("失败")) "坚果云备用同步失败" else if (davLastOk(app) > 0L) "坚果云备用 " + hhmm(davLastOk(app)) + " 已同步" else "坚果云备用还没同步过"
+        if (relayErr != null) {
+            return if (dav) "联动:未设置 Worker;$davText" else "联动:$relayErr"
+        }
         val bad = badCount(app)
         if (bad > 0) return "联动:有 $bad 条别的设备的消息解不开(几台设备要装同一个构建)"
         val m = lastMsg(app)
-        if (m.startsWith("失败")) return "联动:同步" + m.take(40)
+        if (m.startsWith("失败")) return if (dav) "联动:Worker 不可用;$davText" else "联动:同步" + m.take(40)
         if (m.startsWith("等待")) return "联动:$m"
         if (connected()) return "联动:已连接,实时同步"
         val ok = lastOk(app)
         if (ok <= 0L) return "联动:已开启,还没同步过"
-        return "联动:" + SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ok)) + " 已同步(键盘弹出时重连)"
+        return "联动:" + hhmm(ok) + " 已同步(键盘弹出时重连)"
     }
+
+    private fun hhmm(t: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(t))
 
     private fun notifyStatus() {
         main.post { host?.onStatus() }
@@ -168,39 +234,74 @@ object ClipSync {
     fun afterRestore(ctx: Context) {
         try {
             val p = BackupConfig.prefs(ctx.applicationContext)
-            val ed = p.edit().remove(K_INITED).putBoolean(K_SNAPDIRTY, true).putLong(K_NEXT, 0L)
-            for (k in p.all.keys) if (k.startsWith(K_LAST)) ed.remove(k)
+            val ed = p.edit().remove(K_INITED).putBoolean(K_SNAPDIRTY, true).putLong(K_NEXT, 0L).putBoolean(K_DRESNAP, true).putLong(K_DNEXT, 0L)
+            for (k in p.all.keys) if (k.startsWith(K_LAST) || k.startsWith(K_DCUR) || k.startsWith(K_DBAD)) ed.remove(k)
             ed.commit()   // 还原完马上会重启进程,用 commit 保证写进去了
         } catch (e: Exception) {
             // 清不掉也不影响还原本身
         }
     }
 
-    /** 删掉这台设备在 R2 里的快照(不影响别的设备、不影响本机的剪贴板)。后台线程调用。 */
+    /** 删掉这台设备在云端的东西(不影响别的设备、不影响本机的剪贴板):Worker 的 R2 快照,和坚果云 clip 文件夹里这台设备的文件。后台线程调用。 */
     fun clearCloud(ctx: Context): Outcome {
         val app = ctx.applicationContext
-        relayError(app)?.let { return Outcome(false, "失败:$it") }
-        return try {
-            val e = engineOrCreate(app) ?: return Outcome(false, "失败:联动没法启动(没有打开联动开关?)")
-            val ok = e.deleteOwnCloud().get(30, TimeUnit.SECONDS)
-            Outcome(ok, if (ok) "已删除云端本机的快照" else lastMsg(app))
-        } catch (e: Exception) {
-            Outcome(false, "失败:" + why(e))
+        val parts = ArrayList<String>()
+        var ok = true
+        if (relayError(app) == null) {
+            try {
+                val e = engineOrCreate(app)
+                if (e == null) {
+                    parts.add("Worker:联动没打开,没删")
+                } else {
+                    val r = e.deleteOwnCloud().get(30, TimeUnit.SECONDS)
+                    ok = ok && r
+                    parts.add("Worker:" + (if (r) "已删除快照" else lastMsg(app)))
+                }
+            } catch (e: Exception) {
+                ok = false
+                parts.add("Worker:失败:" + why(e))
+            }
         }
+        if (davError(app) == null) {
+            val r = davClearCloud(app)
+            ok = ok && r.ok
+            parts.add("坚果云:" + r.msg)
+        }
+        if (parts.isEmpty()) return Outcome(false, "失败:Worker 和坚果云都没设置")
+        return Outcome(ok, parts.joinToString(";"))
     }
 
-    /** 备份页的「立即同步」:重新读一遍别的设备的快照、发出没发的改动、更新自己的快照。后台线程调用。 */
+    /** 备份页的「立即同步」:每条开着的通道都重新读一遍别的设备的内容、发出没发的改动、更新自己的快照。后台线程调用。 */
     fun syncNow(ctx: Context): Outcome {
         val app = ctx.applicationContext
-        relayError(app)?.let { return Outcome(false, "失败:$it") }
+        val relayOn = relayError(app) == null
+        val davOn = davReady(app)
+        if (!relayOn && !davOn) return Outcome(false, "失败:Worker 和坚果云备用通道都没有设置好")
         if (!online(app)) return Outcome(false, "失败:现在没有网络")
-        return try {
-            val e = engineOrCreate(app) ?: return Outcome(false, "失败:联动没法启动(没有打开联动开关?)")
-            val ok = e.syncNow().get(60, TimeUnit.SECONDS)
-            Outcome(ok, if (ok) "成功:已同步" else lastMsg(app))
-        } catch (e: Exception) {
-            Outcome(false, "失败:" + why(e))
+        val parts = ArrayList<String>()
+        var ok = true
+        if (relayOn) {
+            try {
+                val e = engineOrCreate(app)
+                if (e == null) {
+                    ok = false
+                    parts.add("Worker:联动没法启动(没有打开联动开关?)")
+                } else {
+                    val r = e.syncNow().get(60, TimeUnit.SECONDS)
+                    ok = ok && r
+                    parts.add("Worker:" + (if (r) "已同步" else lastMsg(app)))
+                }
+            } catch (e: Exception) {
+                ok = false
+                parts.add("Worker:失败:" + why(e))
+            }
         }
+        if (davOn) {
+            val r = davSyncOnce(app, push = true, force = true)
+            ok = ok && r.ok
+            parts.add("坚果云:" + r.msg)
+        }
+        return Outcome(ok, (if (ok) "成功:" else "") + parts.joinToString(";"))
     }
 
     // ------------------------------------------------------------ Worker 设置变了
@@ -248,34 +349,152 @@ object ClipSync {
 
     /** 剪贴板有变化(服务的 markClips 里调,主线程)。urgent 的(新复制 / 删除 / 上锁等)尽快发;不紧急的(只是挪了顺序)等键盘收起时。 */
     fun onLocalChange(app: Context, urgent: Boolean) {
-        if (!usable(app)) return
-        withEngine(app) { if (urgent) it.onLocalChange() else it.markDirty() }
+        if (relayUsable(app)) withEngine(app) { if (urgent) it.onLocalChange() else it.markDirty() }
+        if (davUsable(app)) {
+            unsentDav = true
+            if (urgent && !davPushPending) {
+                davPushPending = true
+                main.postDelayed(davPushRun, DAV_PUSH_DELAY_MS)   // 5 秒后传一个增量文件(这几秒里的多次变化合成一个)
+            }
+        }
     }
 
-    /** 键盘弹出时(后台线程调):没连就连上;连着就发一个 ping 让连接多留一会。 */
+    /** 键盘弹出时(后台线程调):Worker 没连就连上、连着就发一个 ping;备用通道开着就看一次坚果云(间隔至少 1 分钟)。 */
     fun onShown(app: Context) {
-        if (!usable(app)) return
-        if (!online(app)) {
-            setMsg(app, "等待网络")
-            return
+        if (relayUsable(app)) {
+            if (!online(app)) setMsg(app, "等待网络") else withEngine(app) { it.onShown() }
         }
-        withEngine(app) { it.onShown() }
+        if (davUsable(app)) davRequest(app, manual = false, minGap = DAV_PULL_GAP_MS)
     }
 
     /** 键盘收起时(后台线程调):本机有还没发出去的改动就发。 */
     fun onHidden(app: Context) {
-        if (!usable(app)) return
-        if (engine?.isConnected() != true && !online(app)) return   // 没连着又没网:不去尝试
-        withEngine(app) { it.onHidden() }
+        if (relayUsable(app)) {
+            if (engine?.isConnected() == true || online(app)) withEngine(app) { it.onHidden() }   // 没连着又没网:不去尝试
+        }
+        if (davUsable(app) && unsentDav) davRequest(app, manual = false, minGap = 0L)
     }
 
-    /** 开着、构建里有地址和口令、不在失败退避期。 */
-    private fun usable(app: Context): Boolean {
+    /** Worker 主通道:联动开着、设置了地址和口令、不在失败退避期。 */
+    private fun relayUsable(app: Context): Boolean {
         return try {
             val p = BackupConfig.prefs(app)
             p.getBoolean(K_ON, false) && relayError(app) == null && System.currentTimeMillis() >= p.getLong(K_NEXT, 0L)
         } catch (e: Exception) {
             false   // 联动出任何问题都不能影响打字
+        }
+    }
+
+    /** 坚果云备用通道:联动开着、备用开关开着、有坚果云账号、不在失败退避期。 */
+    private fun davUsable(app: Context): Boolean {
+        return try {
+            davReady(app) && System.currentTimeMillis() >= BackupConfig.prefs(app).getLong(K_DNEXT, 0L)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // ------------------------------------------------------------ 备用通道(坚果云)
+
+    /**
+     * 判断(从便宜到贵)满足就另开低优先级线程同步一次:间隔 → 有没有在跑 / 备份在不在做 → 有没有网(manual 跳过间隔和有没有网的判断)。
+     * 省电模式、电量低时也照常。失败后 5 分钟内不再试。
+     */
+    private fun davRequest(app: Context, manual: Boolean, minGap: Long): Boolean {
+        try {
+            val now = System.currentTimeMillis()
+            if (!manual && minGap > 0L && davLastAttemptAt <= now && now - davLastAttemptAt < minGap) return false
+            if (davSyncing.get() || BackupManager.busy() || host == null) return false
+            if (!manual && !online(app)) return false
+            Thread {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+                val r = davSyncOnce(app, push = true, force = false)
+                if (!r.ok && !r.msg.startsWith("忙")) {
+                    BackupConfig.prefs(app).edit().putLong(K_DNEXT, System.currentTimeMillis() + RETRY_FAIL_MS).apply()
+                }
+            }.start()
+            return true
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    /** 做一次坚果云同步:先拉取合并,再传本机的新变化(第一次传整份快照)。后台线程调用。 */
+    private fun davSyncOnce(app: Context, push: Boolean, force: Boolean): Outcome {
+        if (!BackupConfig.davConfigured(app)) return davFail(app, "还没有设置坚果云账号")
+        if (host == null) return davFail(app, "输入法没有在运行(先切换到本输入法、打开一次键盘再试)")
+        if (BackupManager.busy()) return Outcome(false, "忙:另一项备份 / 还原正在进行,请稍后再试")
+        if (!davSyncing.compareAndSet(false, true)) return Outcome(false, "忙:正在同步中")
+        notifyStatus()
+        val p = BackupConfig.prefs(app)
+        unsentDav = false   // 先清:同步期间又有新改动会重新置位,不会漏
+        davLastAttemptAt = System.currentTimeMillis()
+        return try {
+            val k = key(app)
+            val client = BackupManager.dav(app)
+            val folder = BackupManager.davFolder(app) + ClipDavCore.SUBFOLDER
+            val forceSnap = force || p.getBoolean(K_DRESNAP, false)
+            val now = System.currentTimeMillis()
+            val r = ClipDavCore.run(client, folder, LearnSync.deviceId(app), k.first, k.second, store, app.cacheDir, davState(app), push, forceSnap, now)
+            val e = p.edit().putLong(K_DOK, now).putString(K_DMSG, "成功:" + r.summary()).putLong(K_DNEXT, 0L)
+            if (forceSnap && r.pushed.isNotEmpty()) e.remove(K_DRESNAP)
+            e.apply()
+            Outcome(true, r.summary())
+        } catch (e: Exception) {
+            unsentDav = true
+            davFail(app, why(e))
+        } finally {
+            davSyncing.set(false)
+            notifyStatus()
+        }
+    }
+
+    private fun davFail(app: Context, why: String): Outcome {
+        BackupConfig.prefs(app).edit().putString(K_DMSG, "失败:$why").apply()
+        return Outcome(false, "失败:$why")
+    }
+
+    /** 删掉这台设备在坚果云 clip 文件夹里的文件(别的设备的不动)。 */
+    private fun davClearCloud(app: Context): Outcome {
+        return try {
+            val client = BackupManager.dav(app)
+            val folder = BackupManager.davFolder(app) + ClipDavCore.SUBFOLDER
+            val dev = LearnSync.deviceId(app)
+            var n = 0
+            for (e in client.list(folder)) {
+                if (e.dir) continue
+                if (e.name.startsWith("s-$dev-") || e.name.startsWith("d-$dev-")) {
+                    client.delete(folder, e.name)
+                    n++
+                }
+            }
+            BackupConfig.prefs(app).edit().putBoolean(K_DRESNAP, true).apply()
+            Outcome(true, "已删除这台设备的 $n 个文件")
+        } catch (e: Exception) {
+            Outcome(false, "失败:" + why(e))
+        }
+    }
+
+    private fun davState(app: Context): ClipDavCore.State {
+        val p = BackupConfig.prefs(app)
+        return object : ClipDavCore.State {
+            override fun cursor(dev: String): Long = p.getLong(K_DCUR + dev, -1L)
+
+            override fun setCursor(dev: String, seq: Long) {
+                p.edit().putLong(K_DCUR + dev, seq).apply()
+            }
+
+            override fun bad(fileName: String): Boolean = p.getBoolean(K_DBAD + fileName, false)
+
+            override fun markBad(fileName: String) {
+                p.edit().putBoolean(K_DBAD + fileName, true).apply()
+            }
+
+            override fun mySeq(): Long = p.getLong(K_DSEQ, 0L)
+
+            override fun setMySeq(seq: Long) {
+                p.edit().putLong(K_DSEQ, seq).apply()
+            }
         }
     }
 
