@@ -90,6 +90,10 @@ class ClipboardPanelView(
     private var barList: List<BarKey> = normalBar()
     override val barKeys: List<BarKey> get() = barList
     override val titledHeader: Boolean get() = true
+
+    // 标题行的键排紧一点(每个键左右的空白 24dp → 16dp,键间距 6dp → 4dp),标题右边才放得下条数("17/500")
+    override val headerPadWDp: Float get() = 16f
+    override val headerGapDp: Float get() = 4f
     override val flatBar: Boolean get() = true   // 顶部按键扁平:返回箭头、「回收箱」等只有图标/文字,没有按钮底色
 
     private fun normalBar() =

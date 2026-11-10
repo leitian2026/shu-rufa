@@ -163,25 +163,26 @@ class BackupActivity : Activity() {
                     "别的设备传来的内容只放进剪贴板历史,不会去改系统剪贴板。「清空系统剪贴板」开关每台设备各管各的;被密码管理器标成敏感的内容本来就不存历史,也不会上传。" +
                     "剪贴板里可能有账号、地址等敏感内容,所以默认关闭。加密密钥内置(来自这个构建,不用手动输入),几台设备要装同一个构建。" +
                     "剪贴板页标题行下面那行小字会显示联动状态。" +
-                    "「同时用坚果云作为备用通道」打开后,变化也会传一份到坚果云(用「1. 坚果云账号」里的账号,放在备份文件夹下的 clip 子文件夹):" +
+                    "两条通道各有自己的开关,可以都开(互不影响,不会重复)、只开一条、或都关:Cloudflare 在你那边连不上时,把 Worker 通道关掉、只开坚果云,就不会白白耗电、也没有连接超时的延迟。" +
+                    "坚果云通道打开后,变化会传到坚果云(用「1. 坚果云账号」里的账号,放在备份文件夹下的 clip 子文件夹):" +
                     "Cloudflare 被屏蔽、连不上的设备靠它照样和别的设备同步,两条通道同时开着不会重复。" +
                     "备用通道不是秒到:本机有变化 5 秒后传一个很小的文件,键盘弹出时看一次别的设备有没有新内容(至少隔 1 分钟);几台设备都要打开这个开关。" +
                     "坚果云免费版每 30 分钟 600 次请求的额度和备份共用,平时用不完。",
             ),
         )
-        clipBox = styledSwitch(ClipSync.enabled(this)) { v ->
-            ClipSync.setEnabled(this, v)
-            if (v && ClipSync.relayError(this) != null && !ClipSync.davReady(this)) toast("还没设置 Worker,也没开坚果云备用通道,联动现在没法用")
+        clipBox = styledSwitch(ClipSync.relayEnabled(this)) { v ->
+            ClipSync.setRelayEnabled(this, v)
+            if (v) ClipSync.relayError(this)?.let { toast("Worker 通道没法用:$it") }
             refresh()
         }
-        clip.addView(switchRowFor("剪贴板联动", "打开后,这台设备的剪贴板和别的设备保持一致", clipBox))
+        clip.addView(switchRowFor("通过 Worker 同步(主通道,秒到)", "Cloudflare 连不上时把它关掉:不再去连,省得白白耗电、白等超时", clipBox))
         clip.addView(rowDivider())
         davBox = styledSwitch(ClipSync.davEnabled(this)) { v ->
             ClipSync.setDavEnabled(this, v)
             if (v) ClipSync.davError(this)?.let { toast("备用通道没法用:$it") }
             refresh()
         }
-        clip.addView(switchRowFor("同时用坚果云作为备用通道", "Worker 连不上时照样同步;用「1. 坚果云账号」里的账号;几台设备都要打开", davBox))
+        clip.addView(switchRowFor("通过坚果云同步(备用通道)", "可以和 Worker 同时开,也可以只开它;用「1. 坚果云账号」里的账号;几台设备都要打开", davBox))
         clip.addView(rowDivider())
         clip.addView(rowDivider())
         clip.addView(settingsRow("Worker 地址和口令…", "填你的 Cloudflare Worker 的域名和口令,保存后自动测试连接;每台设备各填一次") { askRelay() })
@@ -265,17 +266,30 @@ class BackupActivity : Activity() {
         }
         sb.append("\n剪贴板联动:").append(if (ClipSync.enabled(this)) "已开启" else "已关闭")
         if (ClipSync.enabled(this)) {
-            sb.append("\n    Worker:").append(RelayCfg.url(this).ifEmpty { "还没设置" })
-            sb.append("\n    坚果云备用通道:").append(if (!ClipSync.davEnabled(this)) "未打开" else if (ClipSync.davError(this) != null) ClipSync.davError(this) else "已打开,上次成功 " + fmt(ClipSync.davLastOk(this)))
-            ClipSync.davLastMsg(this).takeIf { ClipSync.davEnabled(this) && it.startsWith("失败") }?.let { sb.append("\n    坚果云最近一次").append(it) }
-            sb.append("\n    域名解析:").append(dnsSummary())
-            sb.append("\n    连接:").append(if (ClipSync.connected()) "已连上 Worker(实时同步)" else "未连接(键盘弹出时连上)")
-            sb.append("\n    上次成功:").append(fmt(ClipSync.lastOk(this)))
-            val bad = ClipSync.badCount(this)
-            if (bad > 0) sb.append("\n    收到 ").append(bad).append(" 条解不开的消息(别的设备装的是不是同一个构建?)")
-            ClipSync.relayError(this)?.let { sb.append("\n    ").append(it) }
-            val cm = ClipSync.lastMsg(this)
-            if (cm.startsWith("失败") || cm.startsWith("等待")) sb.append("\n    最近一次").append(cm)
+            if (ClipSync.relayEnabled(this)) {
+                sb.append("\n    Worker 通道:已打开,").append(RelayCfg.url(this).ifEmpty { "还没设置地址" })
+                sb.append("\n        域名解析:").append(dnsSummary())
+                sb.append("\n        连接:").append(if (ClipSync.connected()) "已连上(实时同步)" else "未连接(键盘弹出时连上)")
+                sb.append("\n        上次成功:").append(fmt(ClipSync.lastOk(this)))
+                val bad = ClipSync.badCount(this)
+                if (bad > 0) sb.append("\n        收到 ").append(bad).append(" 条解不开的消息(别的设备装的是不是同一个构建?)")
+                ClipSync.relayError(this)?.let { sb.append("\n        ").append(it) }
+                val cm = ClipSync.lastMsg(this)
+                if (cm.startsWith("失败") || cm.startsWith("等待")) sb.append("\n        最近一次").append(cm)
+            } else {
+                sb.append("\n    Worker 通道:未打开")
+            }
+            if (ClipSync.davEnabled(this)) {
+                val de = ClipSync.davError(this)
+                if (de != null) {
+                    sb.append("\n    坚果云通道:已打开,").append(de)
+                } else {
+                    sb.append("\n    坚果云通道:已打开,上次成功 ").append(fmt(ClipSync.davLastOk(this)))
+                    ClipSync.davLastMsg(this).takeIf { it.startsWith("失败") }?.let { sb.append("\n        最近一次").append(it) }
+                }
+            } else {
+                sb.append("\n    坚果云通道:未打开")
+            }
         }
         status.text = sb.toString()
     }

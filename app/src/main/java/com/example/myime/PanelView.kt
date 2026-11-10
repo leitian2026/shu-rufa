@@ -85,6 +85,10 @@ abstract class PanelView(context: Context) : View(context) {
     /** true:标题在左、按键紧凑靠右排在同一行(剪贴板、功能页、键盘选择);false:按键铺满整行(表情的分类条)。 */
     protected open val titledHeader: Boolean get() = false
 
+    /** 带标题的标题行里,每个键左右各留的空白加起来多宽(dp)、键与键之间的间距(dp)。窄一点,标题右边才有地方放条数。 */
+    protected open val headerPadWDp: Float get() = 24f
+    protected open val headerGapDp: Float get() = 6f
+
     /** true:顶部按键条画成扁平的(没有底色和阴影,只有图标/文字,按下时才有一块淡色底)。 */
     protected open val flatBar: Boolean get() = false
 
@@ -263,14 +267,14 @@ abstract class PanelView(context: Context) : View(context) {
     protected fun layoutBar() {
         val keys = barKeys
         if (width == 0 || height == 0) return
-        val gx = context.dpf(6f)
+        val gx = context.dpf(if (titledHeader) headerGapDp else 6f)
         val top = padTop
         barRects.clear()
         if (titledHeader) {
             // 每个键的宽度跟着文字走,整组靠右排;左边留给标题
             val wide = context.isWide()
             val minW = context.dpf(if (wide) 44f else 40f)
-            val padW = context.dpf(24f)
+            val padW = context.dpf(headerPadWDp)
             val btnH = if (headerBtnH > 0f) headerBtnH else context.dpf(if (wide) 34f else 30f)
             val btnTop = top + (barH - btnH) / 2f
             val widths = FloatArray(keys.size)

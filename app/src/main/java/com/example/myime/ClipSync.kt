@@ -32,8 +32,9 @@ import java.util.function.LongSupplier
  *
  * 通道:你自己的 Cloudflare Worker(地址、口令和域名解析在备份页「5. 剪贴板联动」里填,存在本机,见 RelayCfg;不再编进构建)。
  * 变化用 WebSocket 逐台通知,快照放在 R2 的 clip/snap/ 下;命名空间 clip,和互传等别的 App 互不干扰(规则见 Worker 脚本开头)。
- * 备用通道:坚果云(WebDAV,ClipDavCore),有单独的开关,用备份页「1. 坚果云账号」里的账号;和 Worker 可以同时开着,各记各的"待发送",
+ * 备用通道:坚果云(WebDAV,ClipDavCore),用备份页「1. 坚果云账号」里的账号;和 Worker 可以同时开着,各记各的"待发送",
  *   合并幂等所以不会重复。Worker 连不上(被屏蔽)的设备靠它照样同步;几台设备都要打开。
+ * 两条通道各有自己的开关(Worker 连不上时可以关掉,免得白白耗电、白等超时);两个都关就是联动关着。
  * 密钥:两条通道都从内置备份密码用固定盐派生(不用手动输入);几台设备要装同一个构建。
  *
  * 省电:没有定时器、没有后台常驻、不用 WorkManager、不轮询。
@@ -138,24 +139,23 @@ object ClipSync {
 
     // ------------------------------------------------------------ 设置(备份页用)
 
-    fun enabled(ctx: Context): Boolean = BackupConfig.prefs(ctx).getBoolean(K_ON, false)
+    /** Worker 通道的开关(0.45 以前叫"联动"开关,键没变,老用户的设置原样保留)。 */
+    fun relayEnabled(ctx: Context): Boolean = BackupConfig.prefs(ctx).getBoolean(K_ON, false)
+
+    /** 联动是否在运行:Worker 通道和坚果云通道,有一个开着就算开着。 */
+    fun enabled(ctx: Context): Boolean = relayEnabled(ctx) || davEnabled(ctx)
 
     /** 没设置 Worker 地址和口令时的说明;设置好了返回 null。只看有没有,不碰 Keystore。 */
     fun relayError(ctx: Context): String? = if (RelayCfg.has(ctx)) null else "还没有设置 Worker 地址和口令"
 
-    fun setEnabled(ctx: Context, v: Boolean) {
+    /** Worker 通道的开关。关掉就断开连接、不再去连(Cloudflare 连不上时关掉,省得白白耗电、白等超时);坚果云通道不受影响。 */
+    fun setRelayEnabled(ctx: Context, v: Boolean) {
         val app = ctx.applicationContext
         BackupConfig.prefs(app).edit().putBoolean(K_ON, v).putLong(K_NEXT, 0L).apply()
         if (v) {
             if (relayError(app) == null) withEngine(app) { it.onShown() }   // 第一次加入:连上、读别的设备的快照、传自己的
-            if (davReady(app)) {
-                unsentDav = true
-                davRequest(app, manual = true, minGap = 0L)
-            }
         } else {
             closeEngine()
-            main.removeCallbacks(davPushRun)
-            davPushPending = false
         }
         notifyStatus()
     }
@@ -167,8 +167,8 @@ object ClipSync {
     /** 没设置坚果云账号时的说明;设置好了返回 null。只看有没有,不碰 Keystore。 */
     fun davError(ctx: Context): String? = if (BackupConfig.hasDav(ctx)) null else "还没有设置坚果云账号(备份页「1. 坚果云账号」)"
 
-    /** 备用通道现在能用:联动开着、备用开关开着、有坚果云账号。 */
-    fun davReady(ctx: Context): Boolean = enabled(ctx) && davEnabled(ctx) && davError(ctx) == null
+    /** 坚果云通道现在能用:它的开关开着、有坚果云账号。 */
+    fun davReady(ctx: Context): Boolean = davEnabled(ctx) && davError(ctx) == null
 
     fun setDavEnabled(ctx: Context, v: Boolean) {
         val app = ctx.applicationContext
@@ -196,16 +196,16 @@ object ClipSync {
 
     fun connected(): Boolean = engine?.isConnected() == true
 
-    /** 剪贴板页那一行状态小字;联动关着返回 null(界面显示原来的提示)。 */
+    /** 剪贴板页那一行状态小字;联动关着(两条通道都没开)返回 null(界面显示原来的提示)。 */
     fun statusLine(ctx: Context): String? {
         val app = ctx.applicationContext
         if (!enabled(app)) return null
-        val relayErr = relayError(app)
+        val relayOn = relayEnabled(app)
         val dav = davReady(app)
-        val davText = if (davLastMsg(app).startsWith("失败")) "坚果云备用同步失败" else if (davLastOk(app) > 0L) "坚果云备用 " + hhmm(davLastOk(app)) + " 已同步" else "坚果云备用还没同步过"
-        if (relayErr != null) {
-            return if (dav) "联动:未设置 Worker;$davText" else "联动:$relayErr"
-        }
+        val davText = if (davLastMsg(app).startsWith("失败")) "坚果云同步失败" else if (davLastOk(app) > 0L) "坚果云 " + hhmm(davLastOk(app)) + " 已同步" else "坚果云还没同步过"
+        if (!relayOn) return if (dav) "联动:$davText(Worker 通道已关)" else "联动:" + (davError(app) ?: "")
+        val relayErr = relayError(app)
+        if (relayErr != null) return if (dav) "联动:未设置 Worker;$davText" else "联动:$relayErr"
         val bad = badCount(app)
         if (bad > 0) return "联动:有 $bad 条别的设备的消息解不开(几台设备要装同一个构建)"
         val m = lastMsg(app)
@@ -249,13 +249,14 @@ object ClipSync {
         var ok = true
         if (relayError(app) == null) {
             try {
-                val e = engineOrCreate(app)
+                val e = engineOrCreate(app, needSwitch = false)
                 if (e == null) {
-                    parts.add("Worker:联动没打开,没删")
+                    parts.add("Worker:没法启动,没删")
                 } else {
                     val r = e.deleteOwnCloud().get(30, TimeUnit.SECONDS)
                     ok = ok && r
                     parts.add("Worker:" + (if (r) "已删除快照" else lastMsg(app)))
+                    if (!relayEnabled(app)) closeEngine()   // 这个通道的开关关着:删完就断开,不留着连接
                 }
             } catch (e: Exception) {
                 ok = false
@@ -274,9 +275,9 @@ object ClipSync {
     /** 备份页的「立即同步」:每条开着的通道都重新读一遍别的设备的内容、发出没发的改动、更新自己的快照。后台线程调用。 */
     fun syncNow(ctx: Context): Outcome {
         val app = ctx.applicationContext
-        val relayOn = relayError(app) == null
+        val relayOn = relayEnabled(app) && relayError(app) == null
         val davOn = davReady(app)
-        if (!relayOn && !davOn) return Outcome(false, "失败:Worker 和坚果云备用通道都没有设置好")
+        if (!relayOn && !davOn) return Outcome(false, "失败:Worker 通道和坚果云通道都没有打开(或没设置好)")
         if (!online(app)) return Outcome(false, "失败:现在没有网络")
         val parts = ArrayList<String>()
         var ok = true
@@ -285,7 +286,7 @@ object ClipSync {
                 val e = engineOrCreate(app)
                 if (e == null) {
                     ok = false
-                    parts.add("Worker:联动没法启动(没有打开联动开关?)")
+                    parts.add("Worker:没法启动")
                 } else {
                     val r = e.syncNow().get(60, TimeUnit.SECONDS)
                     ok = ok && r
@@ -321,7 +322,7 @@ object ClipSync {
         val ed = p.edit().remove(K_INITED).remove(K_ROSTER).remove(K_ROSTERAT).remove(K_BAD).remove(K_MSG).putLong(K_NEXT, 0L).putBoolean(K_SNAPDIRTY, true)
         for (k in p.all.keys) if (k.startsWith(K_LAST)) ed.remove(k)
         ed.commit()
-        if (enabled(app) && relayError(app) == null) withEngine(app) { it.onShown() }
+        if (relayEnabled(app) && relayError(app) == null) withEngine(app) { it.onShown() }
         notifyStatus()
     }
 
@@ -531,9 +532,9 @@ object ClipSync {
     }
 
     @Synchronized
-    private fun engineOrCreate(app: Context): ClipRelayCore.Engine? {
+    private fun engineOrCreate(app: Context, needSwitch: Boolean = true): ClipRelayCore.Engine? {
         engine?.let { return it }
-        if (relayError(app) != null || !enabled(app)) return null
+        if (relayError(app) != null || (needSwitch && !relayEnabled(app))) return null
         val k = key(app)
         val exec = ScheduledThreadPoolExecutor(1) { r ->
             Thread {
