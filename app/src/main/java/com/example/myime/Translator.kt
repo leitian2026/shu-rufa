@@ -279,8 +279,10 @@ object Translator {
         val base = withQuery(gUrl.ifBlank { DEF_G_FREE }, "client=gtx&sl=${googleCode(p.from)}&tl=${googleCode(p.to)}&dt=t")
         if (q.length < 3500) {
             c = open("$base&q=$q", "GET")
+            browserHeaders(c)
         } else {
             c = open(base, "POST")
+            browserHeaders(c)
             c.doOutput = true
             c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             c.outputStream.use { it.write("q=$q".toByteArray(Charsets.UTF_8)) }
@@ -290,6 +292,19 @@ object Translator {
             throw HttpFail(c.responseCode)
         }
         return parseGtx(readAll(c))
+    }
+
+    /** 免费接口专用:补上 Chrome 地址栏直接打开网址时会带的那几个头(sec-ch-ua、Sec-Fetch-*、Upgrade-Insecure-Requests),别的接口不带。 */
+    private fun browserHeaders(c: HttpURLConnection) {
+        c.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+        c.setRequestProperty("sec-ch-ua", "\"Chromium\";v=\"124\", \"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"124\"")
+        c.setRequestProperty("sec-ch-ua-mobile", "?1")
+        c.setRequestProperty("sec-ch-ua-platform", "\"Android\"")
+        c.setRequestProperty("Sec-Fetch-Dest", "document")
+        c.setRequestProperty("Sec-Fetch-Mode", "navigate")
+        c.setRequestProperty("Sec-Fetch-Site", "none")
+        c.setRequestProperty("Sec-Fetch-User", "?1")
+        c.setRequestProperty("Upgrade-Insecure-Requests", "1")
     }
 
     /** gtx 接口的返回:[[["译文片段","原文片段",…],…],…],把各片段的译文拼起来。 */
