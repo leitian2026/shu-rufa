@@ -19,9 +19,13 @@
 //  7. 暂存额度（每台设备 200 条 / 50 MB / 7 天）按“命名空间 + 设备 ID”各算各的。
 //  8. 新增功能前，先把规则写在这里；已有命名空间的行为不能变。X-App / X-Accept 格式不对，直接 400，不会悄悄当成别的。
 //  9. 翻译转发（v3 新增，命名空间 tr，给键盘的输入翻译用）：POST /tr/google?sl=源语言&tl=目标语言，必须带 X-App: tr 和口令。
-//     原文放在请求体的 q=… 里（表单格式），不放进网址，所以不会出现在任何访问记录的网址里；本脚本不记录、不缓存内容。
+//     客户端发给本 Worker 的原文放在请求体的 q=… 里（表单格式），不放进网址，所以不会出现在本 Worker 收到的请求的网址里。
 //     只转发到写死的 https://translate.googleapis.com/translate_a/single（不是通用代理，别的路径和网址一律 404）；
-//     请求体里只取 q，别的字段不转发；语言代码和请求体大小（最大 40 KB）都检查。上游返回 429 就回 429，其余失败回 502。
+//     请求体里只取 q，别的字段不转发；语言代码和请求体大小（最大 40 KB）都检查。
+//     本 Worker 发给谷歌那一段：原文不长（编码后不超过 1500 字符）先用 GET（q 放在网址里，和浏览器直接访问一样，这样最不容易被谷歌限流），
+//     被拒绝或原文太长就用 POST（q 在请求体里）。两段都是 HTTPS；本脚本不记录、不缓存内容（返回 no-store），谷歌自己当然能看到原文。
+//     全部失败时，返回的错误里带上每一种方式的结果（例如「GET 429、POST 429」）和谷歌返回内容的开头一小段（去掉标签、限 200 字，不含原文），方便看出原因；
+//     谷歌返回 429 就回 429，其余失败回 502。成功时响应头 x-tr-via 写明是 GET 还是 POST。
 //     这条路径不碰 /ws、/r2 和任何命名空间的数据，别的 App 的行为不受影响。
 var DEVICE = /^[A-Za-z0-9_-]{1,64}$/;
 var APP = /^[a-z0-9]{1,16}$/;
@@ -82,7 +86,19 @@ var LANG = /^(auto|[A-Za-z]{2,3}(-[A-Za-z]{2,4})?)$/;
 var MAX_TRANSLATE_BODY = 40 * 1024;
 var GOOGLE_TRANSLATE = "https://translate.googleapis.com/translate_a/single";
 
-/** 翻译转发（规则 9）：只转发到谷歌的 translate_a/single，原文走请求体，不记录、不缓存 */
+var MAX_GET_Q = 1500;   // 原文编码后不超过这个长度才用 GET（网址长度有限）
+var TR_HEADERS = {
+  "user-agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+  "accept": "*/*",
+  "accept-language": "zh-CN,zh;q=0.9,en;q=0.8"
+};
+
+/** 谷歌返回的错误页只留开头一小段文字：去掉标签、合并空白，最多 200 字 */
+function snippet(text) {
+  return String(text).replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/** 翻译转发（规则 9）：只转发到谷歌的 translate_a/single，原文不记录、不缓存 */
 async function handleTranslateGoogle(req, url) {
   if (req.method !== "POST") return json({ ok: false, error: "只接受 POST（原文放在请求体里，不进网址）" }, 405);
   const sl = url.searchParams.get("sl") || "auto";
@@ -92,19 +108,30 @@ async function handleTranslateGoogle(req, url) {
   if (body.length > MAX_TRANSLATE_BODY) return json({ ok: false, error: "原文太长" }, 413);
   const q = new URLSearchParams(body).get("q");
   if (q === null || q === "") return json({ ok: false, error: "请求体里没有 q" }, 400);
-  let r;
-  try {
-    r = await fetch(GOOGLE_TRANSLATE + "?client=gtx&sl=" + encodeURIComponent(sl) + "&tl=" + encodeURIComponent(tl) + "&dt=t", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded; charset=UTF-8", "user-agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36" },
-      body: "q=" + encodeURIComponent(q)
-    });
-  } catch (_) {
-    return json({ ok: false, error: "连不上谷歌翻译" }, 502);
+  const base = GOOGLE_TRANSLATE + "?client=gtx&sl=" + encodeURIComponent(sl) + "&tl=" + encodeURIComponent(tl) + "&dt=t";
+  const enc = encodeURIComponent(q);
+  const methods = enc.length <= MAX_GET_Q ? ["GET", "POST"] : ["POST"];
+  const tried = [];
+  let last = null;
+  for (const m of methods) {
+    let r;
+    try {
+      r = m === "GET"
+        ? await fetch(base + "&q=" + enc, { method: "GET", headers: TR_HEADERS })
+        : await fetch(base, { method: "POST", headers: Object.assign({ "content-type": "application/x-www-form-urlencoded; charset=UTF-8" }, TR_HEADERS), body: "q=" + enc });
+    } catch (_) {
+      tried.push(m + " 连不上");
+      continue;
+    }
+    const text = await r.text();
+    if (r.ok) {
+      return new Response(text, { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-tr-via": m } });
+    }
+    tried.push(m + " " + r.status);
+    last = { status: r.status, text };
   }
-  const text = await r.text();
-  if (!r.ok) return json({ ok: false, error: "谷歌翻译返回 HTTP " + r.status }, r.status === 429 ? 429 : 502);
-  return new Response(text, { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+  const code = last && last.status === 429 ? 429 : 502;
+  return json({ ok: false, error: "谷歌拒绝了:" + tried.join("、"), detail: last ? snippet(last.text) : "" }, code);
 }
 
 /** 经 Worker 存取 R2（绑定变量名 BUCKET）：手机不用持有 R2 密钥。对象名 = /r2/ 后面的路径；列表返回和 S3 ListObjectsV2 相同的 XML 子集 */

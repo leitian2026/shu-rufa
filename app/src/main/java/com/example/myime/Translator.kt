@@ -70,6 +70,7 @@ object Translator {
     private fun reasonOf(t: Throwable): String = when (t) {
         is HttpFail -> "${t.code}"
         is NotSet -> "没设Worker"
+        is WorkerFail -> "Worker:" + t.msg.ifBlank { t.code.toString() }.take(40)
         is java.net.SocketTimeoutException -> "超时"
         is java.net.UnknownHostException -> "域名失败"
         is javax.net.ssl.SSLException -> "TLS失败"
@@ -94,6 +95,9 @@ object Translator {
     /** 没有设置 Worker 地址和口令(开了「经 Worker 中转」却没设置)。 */
     private class NotSet : IOException("没有设置 Worker 地址和口令")
 
+    /** Worker 返回了错误:msg 是 Worker 写的原因(例如「谷歌拒绝了:GET 429、POST 429」),detail 是谷歌返回内容的开头一小段(不含原文)。 */
+    private class WorkerFail(val code: Int, val msg: String, val detail: String) : IOException("HTTP $code $msg")
+
     fun load(ctx: android.content.Context) {
         workerOn = DictConfig.transSetting(ctx, "g_worker") == "1"
         appCtx = ctx.applicationContext
@@ -111,7 +115,8 @@ object Translator {
             val out = if (e == GOOGLE) google("你好", p) else microsoft("你好", p)
             if (out.isNullOrEmpty()) "失败:无结果" else "成功:$out"
         } catch (t: Throwable) {
-            "失败:" + reasonOf(t)
+            // 经 Worker 失败时把 Worker 写的原因和谷歌返回内容的开头都显示出来(测试按钮用,方便看出为什么被拒)
+            "失败:" + if (t is WorkerFail && t.msg.isNotBlank()) t.msg + (if (t.detail.isNotBlank()) "(" + t.detail.take(120) + ")" else "") else reasonOf(t)
         }
     }
 
@@ -316,7 +321,18 @@ object Translator {
             .post(FormBody.Builder(Charsets.UTF_8).add("q", text).build())
             .build()
         workerClient(app).newCall(req).execute().use { r ->
-            if (!r.isSuccessful) throw HttpFail(r.code)
+            if (!r.isSuccessful) {
+                var msg = ""
+                var detail = ""
+                try {
+                    val j = org.json.JSONObject(r.body?.string() ?: "")
+                    msg = j.optString("error")
+                    detail = j.optString("detail")
+                } catch (e: Exception) {
+                    // 不是 Worker 的错误格式(比如口令不对时别的网关回的页面):只报状态码
+                }
+                throw WorkerFail(r.code, msg, detail)
+            }
             return parseGtx(r.body?.string() ?: "")
         }
     }

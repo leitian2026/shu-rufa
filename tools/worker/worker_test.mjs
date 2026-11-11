@@ -187,24 +187,40 @@ t(trav.status === 400 || trav.status === 403, "R2:路径里的 .. 被拒绝");
 const upCalls = [];
 let upMode = "ok";
 globalThis.fetch = async (url, init) => {
-  upCalls.push({ url: String(url), method: init && init.method, headers: init && init.headers, body: init && init.body });
+  const method = (init && init.method) || "GET";
+  upCalls.push({ url: String(url), method, headers: init && init.headers, body: init && init.body });
   if (upMode === "throw") throw new Error("boom");
-  if (upMode === "429") return new Response("slow down", { status: 429 });
+  if (upMode === "429") return new Response("<html><style>.a{}</style><body>Our systems have detected <b>unusual</b> traffic from your computer network. IP address: 1.2.3.4</body></html>", { status: 429 });
+  if (upMode === "getfail" && method === "GET") return new Response("slow down", { status: 429 });
   if (upMode === "500") return new Response("oops", { status: 500 });
   return new Response('[[["Hello","你好",null,null,1]],null,"zh-CN"]', { status: 200 });
 };
 const TR = { "X-App": "tr", "content-type": "application/x-www-form-urlencoded" };
 const trPost = (qs, body, headers = TR) => w.http("POST", "/tr/google" + qs, { headers, body });
+const BASE = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=zh-CN&tl=en&dt=t";
 let tr = await trPost("?sl=zh-CN&tl=en", "q=" + encodeURIComponent("你好"));
 t(tr.status === 200 && tr.text.includes("Hello"), "翻译转发:正常请求原样返回谷歌的结果");
 t(tr.headers.get("cache-control") === "no-store" && tr.headers.get("content-type").startsWith("application/json"), "翻译转发:返回 no-store、不缓存");
-t(upCalls.length === 1 && upCalls[0].url === "https://translate.googleapis.com/translate_a/single?client=gtx&sl=zh-CN&tl=en&dt=t" && upCalls[0].method === "POST", "翻译转发:上游地址写死,用 POST,语言代码进网址");
-t(upCalls[0].body === "q=" + encodeURIComponent("你好") && !upCalls[0].url.includes(encodeURIComponent("你好")) && !upCalls[0].url.includes("q="), "翻译转发:原文在请求体里,没有出现在任何网址里");
+t(upCalls.length === 1 && upCalls[0].method === "GET" && upCalls[0].url === BASE + "&q=" + encodeURIComponent("你好") && tr.headers.get("x-tr-via") === "GET", "翻译转发:短文本先用 GET(和浏览器直接访问一样),上游地址写死,只调用一次");
+t(upCalls[0].body === undefined && /Chrome/.test(upCalls[0].headers["user-agent"]) && upCalls[0].headers["accept"] === "*/*", "翻译转发:GET 没有请求体,请求头像浏览器");
 const weird = "a&b=c+d%e\n日本語 😀 =";
 await trPost("?sl=zh-CN&tl=ja", "q=" + encodeURIComponent(weird));
-t(decodeURIComponent(upCalls.at(-1).body.slice(2)) === weird && upCalls.at(-1).body.startsWith("q="), "翻译转发:& = + % 换行 日文 emoji 原样往返");
+t(new URL(upCalls.at(-1).url).searchParams.get("q") === weird && upCalls.at(-1).method === "GET", "翻译转发:& = + % 换行 日文 emoji 原样往返");
 await trPost("?sl=auto&tl=en", "q=hi&evil=1&client=x&dt=bd");
-t(upCalls.at(-1).body === "q=hi" && upCalls.at(-1).url.endsWith("&dt=t") && upCalls.at(-1).url.includes("client=gtx") && !upCalls.at(-1).url.includes("evil"), "翻译转发:请求体里只取 q,别的字段不转发");
+{
+  const u = new URL(upCalls.at(-1).url);
+  t(u.searchParams.get("q") === "hi" && u.searchParams.get("dt") === "t" && u.searchParams.get("client") === "gtx" && !upCalls.at(-1).url.includes("evil"), "翻译转发:请求体里只取 q,别的字段不转发");
+}
+upMode = "getfail";
+let nA = upCalls.length;
+tr = await trPost("?sl=zh-CN&tl=en", "q=" + encodeURIComponent("你好"));
+t(tr.status === 200 && upCalls.length === nA + 2 && upCalls[nA].method === "GET" && upCalls[nA + 1].method === "POST" && tr.headers.get("x-tr-via") === "POST", "翻译转发:GET 被谷歌拒绝 → 自动改用 POST,成功时写明是 POST");
+t(upCalls[nA + 1].body === "q=" + encodeURIComponent("你好") && !upCalls[nA + 1].url.includes("q=") && upCalls[nA + 1].headers["content-type"].startsWith("application/x-www-form-urlencoded"), "翻译转发:POST 时原文在请求体里,不在网址里");
+upMode = "ok";
+nA = upCalls.length;
+const longText = "汉".repeat(600);
+tr = await trPost("?sl=zh-CN&tl=en", "q=" + encodeURIComponent(longText));
+t(tr.status === 200 && upCalls.length === nA + 1 && upCalls[nA].method === "POST" && upCalls[nA].body === "q=" + encodeURIComponent(longText), "翻译转发:原文太长(网址放不下)直接用 POST,只调用一次");
 const n0 = upCalls.length;
 t((await w.http("POST", "/tr/google?sl=zh-CN&tl=en", { body: "q=hi" })).status === 403, "翻译转发:不带 X-App 拒绝");
 t((await trPost("?sl=zh-CN&tl=en", "q=hi", { "X-App": "clip" })).status === 403, "翻译转发:别的命名空间(clip)拒绝");
@@ -216,11 +232,17 @@ t((await trPost("?sl=zh-CN&tl=en", "q=" + "a".repeat(41 * 1024))).status === 413
 t((await w.http("POST", "/tr/google?sl=zh-CN&tl=en", { headers: TR, body: "q=hi", secretOverride: "wrong" })).status === 401, "翻译转发:口令不对 401(和别的路径一样)");
 t(upCalls.length === n0, "翻译转发:上面这些被拒绝的请求,一个都没有转发给谷歌");
 upMode = "429";
-t((await trPost("?sl=zh-CN&tl=en", "q=hi")).status === 429, "翻译转发:谷歌返回 429 → 回 429(键盘能看出是被限流了)");
+tr = await trPost("?sl=zh-CN&tl=en", "q=" + encodeURIComponent("你好"));
+{
+  const j = JSON.parse(tr.text);
+  t(tr.status === 429 && j.error.includes("GET 429、POST 429") && j.detail.includes("unusual traffic") && !j.detail.includes("<") && !j.detail.includes("你好"), "翻译转发:谷歌一直拒绝 → 回 429,错误里写明每种方式的结果和谷歌返回内容的开头(去掉标签,不含原文)");
+}
 upMode = "500";
-t((await trPost("?sl=zh-CN&tl=en", "q=hi")).status === 502, "翻译转发:谷歌返回别的错误 → 回 502");
+tr = await trPost("?sl=zh-CN&tl=en", "q=hi");
+t(tr.status === 502 && JSON.parse(tr.text).error.includes("GET 500、POST 500"), "翻译转发:谷歌返回别的错误 → 回 502,错误里写明");
 upMode = "throw";
-t((await trPost("?sl=zh-CN&tl=en", "q=hi")).status === 502, "翻译转发:连不上谷歌 → 回 502");
+tr = await trPost("?sl=zh-CN&tl=en", "q=hi");
+t(tr.status === 502 && JSON.parse(tr.text).error.includes("GET 连不上、POST 连不上"), "翻译转发:连不上谷歌 → 回 502,错误里写明");
 upMode = "ok";
 const n1 = upCalls.length;
 t((await trPost("/x?sl=zh-CN&tl=en", "q=hi")).status === 404, "翻译转发:不是 /tr/google 的路径 404");
