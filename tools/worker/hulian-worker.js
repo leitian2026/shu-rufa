@@ -3,7 +3,7 @@
 // 收到 App 回的 {op:"ack", n:序号} 才删；没回执的会在它下次连上时补发。旧版 App 不带这个头，行为和以前完全一样。
 //
 // ======================================================================================================
-//  多个 App 共用这个 Worker 的规则（v2 起）。以后加新 App 的人请先读完，并且不要改变已有命名空间的行为
+//  多个 App 共用这个 Worker 的规则（v2 起；v3 加了第 9 条）。以后加新 App 的人请先读完，并且不要改变已有命名空间的行为
 // ======================================================================================================
 //  1. 命名空间：每个 App 连接 /ws 和访问 /r2 时，用请求头 X-App 声明自己的命名空间（小写字母或数字，最长 16 位，例如 clip）。
 //     不带 X-App 的都算“老 App”这一组（命名空间是空字符串），互传目前就是这一组，行为和 v1 完全一样。
@@ -18,6 +18,11 @@
 //  6. R2：带 X-App 的 App，只能读写、列出 “<命名空间>/” 开头的对象（别的 App 不能覆盖或删它的文件）。老 App 不受限制，和 v1 一样。
 //  7. 暂存额度（每台设备 200 条 / 50 MB / 7 天）按“命名空间 + 设备 ID”各算各的。
 //  8. 新增功能前，先把规则写在这里；已有命名空间的行为不能变。X-App / X-Accept 格式不对，直接 400，不会悄悄当成别的。
+//  9. 翻译转发（v3 新增，命名空间 tr，给键盘的输入翻译用）：POST /tr/google?sl=源语言&tl=目标语言，必须带 X-App: tr 和口令。
+//     原文放在请求体的 q=… 里（表单格式），不放进网址，所以不会出现在任何访问记录的网址里；本脚本不记录、不缓存内容。
+//     只转发到写死的 https://translate.googleapis.com/translate_a/single（不是通用代理，别的路径和网址一律 404）；
+//     请求体里只取 q，别的字段不转发；语言代码和请求体大小（最大 40 KB）都检查。上游返回 429 就回 429，其余失败回 502。
+//     这条路径不碰 /ws、/r2 和任何命名空间的数据，别的 App 的行为不受影响。
 var DEVICE = /^[A-Za-z0-9_-]{1,64}$/;
 var APP = /^[a-z0-9]{1,16}$/;
 var MAX_ACCEPT = 8;
@@ -71,6 +76,35 @@ function ackable(body) {
   if (!body || typeof body.mid !== "string") return false;
   if (body.cancel) return true;
   return !(body.bye || body.abort || body.poke || body.qonly || body.pause !== undefined || (body.p | 0) > 0);
+}
+
+var LANG = /^(auto|[A-Za-z]{2,3}(-[A-Za-z]{2,4})?)$/;
+var MAX_TRANSLATE_BODY = 40 * 1024;
+var GOOGLE_TRANSLATE = "https://translate.googleapis.com/translate_a/single";
+
+/** 翻译转发（规则 9）：只转发到谷歌的 translate_a/single，原文走请求体，不记录、不缓存 */
+async function handleTranslateGoogle(req, url) {
+  if (req.method !== "POST") return json({ ok: false, error: "只接受 POST（原文放在请求体里，不进网址）" }, 405);
+  const sl = url.searchParams.get("sl") || "auto";
+  const tl = url.searchParams.get("tl") || "";
+  if (!LANG.test(sl) || !LANG.test(tl) || tl === "auto") return json({ ok: false, error: "语言代码不对" }, 400);
+  const body = await req.text();
+  if (body.length > MAX_TRANSLATE_BODY) return json({ ok: false, error: "原文太长" }, 413);
+  const q = new URLSearchParams(body).get("q");
+  if (q === null || q === "") return json({ ok: false, error: "请求体里没有 q" }, 400);
+  let r;
+  try {
+    r = await fetch(GOOGLE_TRANSLATE + "?client=gtx&sl=" + encodeURIComponent(sl) + "&tl=" + encodeURIComponent(tl) + "&dt=t", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded; charset=UTF-8", "user-agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36" },
+      body: "q=" + encodeURIComponent(q)
+    });
+  } catch (_) {
+    return json({ ok: false, error: "连不上谷歌翻译" }, 502);
+  }
+  const text = await r.text();
+  if (!r.ok) return json({ ok: false, error: "谷歌翻译返回 HTTP " + r.status }, r.status === 429 ? 429 : 502);
+  return new Response(text, { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 }
 
 /** 经 Worker 存取 R2（绑定变量名 BUCKET）：手机不用持有 R2 密钥。对象名 = /r2/ 后面的路径；列表返回和 S3 ListObjectsV2 相同的 XML 子集 */
@@ -147,6 +181,12 @@ var worker_default = {
     }
     if (url.pathname === "/test") {
       return json({ ok: true, time: Date.now() });
+    }
+    if (url.pathname === "/tr/google") {
+      const p = parseApp(req);
+      if (p.error) return json({ ok: false, error: p.error }, 400);
+      if (p.app !== "tr") return json({ ok: false, error: "翻译转发需要 X-App: tr" }, 403);
+      return handleTranslateGoogle(req, url);
     }
     if (url.pathname === "/r2" || url.pathname.startsWith("/r2/")) {
       const p = parseApp(req);

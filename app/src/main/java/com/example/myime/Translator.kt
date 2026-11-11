@@ -1,5 +1,6 @@
 package com.example.myime
 
+import android.content.Context
 import android.os.SystemClock
 import android.util.LruCache
 import org.json.JSONArray
@@ -9,6 +10,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import okhttp3.FormBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
 
 /** 一组翻译方向。label 显示在翻译输入框左边的小按钮上。from / to 是通用语言代码,各引擎再各自转换。 */
 class LangPair(val label: String, val from: String, val to: String)
@@ -24,6 +29,8 @@ class TransResult(val text: String, val engine: String)
  *
  * 微软:POST edge.microsoft.com/translate/translatetext(新接口,不要令牌;旧的 auth 令牌接口已被微软下线)。
  * 谷歌:GET(文字太长时 POST)translate.googleapis.com/translate_a/single?client=gtx。
+ *       「经 Worker 中转」打开时改走你自己的 Cloudflare Worker(POST /tr/google,原文放请求体里、不进网址;地址、口令、域名解析用备份页里联动那套设置,
+ *       见 RelayCfg / RelayDns;Worker 脚本规则 9),Google 在你那边连不上时用。这条路失败照样自动换微软。
  *
  * 所有方法都会联网、会阻塞,只能在后台线程调用。只有打开「输入翻译」且你在翻译框里打了字才会调用,
  * 其他时候键盘不联网。
@@ -62,6 +69,7 @@ object Translator {
 
     private fun reasonOf(t: Throwable): String = when (t) {
         is HttpFail -> "${t.code}"
+        is NotSet -> "没设Worker"
         is java.net.SocketTimeoutException -> "超时"
         is java.net.UnknownHostException -> "域名失败"
         is javax.net.ssl.SSLException -> "TLS失败"
@@ -79,8 +87,16 @@ object Translator {
     @Volatile private var msRegion = ""
     @Volatile private var gUrl = ""
     @Volatile private var gKey = ""
+    @Volatile private var workerOn = false   // 谷歌这一路经你自己的 Worker 中转(设置里的开关,键 g_worker)
+    @Volatile private var appCtx: Context? = null
+    private var workerHttp: OkHttpClient? = null
+
+    /** 没有设置 Worker 地址和口令(开了「经 Worker 中转」却没设置)。 */
+    private class NotSet : IOException("没有设置 Worker 地址和口令")
 
     fun load(ctx: android.content.Context) {
+        workerOn = DictConfig.transSetting(ctx, "g_worker") == "1"
+        appCtx = ctx.applicationContext
         msUrl = DictConfig.transSetting(ctx, "ms_url")
         msKey = DictConfig.transSetting(ctx, "ms_key")
         msRegion = DictConfig.transSetting(ctx, "ms_region")
@@ -120,8 +136,18 @@ object Translator {
         warmedAt = now
         val base = if (orderFor(primary)[0] == GOOGLE) gUrl.ifBlank { DEF_G_FREE } else msUrl.ifBlank { DEF_MS_FREE }
         val eng = orderFor(primary)[0]
+        val viaWorker = workerOn && eng == GOOGLE
+        val app = appCtx
         Thread {
             try {
+                if (viaWorker) {
+                    // 经 Worker:预热到 Worker 的连接(走 RelayDns,Worker 的域名可能要靠 Host 映射才连得上);随便什么回应都行,只要连接建好
+                    val a = app ?: return@Thread
+                    val wb = RelayCfg.url(a)
+                    if (wb.isEmpty()) return@Thread
+                    workerClient(a).newCall(Request.Builder().url(wb).head().build()).execute().close()
+                    return@Thread
+                }
                 val u = URL(base)
                 val c = URL("${u.protocol}://${u.host}/").openConnection() as HttpURLConnection
                 c.requestMethod = "HEAD"
@@ -226,6 +252,7 @@ object Translator {
     private fun googleCode(c: String) = if (c == "zh") "zh-CN" else c
 
     private fun google(text: String, p: LangPair): String? {
+        if (workerOn) return googleViaWorker(text, p)
         val q = URLEncoder.encode(text, "UTF-8")
         val key = gKey
         val c: HttpURLConnection
@@ -257,7 +284,12 @@ object Translator {
             c.errorStream?.close()
             throw HttpFail(c.responseCode)
         }
-        val segs = JSONArray(readAll(c)).getJSONArray(0)
+        return parseGtx(readAll(c))
+    }
+
+    /** gtx 接口的返回:[[["译文片段","原文片段",…],…],…],把各片段的译文拼起来。 */
+    private fun parseGtx(body: String): String {
+        val segs = JSONArray(body).getJSONArray(0)
         val sb = StringBuilder()
         for (i in 0 until segs.length()) {
             val seg = segs.optJSONArray(i) ?: continue
@@ -266,6 +298,37 @@ object Translator {
         }
         return sb.toString()
     }
+
+    /**
+     * 经 Worker 中转:POST {Worker 地址}/tr/google?sl=…&tl=…,请求头带口令和 X-App: tr,原文放在请求体 q=… 里(不进网址,Cloudflare 的访问记录里也看不到)。
+     * Worker 只转发到谷歌的 gtx 接口,返回和直连一样的格式,所以解析用同一个 parseGtx。域名解析走 RelayDns(Host 映射 / 自建 DoH),
+     * 和剪贴板联动连 Worker 是同一套;超时和直连一样(连接 4 秒、读 6 秒),连接池里的连接会复用。
+     */
+    private fun googleViaWorker(text: String, p: LangPair): String? {
+        val app = appCtx ?: throw NotSet()
+        val base = RelayCfg.url(app)
+        val secret = RelayCfg.secret(app)
+        if (base.isEmpty() || secret == null) throw NotSet()
+        val req = Request.Builder()
+            .url(base + "/tr/google?sl=" + googleCode(p.from) + "&tl=" + googleCode(p.to))
+            .header("X-Relay-Secret", secret)
+            .header("X-App", "tr")
+            .post(FormBody.Builder(Charsets.UTF_8).add("q", text).build())
+            .build()
+        workerClient(app).newCall(req).execute().use { r ->
+            if (!r.isSuccessful) throw HttpFail(r.code)
+            return parseGtx(r.body?.string() ?: "")
+        }
+    }
+
+    @Synchronized
+    private fun workerClient(app: Context): OkHttpClient = workerHttp ?: OkHttpClient.Builder()
+        .dns(RelayDns(app))
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
+        .writeTimeout(6, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(false)
+        .build().also { workerHttp = it }
 
     // ------------------------------------------------------------ 公共
 

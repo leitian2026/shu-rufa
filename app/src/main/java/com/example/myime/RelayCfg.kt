@@ -22,11 +22,16 @@ object RelayCfg {
     /** 已规范化的地址(https://域名[:端口],不带路径);没设置是空字符串。 */
     fun url(ctx: Context): String = p(ctx).getString(K_URL, "") ?: ""
 
+    @Volatile private var secretCache: Pair<String, String>? = null   // (加密后的存储值, 明文):每次翻译都要用,不用每次都过一遍 Keystore
+
     /** 口令;没设置、或这台手机的安全存储取不出来返回 null。 */
     fun secret(ctx: Context): String? {
         val s = p(ctx).getString(K_SECRET, null) ?: return null
+        secretCache?.let { if (it.first == s) return it.second }
         val b = BackupVault.unseal(s) ?: return null
-        return String(b, Charsets.UTF_8)
+        val v = String(b, Charsets.UTF_8)
+        secretCache = Pair(s, v)
+        return v
     }
 
     /** 只看设置里有没有地址和口令,不碰 Keystore(键盘事件里的判断用,省电)。 */

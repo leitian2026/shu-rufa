@@ -183,7 +183,7 @@ export async function createWorld(modPath, { secret = "s3cret" } = {}) {
       if (body !== undefined && method !== "GET") init.body = body;
       const res = await mod.default.fetch(new Request("https://w.example" + path, init), env);
       const text = await res.text();
-      return { status: res.status, text };
+      return { status: res.status, text, headers: res.headers };
     },
     /** 把一个“部署前就连着”的老连接直接塞进 Hub:附件只有 {t, ack},标签只有设备 ID */
     legacyConnection(dev, ack = true) {

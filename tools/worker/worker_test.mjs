@@ -183,6 +183,54 @@ t(list4.status === 200, "R2:老 App 列出任意前缀,和以前一样");
 const trav = await w.http("PUT", "/r2/clip/../x", { headers: { "X-App": "clip" }, body: "x" });
 t(trav.status === 400 || trav.status === 403, "R2:路径里的 .. 被拒绝");
 
+// 翻译转发(规则 9):只转发到谷歌的 translate_a/single,原文走请求体;上游用假的 fetch 代替
+const upCalls = [];
+let upMode = "ok";
+globalThis.fetch = async (url, init) => {
+  upCalls.push({ url: String(url), method: init && init.method, headers: init && init.headers, body: init && init.body });
+  if (upMode === "throw") throw new Error("boom");
+  if (upMode === "429") return new Response("slow down", { status: 429 });
+  if (upMode === "500") return new Response("oops", { status: 500 });
+  return new Response('[[["Hello","你好",null,null,1]],null,"zh-CN"]', { status: 200 });
+};
+const TR = { "X-App": "tr", "content-type": "application/x-www-form-urlencoded" };
+const trPost = (qs, body, headers = TR) => w.http("POST", "/tr/google" + qs, { headers, body });
+let tr = await trPost("?sl=zh-CN&tl=en", "q=" + encodeURIComponent("你好"));
+t(tr.status === 200 && tr.text.includes("Hello"), "翻译转发:正常请求原样返回谷歌的结果");
+t(tr.headers.get("cache-control") === "no-store" && tr.headers.get("content-type").startsWith("application/json"), "翻译转发:返回 no-store、不缓存");
+t(upCalls.length === 1 && upCalls[0].url === "https://translate.googleapis.com/translate_a/single?client=gtx&sl=zh-CN&tl=en&dt=t" && upCalls[0].method === "POST", "翻译转发:上游地址写死,用 POST,语言代码进网址");
+t(upCalls[0].body === "q=" + encodeURIComponent("你好") && !upCalls[0].url.includes(encodeURIComponent("你好")) && !upCalls[0].url.includes("q="), "翻译转发:原文在请求体里,没有出现在任何网址里");
+const weird = "a&b=c+d%e\n日本語 😀 =";
+await trPost("?sl=zh-CN&tl=ja", "q=" + encodeURIComponent(weird));
+t(decodeURIComponent(upCalls.at(-1).body.slice(2)) === weird && upCalls.at(-1).body.startsWith("q="), "翻译转发:& = + % 换行 日文 emoji 原样往返");
+await trPost("?sl=auto&tl=en", "q=hi&evil=1&client=x&dt=bd");
+t(upCalls.at(-1).body === "q=hi" && upCalls.at(-1).url.endsWith("&dt=t") && upCalls.at(-1).url.includes("client=gtx") && !upCalls.at(-1).url.includes("evil"), "翻译转发:请求体里只取 q,别的字段不转发");
+const n0 = upCalls.length;
+t((await w.http("POST", "/tr/google?sl=zh-CN&tl=en", { body: "q=hi" })).status === 403, "翻译转发:不带 X-App 拒绝");
+t((await trPost("?sl=zh-CN&tl=en", "q=hi", { "X-App": "clip" })).status === 403, "翻译转发:别的命名空间(clip)拒绝");
+t((await trPost("?sl=zh-CN&tl=en", "q=hi", { "X-App": "Tr" })).status === 400, "翻译转发:X-App 格式不对 400");
+t((await w.http("GET", "/tr/google?sl=zh-CN&tl=en&q=hi", { headers: TR })).status === 405, "翻译转发:GET 拒绝(原文不许放网址)");
+t((await trPost("?sl=zh$CN&tl=en", "q=hi")).status === 400 && (await trPost("?sl=zh-CN&tl=auto", "q=hi")).status === 400 && (await trPost("?sl=zh-CN", "q=hi")).status === 400, "翻译转发:语言代码格式不对 / 目标是 auto / 没有目标语言,400");
+t((await trPost("?sl=zh-CN&tl=en", "other=1")).status === 400 && (await trPost("?sl=zh-CN&tl=en", "q=")).status === 400 && (await trPost("?sl=zh-CN&tl=en", "")).status === 400, "翻译转发:没有 q / q 是空的 / 没有请求体,400");
+t((await trPost("?sl=zh-CN&tl=en", "q=" + "a".repeat(41 * 1024))).status === 413, "翻译转发:请求体超过 40 KB,413");
+t((await w.http("POST", "/tr/google?sl=zh-CN&tl=en", { headers: TR, body: "q=hi", secretOverride: "wrong" })).status === 401, "翻译转发:口令不对 401(和别的路径一样)");
+t(upCalls.length === n0, "翻译转发:上面这些被拒绝的请求,一个都没有转发给谷歌");
+upMode = "429";
+t((await trPost("?sl=zh-CN&tl=en", "q=hi")).status === 429, "翻译转发:谷歌返回 429 → 回 429(键盘能看出是被限流了)");
+upMode = "500";
+t((await trPost("?sl=zh-CN&tl=en", "q=hi")).status === 502, "翻译转发:谷歌返回别的错误 → 回 502");
+upMode = "throw";
+t((await trPost("?sl=zh-CN&tl=en", "q=hi")).status === 502, "翻译转发:连不上谷歌 → 回 502");
+upMode = "ok";
+const n1 = upCalls.length;
+t((await trPost("/x?sl=zh-CN&tl=en", "q=hi")).status === 404, "翻译转发:不是 /tr/google 的路径 404");
+const other = await w.http("POST", "/tr/other", { headers: TR, body: "q=hi" });
+const deeper = await w.http("POST", "/tr/google/translate_a/single", { headers: TR, body: "q=hi" });
+const bare = await w.http("POST", "/tr", { headers: TR, body: "q=hi" });
+t(other.status === 404 && deeper.status === 404 && bare.status === 404 && upCalls.length === n1, "翻译转发:不是通用代理:别的路径一律 404,也没有转发");
+const trWs = await w.connect({ dev: "trdev", app: "tr" });
+t(trWs.status === 101, "命名空间 tr 也能像别的 App 一样连 /ws(规则 2),不受翻译路径影响");
+
 // 口令
 const noSecret = await w.http("GET", "/test", { secretOverride: "wrong" });
 t(noSecret.status === 401, "口令不对:401(和以前一样)");
