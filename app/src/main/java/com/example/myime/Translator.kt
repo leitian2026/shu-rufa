@@ -357,8 +357,16 @@ object Translator {
     @Synchronized
     fun dnsChanged() {
         workerDns?.reset()
-        workerHttp?.connectionPool?.evictAll()
+        val old = workerHttp
         workerHttp = null
+        // 关连接池里闲着的 TLS 连接要做网络操作:在主线程(设置页保存)上做会抛 NetworkOnMainThreadException 闪退,所以另开线程(和 ClipRelayNet.dispose 一样)
+        if (old != null) Thread {
+            try {
+                old.connectionPool.evictAll()
+            } catch (e: Exception) {
+                // 无所谓
+            }
+        }.start()
     }
 
     @Synchronized

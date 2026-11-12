@@ -731,6 +731,10 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 - **DoH 不通不再卡很久**:DoH 请求超时 4 秒连接 / 4 秒读 / 总共 6 秒(原来 8+8)。
 - 保存后的提醒不再顶掉「已保存」。0.47.8 里加过的"映射失败后改走 DoH / 系统 DNS"和连接失败记录已去掉。
 
+## 修复:改域名解析设置偶尔闪退(0.47.11)
+
+0.47.8 起 `Translator.dnsChanged()` 在主线程(设置页保存)上直接 `connectionPool.evictAll()`:翻译走过 Worker、连接池里留着 TLS 连接时,关连接要做网络操作,抛 `NetworkOnMainThreadException`,没人接住,整个 app 退到桌面(所以是"有时候")。改成另开线程关、并接住异常,和 `ClipRelayNet.dispose()` 一样。这处改动没有编译验证、没在手机上跑过。
+
 ## 谷歌免费接口直连加浏览器请求头(0.47.2)
 
 键盘直连谷歌免费接口(`translate_a/single`,没填密钥、没开 Worker 中转)时,请求原来就带 Chrome 的 User-Agent、Accept、Accept-Language;0.47.2 再补上 Chrome 地址栏直接打开网址时会带的 `sec-ch-ua`、`sec-ch-ua-mobile`、`sec-ch-ua-platform`、`Sec-Fetch-*`、`Upgrade-Insecure-Requests`,Accept 也换成浏览器打开网页的写法。只用于这一条路径,微软、官方 Cloud Translation、Worker 中转都不变。这只是试一试:谷歌若按 TLS 握手特征拦,这些头不一定管用,测试仍是 429 就说明这条路走不通。
