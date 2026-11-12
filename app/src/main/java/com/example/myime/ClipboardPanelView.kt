@@ -9,7 +9,7 @@ import android.graphics.RectF
 /**
  * 剪贴板面板:按时间倒序列出最近复制过的文字。
  *  - 点一条 = 粘贴到输入框并返回键盘
- *  - 长按一条 = 进入多选:每条前面出现圆圈,点哪条选哪条;标题右边的按键变成「取消 / 全选 / 删除」
+ *  - 长按一条(按住 1.5 秒)= 进入多选:每条前面出现圆圈,点哪条选哪条;标题右边的按键变成「取消 / 全选 / 删除」
  *  - 多选时每条右边出现一个小锁:点锁 = 给这条上锁 / 取消上锁。上了锁的条目删不掉(全选、删除都会跳过它),
  *    也不会被"超过 500 条挤掉最旧的"挤掉;平时(不在多选里)上了锁的条目右边也留着一个实心小锁,点条目照常粘贴。回收箱里没有锁。
  *  - 没有「清空」键(免得手滑);要删全部就长按进多选再「全选」「删除」。离开面板或点「取消」都会退出多选
@@ -95,6 +95,7 @@ class ClipboardPanelView(
     override val headerPadWDp: Float get() = 16f
     override val headerGapDp: Float get() = 4f
     override val flatBar: Boolean get() = true   // 顶部按键扁平:返回箭头、「回收箱」等只有图标/文字,没有按钮底色
+    override val contentLongPressMs: Long get() = 1500L   // 长按 1.5 秒才进入多选(用 getter:基类构造期间就会读它)
 
     private fun normalBar() =
         if (inTrash) {
@@ -302,7 +303,7 @@ class ClipboardPanelView(
         val top = padTop + barH + barGap
         val avail = width - 2 * padX - 2 * context.dpf(4f)
         if (avail <= 0f) return
-        noteText.color = palette.textFaint
+        noteText.color = palette.text   // 和顶部「返回」同色
         val base = noteText.textSize
         var text = syncText ?: NOTE
         val w = noteText.measureText(text)
@@ -344,7 +345,7 @@ class ClipboardPanelView(
     /** 标题行:左边是标题和条数,右边是按键(由基类排)。条数放不下就不画,免得压到按键。 */
     override fun drawHeaderTitle(canvas: Canvas, left: Float, centerY: Float) {
         titlePaint.color = palette.text
-        countPaint.color = palette.textFaint
+        countPaint.color = palette.text   // 和顶部「返回」同色
         val title = if (selecting) "已选 ${selected.size} 项" else if (inTrash) "回收箱" else "剪贴板"
         canvas.drawText(title, left, centerY + titleBase, titlePaint)
         val count = if (selecting) "共 ${items.size} 条" else if (inTrash) "${items.size}/10" else "${items.size}/500"
@@ -454,7 +455,7 @@ class ClipboardPanelView(
         return true
     }
 
-    /** 长按:进入多选并选中这一条;已在多选时,长按等于点一下。 */
+    /** 长按 1.5 秒:进入多选并选中这一条;已在多选时,长按等于点一下。 */
     override fun onContentLongPress(x: Float, y: Float) {
         val i = hit(y)
         if (i < 0) return

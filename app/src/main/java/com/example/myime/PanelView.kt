@@ -12,6 +12,7 @@ import android.view.GestureDetector
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.widget.OverScroller
 
 object BarKind {
@@ -75,6 +76,9 @@ abstract class PanelView(context: Context) : View(context) {
     open val coversCandidateBar: Boolean get() = false
     protected abstract fun onBarKey(id: Int)
     protected open fun onContentLongPress(x: Float, y: Float) {}
+
+    /** 内容区长按要按多久(毫秒)。<= 0:用系统默认的长按时间;> 0:用这个固定时间(只挂一个一次性延时,不轮询,不费电)。 */
+    protected open val contentLongPressMs: Long get() = 0L
     protected open fun isBarSelected(id: Int): Boolean = false
     protected open fun onMetricsChanged() {}
 
@@ -135,6 +139,20 @@ abstract class PanelView(context: Context) : View(context) {
         }
     }
 
+    // 自定义长按:按下时挂一个一次性延时,抬手 / 取消 / 手指移动超过容差 / 多指都会撤掉,到点才触发
+    private var lpDownX = 0f
+    private var lpDownY = 0f
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private val longPressRunnable = Runnable {
+        if (lpDownY < contentTop() || lpDownY > contentBottom()) return@Runnable
+        Haptics.tap(this@PanelView, HapticFeedbackConstants.LONG_PRESS)
+        onContentLongPress(lpDownX, lpDownY - contentTop() + offsetY)
+    }
+
+    private fun cancelLongPress() {
+        removeCallbacks(longPressRunnable)
+    }
+
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean {
             scroller.forceFinished(true)
@@ -179,6 +197,7 @@ abstract class PanelView(context: Context) : View(context) {
     })
 
     init {
+        if (contentLongPressMs > 0L) gestures.setIsLongpressEnabled(false)   // 用自己的长按时间
         gestures.setOnDoubleTapListener(null)   // 关掉双击检测,否则连点两下时第二下被当成双击吞掉,点不上
         applyMetrics()
     }
@@ -471,6 +490,23 @@ abstract class PanelView(context: Context) : View(context) {
             }
         }
         if (barTouch) return true // 手指按在按键条上,忽略滑动
+        if (contentLongPressMs > 0L) {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    cancelLongPress()
+                    lpDownX = e.x
+                    lpDownY = e.y
+                    postDelayed(longPressRunnable, contentLongPressMs)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = e.x - lpDownX
+                    val dy = e.y - lpDownY
+                    if (dx * dx + dy * dy > touchSlop * touchSlop) cancelLongPress()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL,
+                MotionEvent.ACTION_POINTER_DOWN -> cancelLongPress()
+            }
+        }
         return gestures.onTouchEvent(e)
     }
 
@@ -493,6 +529,7 @@ abstract class PanelView(context: Context) : View(context) {
 
     override fun onDetachedFromWindow() {
         stopRepeat()
+        cancelLongPress()
         removeCallbacks(flingRunnable)
         super.onDetachedFromWindow()
     }
