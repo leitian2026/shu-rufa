@@ -479,11 +479,12 @@ class BackupActivity : Activity() {
             setText(text)
         }
         val hostsEt = multi("每行:域名 IP [IP…]\n例:wo.example.com 45.139.193.125", hosts0)
-        val dohEt = multi("每行一个 https:// 地址\n例:https://dns.example.com/dns-query", doh0)
+        val dohEt = multi("每行一个 https:// 地址,后面可以跟 DoH 服务器的 IP\n例:https://dns.example.com/dns-query 1.2.3.4", doh0)
         val note = TextView(this).apply {
-            text = "按顺序解析:① Host 映射(给域名指定 IP,命中就不查 DNS,连不上自动换下一个 IP;所有 IP 都连不上后,下次改成先走 ② ③,映射的 IP 当备选)→ " +
-                "② 自建 DoH(加密 DNS,只对没有映射的域名)→ ③ 系统 DNS。三个都关着或都没解析出来就连不上。" +
-                "DoH 服务器自己的域名始终查上面的映射(引导),不受「使用 Host 映射」开关影响。只管联动和翻译连 Worker 的这一路;「测试连接」会写明实际走了哪一路。"
+            text = "Host 映射(绑定,不查 DNS)和系统 DNS 各自独立;每个域名只由第一个适用的来源解析,它失败就是失败,不会换到别的来源。" +
+                "自建 DoH 本身是域名,要查 DNS 才能连上它:先看那一行后面写的 IP,再看 Host 映射,最后才是系统 DNS(开着才用)。" +
+                "① 这个域名有 Host 映射 → 只用映射(多个 IP 会依次换);② 没有映射、自建 DoH 开着 → 只问 DoH;③ 都不适用 → 系统 DNS(开关开着才用)。" +
+                "只管联动和翻译连 Worker 的这一路,剪贴板和翻译各记各的;「测试连接」会写明走了哪一路。"
             setTextColor(0xFF666666.toInt())
             textSize = 13f
             setPadding(0, 0, 0, dpi(8f))
@@ -492,11 +493,11 @@ class BackupActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dpi(20f), dpi(8f), dpi(20f), 0)
             addView(note)
-            addView(switchRowFor("使用 Host 映射", "关闭时,连 Worker 不查这些映射(内容保留);DoH 服务器的域名仍会查", hostsSw))
+            addView(switchRowFor("使用 Host 映射", "关闭时下面填的内容保留但不使用", hostsSw))
             addView(hostsEt)
-            addView(switchRowFor("使用自建 DoH", "没有 Host 映射的域名先用它解析;地址里常带随机路径,加密保存", dohSw))
+            addView(switchRowFor("使用自建 DoH", "没有映射的域名只问它,失败不换别的;它自己的域名先查 Host 映射再用系统 DNS;地址加密保存", dohSw))
             addView(dohEt)
-            addView(switchRowFor("使用系统 DNS", "关闭后绝不用系统 DNS:没有映射、DoH 也解析不出来就直接连不上", sysSw))
+            addView(switchRowFor("使用系统 DNS", "没有映射、DoH 也没开时才用;关闭后绝不用系统 DNS", sysSw))
         }
         AlertDialog.Builder(this).setTitle("域名解析")
             .setView(ScrollView(this).apply { addView(box) })
@@ -515,7 +516,7 @@ class BackupActivity : Activity() {
                 RelayCfg.setDns(this, hostsOn, h.trim(), dohOn, d.trim(), sysOn)
                 ClipSync.onDnsChanged(this)
                 refresh()
-                val warn = if (dohOn) RelayDnsCore.dohWarning(d, h, sysOn) else null
+                val warn = if (dohOn) RelayDnsCore.dohWarning(d, if (hostsOn) h else "", sysOn) else null
                 say(if (warn == null) "域名解析设置已保存" else "域名解析设置已保存。\n注意:$warn")
             }
             .setNegativeButton("取消", null).showPage()

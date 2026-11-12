@@ -91,6 +91,7 @@ object Translator {
     @Volatile private var workerOn = false   // 谷歌这一路经你自己的 Worker 中转(设置里的开关,键 g_worker)
     @Volatile private var appCtx: Context? = null
     private var workerHttp: OkHttpClient? = null
+    private var workerDns: RelayDns? = null   // 翻译自己的解析器(和剪贴板联动的互不影响)
 
     /** 没有设置 Worker 地址和口令(开了「经 Worker 中转」却没设置)。 */
     private class NotSet : IOException("没有设置 Worker 地址和口令")
@@ -352,17 +353,17 @@ object Translator {
         }
     }
 
-    /** 域名解析设置改了:丢掉连到 Worker 的旧客户端和它连接池里已建好的连接,下次按新设置重新解析、重新连。 */
+    /** 域名解析设置改了:清掉翻译自己的解析缓存,丢掉连到 Worker 的旧客户端和它连接池里已建好的连接,下次按新设置重新解析、重新连。 */
     @Synchronized
     fun dnsChanged() {
+        workerDns?.reset()
         workerHttp?.connectionPool?.evictAll()
         workerHttp = null
     }
 
     @Synchronized
     private fun workerClient(app: Context): OkHttpClient = workerHttp ?: OkHttpClient.Builder()
-        .dns(RelayDns.get(app))
-        .eventListenerFactory(RelayDns.get(app).eventFactory)
+        .dns(RelayDns(app).also { workerDns = it })
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(6, TimeUnit.SECONDS)
         .writeTimeout(6, TimeUnit.SECONDS)

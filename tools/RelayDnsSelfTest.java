@@ -73,25 +73,30 @@ public class RelayDnsSelfTest {
         check(RelayDnsCore.dohError("http://dns.example.com/q") != null && RelayDnsCore.dohError("dns.example.com") != null, "DoH:不是 https 开头的报错");
         check(RelayDnsCore.dohError("https://ok.example.com/q\nnot a url").contains("第 2 行"), "DoH:指出是第几行");
         check(RelayDnsCore.dohError("") == null, "DoH:空的没问题(开关关着时)");
-        check(RelayDnsCore.dohWarning("https://dns.example.com/q", "", true) != null, "DoH 提醒:DoH 服务器的域名没有 Host 映射");
-        check(RelayDnsCore.dohWarning("https://dns.example.com/q", "dns.example.com 9.9.9.9", true) == null, "DoH 提醒:加了映射就不再提醒");
-        check(RelayDnsCore.dohWarning("https://1.1.1.1/dns-query", "", false) == null, "DoH 提醒:地址直接写 IP 的不需要映射");
-        check(RelayDnsCore.dohWarning("https://dns.example.com/q", "", false).contains("会直接不可用"), "DoH 提醒:关了系统 DNS 时说明会直接不可用");
+        check(RelayDnsCore.dohError("https://dns.example.com/q 1.2.3.4 2001:db8::1") == null, "DoH:地址后面可以跟 IP(空格隔开)");
+        check(RelayDnsCore.dohError("https://dns.example.com/q other.example.com").contains("不是 IP"), "DoH:地址后面跟了域名 → 报错(不会为它查 DNS)");
+        check(RelayDnsCore.dohUrl("https://dns.example.com/q 1.2.3.4").equals("https://dns.example.com/q") && strs(RelayDnsCore.dohIps("https://dns.example.com/q 1.2.3.4,5.6.7.8")).equals("[1.2.3.4, 5.6.7.8]"), "DoH:取出地址和后面的 IP");
+        check(RelayDnsCore.dohWarning("https://dns.example.com/q", "", false).contains("会直接不可用"), "DoH 提醒:没写 IP、映射里没有、系统 DNS 又关了 → 说明会直接不可用");
+        check(RelayDnsCore.dohWarning("https://dns.example.com/q", "", true) == null, "DoH 提醒:系统 DNS 开着,能找到 DoH 服务器,不提醒");
+        check(RelayDnsCore.dohWarning("https://dns.example.com/q", "dns.example.com 9.9.9.9", false) == null, "DoH 提醒:Host 映射里有它就能找到(DoH 可以依赖 Host 映射)");
+        check(RelayDnsCore.dohWarning("https://dns.example.com/q 9.9.9.9", "", false) == null, "DoH 提醒:这一行写了 IP 就没问题");
+        check(RelayDnsCore.dohWarning("https://1.1.1.1/dns-query", "", false) == null, "DoH 提醒:地址直接写 IP 的没问题");
 
-        // ---- 解析顺序
+        // ---- 解析:三个来源各自独立,谁适用就只用谁,失败就是失败
         final AtomicInteger dohCalls = new AtomicInteger(), sysCalls = new AtomicInteger();
         RelayDnsCore.Lookup doh = h -> { dohCalls.incrementAndGet(); return ips("9.9.9.9", "2001:db8::9"); };
         RelayDnsCore.Lookup dohFail = h -> { dohCalls.incrementAndGet(); throw new IOException("DoH 连不上"); };
         RelayDnsCore.Lookup sys = h -> { sysCalls.incrementAndGet(); return ips("8.8.4.4"); };
+        RelayDnsCore.Lookup sysFail = h -> { sysCalls.incrementAndGet(); throw new UnknownHostException(h); };
         Map<String, List<InetAddress>> hosts = RelayDnsCore.parseHosts("wo.example.com 45.1.1.1 45.2.2.2").map;
         Map<String, List<InetAddress>> none = new HashMap<>();
         long now = 1_000_000L;
 
         RelayDnsCore.Resolver r = new RelayDnsCore.Resolver();
         RelayDnsCore.Result res = r.resolve("WO.example.com", hosts, true, Arrays.asList(doh), true, sys, now);
-        check(res.source.equals("Host 映射") && strs(res.addrs).equals("[45.1.1.1, 45.2.2.2]") && dohCalls.get() == 0 && sysCalls.get() == 0, "顺序:有 Host 映射 → 直接用,不问 DoH 也不问系统 DNS,域名大小写不影响");
+        check(res.source.equals("Host 映射") && strs(res.addrs).equals("[45.1.1.1, 45.2.2.2]") && dohCalls.get() == 0 && sysCalls.get() == 0, "有 Host 映射 → 只用映射,不问 DoH 也不问系统 DNS,域名大小写不影响");
         res = r.resolve("other.example.com", hosts, true, Arrays.asList(doh), true, sys, now);
-        check(res.source.equals("自建 DoH") && strs(res.addrs).equals("[9.9.9.9, 2001:db8:0:0:0:0:0:9]") && sysCalls.get() == 0, "顺序:没映射 → 自建 DoH(IPv4 排前面),不碰系统 DNS");
+        check(res.source.equals("自建 DoH") && strs(res.addrs).equals("[9.9.9.9, 2001:db8:0:0:0:0:0:9]") && sysCalls.get() == 0, "没映射、DoH 开着 → 只问 DoH(IPv4 排前面),不碰系统 DNS,系统 DNS 开着也不碰");
         int before = dohCalls.get();
         res = r.resolve("other.example.com", hosts, true, Arrays.asList(doh), true, sys, now + 60_000);
         check(dohCalls.get() == before, "DoH 结果缓存 5 分钟,不重复问");
@@ -103,72 +108,56 @@ public class RelayDnsSelfTest {
 
         res = r.resolve("x.example.com", none, true, Arrays.asList(dohFail, doh), true, sys, now);
         check(res.source.equals("自建 DoH") && strs(res.addrs).startsWith("[9.9.9.9"), "多个 DoH:第一个失败就试下一个");
-        r.reset();
-        res = r.resolve("y.example.com", none, true, Arrays.asList(dohFail), true, sys, now);
-        check(res.source.contains("系统 DNS") && res.source.contains("已回退") && strs(res.addrs).equals("[8.8.4.4]"), "DoH 都失败 + 系统 DNS 开着 → 回退到系统 DNS");
         r.reset(); sysCalls.set(0);
         try {
-            r.resolve("z.example.com", none, true, Arrays.asList(dohFail), false, sys, now);
-            check(false, "关了系统 DNS:DoH 失败应该抛错");
+            r.resolve("y.example.com", none, true, Arrays.asList(dohFail), true, sys, now);
+            check(false, "DoH 失败应该直接抛错,不回退系统 DNS");
         } catch (UnknownHostException e) {
-            check(e.getMessage().contains("DoH 连不上") && e.getMessage().contains("不回退") && sysCalls.get() == 0, "关了系统 DNS:DoH 失败就是连不上,绝不碰系统 DNS,错误里有原因");
+            check(e.getMessage().contains("DoH 连不上") && e.getMessage().contains("不回退") && sysCalls.get() == 0, "DoH 失败就是失败:不管系统 DNS 开没开,绝不碰系统 DNS,错误里有原因");
+        }
+        try {
+            r.resolve("z.example.com", none, true, Arrays.asList(dohFail), false, sys, now);
+            check(false, "DoH 失败应该抛错");
+        } catch (UnknownHostException e) {
+            check(sysCalls.get() == 0, "系统 DNS 关着时同样");
         }
         try {
             r.resolve("q.example.com", none, false, new ArrayList<>(), false, sys, now);
             check(false, "全关应该抛错");
         } catch (UnknownHostException e) {
-            check(e.getMessage().contains("没有 Host 映射") && e.getMessage().contains("没法解析") && sysCalls.get() == 0, "Host 映射没命中、DoH 没开、系统 DNS 也关了:明确说没法解析,没碰系统 DNS");
+            check(e.getMessage().contains("没有 Host 映射") && e.getMessage().contains("没法解析") && sysCalls.get() == 0, "没映射、DoH 没开、系统 DNS 也关了:明确说没法解析,没碰系统 DNS");
         }
         try {
-            r.resolve("q.example.com", none, true, new ArrayList<>(), false, sys, now);
+            r.resolve("q.example.com", none, true, new ArrayList<>(), true, sys, now);
             check(false, "DoH 开着但没有可用的应该抛错");
         } catch (UnknownHostException e) {
-            check(e.getMessage().contains("没有可用的自建 DoH"), "DoH 开着但一个能用的都没有(引导不了):提示没有可用的 DoH");
+            check(e.getMessage().contains("没有可用的地址") && sysCalls.get() == 0, "DoH 开着但一个能用的都没有:报错,不偷偷用系统 DNS");
         }
-        // ---- 0.47.8:映射的 IP 连不上不再死锁;DoH 全失败不每次白等
-        r.reset(); dohCalls.set(0); sysCalls.set(0);
-        res = r.resolve("wo.example.com", hosts, true, Arrays.asList(doh), true, sys, now, true);
-        check(strs(res.addrs).equals("[9.9.9.9, 2001:db8:0:0:0:0:0:9, 45.1.1.1, 45.2.2.2]") && res.source.contains("自建 DoH") && res.source.contains("排在后面"),
-            "映射的 IP 刚连不上:先用 DoH 的结果,映射的 IP 排后面当备选");
-        res = r.resolve("wo.example.com", hosts, false, new ArrayList<>(), true, h -> { throw new UnknownHostException(h); }, now, true);
-        check(strs(res.addrs).equals("[45.1.1.1, 45.2.2.2]") && res.source.contains("也没解析出来"), "映射的 IP 连不上、别的路也解析不出来:还是用映射的 IP,不报错");
-        res = r.resolve("wo.example.com", hosts, true, Arrays.asList(doh), true, sys, now, false);
-        check(res.source.equals("Host 映射"), "没有连接失败记录时:映射照样直接用");
-        r.reset(); dohCalls.set(0);
-        r.resolve("slow.example.com", none, true, Arrays.asList(dohFail), true, sys, now);
-        r.resolve("slow.example.com", none, true, Arrays.asList(dohFail), true, sys, now + 30_000);
-        check(dohCalls.get() == 1, "DoH 全失败后 1 分钟内不再问 DoH(不用每次白等超时)");
-        res = r.resolve("slow.example.com", none, true, Arrays.asList(dohFail), true, sys, now + 30_000);
-        check(res.source.contains("已回退") && res.source.contains("DoH 连不上"), "回退到系统 DNS 时,来源里写着 DoH 失败的原因");
-        r.resolve("slow.example.com", none, true, Arrays.asList(dohFail), true, sys, now + 61_000);
-        check(dohCalls.get() == 2, "1 分钟后再问一次 DoH");
+        RelayDnsCore.Lookup dohNoIp = h -> { throw new IOException("DoH 服务器 d.example.com 没写 IP,又关了「使用系统 DNS」,没法找到它"); };
         try {
-            r.resolve("slow.example.com", none, true, Arrays.asList(dohFail), false, sys, now + 30_000 + 61_000 * 0);
+            r.resolve("k.example.com", none, true, Arrays.asList(dohNoIp), false, sys, now);
+            check(false, "找不到的 DoH 应该报错");
         } catch (UnknownHostException e) {
-            check(e.getMessage().contains("DoH 连不上"), "关了系统 DNS:DoH 刚失败过,错误里仍带原因");
+            check(e.getMessage().contains("没写 IP"), "找不到 DoH 服务器(没写 IP、系统 DNS 关着)不静默跳过:错误里写明原因");
         }
-        RelayDnsCore.Lookup dohNoBoot = h -> { throw new IOException("DoH 服务器 d.example.com 没有 Host 映射,又关了「使用系统 DNS」,没法引导"); };
-        r.reset();
-        try {
-            r.resolve("k.example.com", none, true, Arrays.asList(dohNoBoot), false, sys, now);
-            check(false, "没法引导的 DoH 应该报错");
-        } catch (UnknownHostException e) {
-            check(e.getMessage().contains("没法引导"), "没法引导的 DoH 不再悄悄跳过:错误里写明原因");
-        }
-        dohCalls.set(0);
+        dohCalls.set(0); sysCalls.set(0);
         res = r.resolve("nas.local", none, true, Arrays.asList(doh), true, sys, now);
         check(dohCalls.get() == 0 && res.source.equals("系统 DNS"), "局域网名字(.local)不走 DoH");
         res = r.resolve("router", none, true, Arrays.asList(doh), true, sys, now);
         check(dohCalls.get() == 0, "没有点的主机名不走 DoH");
         res = r.resolve("w.example.com", none, false, Arrays.asList(doh), true, sys, now);
-        check(dohCalls.get() == 0 && res.source.equals("系统 DNS"), "DoH 开关关着:不问 DoH,直接系统 DNS");
-        RelayDnsCore.Lookup sysFail = h -> { throw new UnknownHostException(h); };
+        check(dohCalls.get() == 0 && res.source.equals("系统 DNS"), "DoH 开关关着:不问 DoH,用系统 DNS");
         try {
             r.resolve("n.example.com", none, false, new ArrayList<>(), true, sysFail, now);
             check(false, "系统 DNS 失败应该抛 UnknownHostException");
         } catch (UnknownHostException e) {
             check(true, "系统 DNS 也解析不了:抛 UnknownHostException(OkHttp 会按它处理)");
         }
+        // 各自独立:一个 Resolver 里,别的域名的失败不影响这个域名
+        r.reset(); dohCalls.set(0);
+        try { r.resolve("bad.example.com", none, true, Arrays.asList(dohFail), true, sys, now); } catch (UnknownHostException e) { }
+        res = r.resolve("wo.example.com", hosts, true, Arrays.asList(dohFail), false, sysFail, now);
+        check(res.source.equals("Host 映射"), "一个域名 DoH 失败,不影响别的域名走映射");
 
         // ---- 出错提示
         String h = RelayDnsCore.hint(new UnknownHostException("wo.example.com 没有 Host 映射,且已关闭「使用系统 DNS」,没法解析"));

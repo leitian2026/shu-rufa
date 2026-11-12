@@ -306,7 +306,10 @@ object ClipSync {
 
     // ------------------------------------------------------------ Worker 设置变了
 
-    private fun relayDns(app: Context): RelayDns = RelayDns.get(app)
+    private var dns: RelayDns? = null
+
+    @Synchronized
+    private fun relayDns(app: Context): RelayDns = dns ?: RelayDns(app.applicationContext).also { dns = it }
 
     /**
      * 保存了新的 Worker 地址 / 口令之后调用:断开旧连接,清掉这台设备的联动状态(不同的 Worker 里序号和快照互不相关),
@@ -329,7 +332,7 @@ object ClipSync {
         val app = ctx.applicationContext
         closeEngine()
         relayDns(app).reset()
-        Translator.dnsChanged()   // 翻译走 Worker 的连接池里已经建好的连接也要丢掉,不然还在用旧解析的 IP
+        Translator.dnsChanged()   // 翻译有自己的解析器和连接池(和这里互不影响),设置改了它的也要清
         BackupConfig.prefs(app).edit().putLong(K_NEXT, 0L).apply()
         notifyStatus()
     }
