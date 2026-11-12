@@ -143,8 +143,15 @@ abstract class PanelView(context: Context) : View(context) {
     private var lpDownX = 0f
     private var lpDownY = 0f
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private var lpDownTime = 0L
+    private var lpConsumed = false   // 长按已触发:这一次触摸剩下的事件(抬手、移动)都吃掉,不然抬手会被当成「点一下」把刚选中的又取消
     private val longPressRunnable = Runnable {
         if (lpDownY < contentTop() || lpDownY > contentBottom()) return@Runnable
+        lpConsumed = true
+        // 告诉手势检测这次触摸取消了(它自己不知道长按已经发生),免得它之后还报「点一下」
+        val c = MotionEvent.obtain(lpDownTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL, lpDownX, lpDownY, 0)
+        gestures.onTouchEvent(c)
+        c.recycle()
         Haptics.tap(this@PanelView, HapticFeedbackConstants.LONG_PRESS)
         onContentLongPress(lpDownX, lpDownY - contentTop() + offsetY)
     }
@@ -490,10 +497,17 @@ abstract class PanelView(context: Context) : View(context) {
             }
         }
         if (barTouch) return true // 手指按在按键条上,忽略滑动
+        if (lpConsumed && e.actionMasked != MotionEvent.ACTION_DOWN) {
+            // 长按已经触发:剩下的移动 / 抬手都不再交给手势检测
+            if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) lpConsumed = false
+            return true
+        }
         if (contentLongPressMs > 0L) {
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     cancelContentLongPress()
+                    lpConsumed = false
+                    lpDownTime = e.downTime
                     lpDownX = e.x
                     lpDownY = e.y
                     postDelayed(longPressRunnable, contentLongPressMs)
