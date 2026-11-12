@@ -196,7 +196,7 @@ object DictConfig {
         p(ctx).edit().putBoolean("trans_on", v).apply()
     }
 
-    /** 主用翻译引擎:ms(微软)/ google(谷歌)。主用失败会自动换另一个。 */
+    /** 翻译引擎:ms(微软)/ google(谷歌)。翻不了就提示,不会自动换另一个。 */
     fun translateEngine(ctx: Context): String = p(ctx).getString("trans_engine", Translator.MS) ?: Translator.MS
 
     fun setTranslateEngine(ctx: Context, v: String) {

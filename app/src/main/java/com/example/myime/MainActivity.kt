@@ -178,7 +178,7 @@ class MainActivity : Activity() {
             "打开后,谷歌这一路不再直连,改发给你自己的 Cloudflare Worker(要用 v3 版脚本 hulian-worker_v3.js):原文放在请求体里,不会出现在网址里,Worker 只把它转给谷歌的免费接口,不记录、不缓存;" +
                 "到 Worker 这一段也是 HTTPS 加密,但 Worker 要读到原文才能转发,所以原文对你自己的 Worker 和 Cloudflare 可见(谷歌本来就能看到)。" +
                 "地址、口令、域名解析用备份页「5. 剪贴板联动」里已经填好的(Worker 地址和口令…、域名解析…),不用再填;和剪贴板联动的两个通道开关互不影响。" +
-                "开着时「谷歌:接口地址 / 密钥」不起作用;Worker 这条失败照样自动换微软。",
+                "开着时「谷歌:接口地址 / 密钥」不起作用;Worker 这条失败就提示失败,不会换微软。",
             title = "经 Worker 中转",
         ))
         card.addView(switchRow("谷歌翻译经 Cloudflare Worker 中转", DictConfig.transSetting(this, "g_worker") == "1") { v ->

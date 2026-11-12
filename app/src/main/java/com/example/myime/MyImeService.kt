@@ -3792,7 +3792,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
      * 功能页「翻译微软 / 翻译谷歌」两个键:
      *  - 这个引擎正开着 → 关掉输入翻译;
      *  - 没开,或开着的是另一个引擎 → 把它设为主用并打开(正开着时当前这句用新引擎重翻)。
-     * 主用失败时仍会自动换另一个引擎试。
+     * 翻不了就提示失败,不会自动换另一个引擎。
      */
     private fun onTransKey(engine: String) {
         val cur = DictConfig.translateEngine(applicationContext)
@@ -3801,7 +3801,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             return
         }
         DictConfig.setTranslateEngine(applicationContext, engine)
-        transUsedEngine = null
         if (!transOn) {
             setTransOn(true)
             return
@@ -3816,12 +3815,9 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
-    /** 实际翻出上一句的引擎:主用失败换了备用时就是备用;还没翻 / 点了按钮重选 / 关闭后为 null(按主用算)。 */
-    private var transUsedEngine: String? = null
-
-    /** 功能页只有一个翻译键是绿的:实际在用的那个引擎(主用失败换了备用,绿色跟着换过去,主用的键变回原样)。 */
+    /** 功能页只有一个翻译键是绿的:当前选的引擎。 */
     private fun updateTransButtons() {
-        val eng = transUsedEngine ?: DictConfig.translateEngine(applicationContext)
+        val eng = DictConfig.translateEngine(applicationContext)
         settingsPanel?.filledId = when {
             !transOn -> -1
             eng == Translator.GOOGLE -> SettingsPanelView.ID_TRANS_GOOGLE
@@ -3871,7 +3867,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (on == transOn) return
         DictConfig.setTranslateOn(applicationContext, on)
         transOn = on
-        transUsedEngine = null
         val was = transActive
         transActive = on && transAllowed
         if (was && !transActive) {
@@ -3989,7 +3984,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     private fun onTranslated(src: String, r: TransResult?) {
         transInflight = null
         if (r == null) {
-            // 微软和谷歌都没通:保留原来的译文和翻译框里的原文,点「完成」会再试一次
+            // 选中的引擎没翻成:保留原来的译文和翻译框里的原文,点「完成」会再试一次
             transStatus = TranslateBarView.STATUS_FAILED
             transFinishing = false
             transUi()
@@ -3997,10 +3992,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         }
         transStatus = TranslateBarView.STATUS_NONE
         transSrc = src
-        if (r.engine != "cache" && r.engine != transUsedEngine) {
-            transUsedEngine = r.engine
-            updateTransButtons()
-        }
         writeShown(r.text)
         transUi()
         if (transFinishing) {

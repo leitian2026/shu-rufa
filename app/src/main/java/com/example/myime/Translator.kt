@@ -9,7 +9,6 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
@@ -25,12 +24,12 @@ class TransResult(val text: String, val engine: String)
  * 省掉每次的握手;超时 4 / 6 秒,不会长时间占着网络。
  *
  * 翻译:微软(Edge 浏览器内置翻译用的接口)和谷歌(translate.googleapis.com 的 gtx 接口),
- * 都不需要自己的密钥。设置里选哪个是主用,主用失败会自动换另一个试(备用)。
+ * 都不需要自己的密钥。只用设置里选的那一个引擎,它翻不了就提示失败(和原因),不会自动换另一个。
  *
  * 微软:POST edge.microsoft.com/translate/translatetext(新接口,不要令牌;旧的 auth 令牌接口已被微软下线)。
  * 谷歌:GET(文字太长时 POST)translate.googleapis.com/translate_a/single?client=gtx。
  *       「经 Worker 中转」打开时改走你自己的 Cloudflare Worker(POST /tr/google,原文放请求体里、不进网址;地址、口令、域名解析用备份页里联动那套设置,
- *       见 RelayCfg / RelayDns;Worker 脚本规则 9),Google 在你那边连不上时用。这条路失败照样自动换微软。
+ *       见 RelayCfg / RelayDns;Worker 脚本规则 9),Google 在你那边连不上时用。这条路失败就提示失败,不会换微软。
  *
  * 所有方法都会联网、会阻塞,只能在后台线程调用。只有打开「输入翻译」且你在翻译框里打了字才会调用,
  * 其他时候键盘不联网。
@@ -53,17 +52,13 @@ object Translator {
 
     fun engineLabel(e: String): String = if (e == GOOGLE) "谷歌" else "微软"
 
-    fun other(e: String): String = if (e == GOOGLE) MS else GOOGLE
-
     private const val MAX_CHARS = 3000
-    private const val FAIL_BACKOFF_MS = 10 * 60_000L   // 一个引擎失败后,10 分钟内先用另一个(失败的只当备用),免得每次都先白等它超时
     private const val UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/124.0.0.0 Mobile Safari/537.36 EdgA/124.0.0.0"
 
-    /** 最近一次两个引擎都失败时的原因,给翻译框显示(例如「微软403 谷歌超时」),方便判断是网络还是接口的问题。 */
+    /** 最近一次翻译失败的原因,给翻译框显示(例如「微软403」「谷歌超时」),方便判断是网络还是接口的问题。 */
     @Volatile var lastFail = ""
         private set
-    private val reasons = ConcurrentHashMap<String, String>()
 
     private class HttpFail(val code: Int) : IOException("HTTP $code")
 
@@ -121,18 +116,6 @@ object Translator {
         }
     }
 
-    /** 先试哪个:主用引擎;但它最近 10 分钟内失败过、另一个没有,就先试另一个。 */
-    fun orderFor(primary: String): List<String> {
-        val first = if (primary == GOOGLE) GOOGLE else MS
-        val order = listOf(first, other(first))
-        val now = SystemClock.elapsedRealtime()
-        val f0 = failedAt[order[0]]
-        val f1 = failedAt[order[1]]
-        val firstBad = f0 != null && now - f0 < FAIL_BACKOFF_MS
-        val secondBad = f1 != null && now - f1 < FAIL_BACKOFF_MS
-        return if (firstBad && !secondBad) order.reversed() else order
-    }
-
     @Volatile private var warmedAt = -WARM_EVERY_MS
 
     /** 提前建立到主用引擎服务器的连接(见 MyImeService.warmTranslate)。自己开一个短命线程,不堵翻译用的线程。 */
@@ -140,8 +123,8 @@ object Translator {
         val now = SystemClock.elapsedRealtime()
         if (now - warmedAt < WARM_EVERY_MS) return
         warmedAt = now
-        val base = if (orderFor(primary)[0] == GOOGLE) gUrl.ifBlank { DEF_G_FREE } else msUrl.ifBlank { DEF_MS_FREE }
-        val eng = orderFor(primary)[0]
+        val eng = if (primary == GOOGLE) GOOGLE else MS
+        val base = if (eng == GOOGLE) gUrl.ifBlank { DEF_G_FREE } else msUrl.ifBlank { DEF_MS_FREE }
         val viaWorker = workerOn && eng == GOOGLE
         val app = appCtx
         Thread {
@@ -163,10 +146,6 @@ object Translator {
                 if (c.responseCode < 400) c.inputStream.close() else c.errorStream?.close()
             } catch (t: Throwable) {
                 warmedAt = -WARM_EVERY_MS   // 没成功:下次还可以再试
-                // 连都连不上(超时 / 域名失败):记一笔,真正翻译时就先用另一个引擎,不再白等
-                if (t is java.net.SocketTimeoutException || t is java.net.UnknownHostException || t is java.net.ConnectException) {
-                    failedAt[eng] = SystemClock.elapsedRealtime()
-                }
             }
         }.start()
     }
@@ -176,36 +155,30 @@ object Translator {
     private fun withQuery(base: String, query: String) = base + (if (base.contains('?')) "&" else "?") + query
 
     private val cache = LruCache<String, String>(80)
-    private val failedAt = ConcurrentHashMap<String, Long>()
 
     private fun key(text: String, p: LangPair) = "${p.from}>${p.to}|$text"
 
     /** 以前翻过的同一句话直接用,不再联网(退格再重打、来回切方向时省流量也更快)。 */
     fun cached(text: String, p: LangPair): String? = cache.get(key(text, p))
 
-    /** 失败返回 null。主用引擎最近 1 分钟内刚失败过、而另一个没有,就先试另一个,免得每个字都先等它超时。 */
+    /** 只用主用引擎翻。失败返回 null(原因记在 lastFail),不换另一个引擎。 */
     fun translate(textIn: String, p: LangPair, primary: String, cancelled: () -> Boolean = { false }): TransResult? {
         val text = if (textIn.length > MAX_CHARS) textIn.substring(0, MAX_CHARS) else textIn
         cache.get(key(text, p))?.let { return TransResult(it, "cache") }
-        val order = orderFor(primary)
-        reasons.clear()
-        for (e in order) {
-            if (cancelled()) return null   // 原文已经又变了:不再发请求(也不再换备用引擎)
-            try {
-                val out = if (e == GOOGLE) google(text, p) else microsoft(text, p)
-                if (!out.isNullOrEmpty()) {
-                    failedAt.remove(e)
-                    cache.put(key(text, p), out)
-                    return TransResult(out, e)
-                }
-                reasons[e] = "无结果"
-            } catch (t: Throwable) {
-                // 这个引擎这次不行,换下一个
-                reasons[e] = reasonOf(t)
+        if (cancelled()) return null   // 原文已经又变了:不再发请求
+        val e = if (primary == GOOGLE) GOOGLE else MS
+        var reason: String
+        try {
+            val out = if (e == GOOGLE) google(text, p) else microsoft(text, p)
+            if (!out.isNullOrEmpty()) {
+                cache.put(key(text, p), out)
+                return TransResult(out, e)
             }
-            failedAt[e] = SystemClock.elapsedRealtime()
+            reason = "无结果"
+        } catch (t: Throwable) {
+            reason = reasonOf(t)
         }
-        lastFail = order.joinToString(" ") { engineLabel(it) + (reasons[it] ?: "") }
+        lastFail = engineLabel(e) + reason
         return null
     }
 
