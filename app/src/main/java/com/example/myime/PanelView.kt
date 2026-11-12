@@ -149,7 +149,7 @@ abstract class PanelView(context: Context) : View(context) {
         onContentLongPress(lpDownX, lpDownY - contentTop() + offsetY)
     }
 
-    private fun cancelLongPress() {
+    private fun cancelContentLongPress() {
         removeCallbacks(longPressRunnable)
     }
 
@@ -493,7 +493,7 @@ abstract class PanelView(context: Context) : View(context) {
         if (contentLongPressMs > 0L) {
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    cancelLongPress()
+                    cancelContentLongPress()
                     lpDownX = e.x
                     lpDownY = e.y
                     postDelayed(longPressRunnable, contentLongPressMs)
@@ -501,10 +501,10 @@ abstract class PanelView(context: Context) : View(context) {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = e.x - lpDownX
                     val dy = e.y - lpDownY
-                    if (dx * dx + dy * dy > touchSlop * touchSlop) cancelLongPress()
+                    if (dx * dx + dy * dy > touchSlop * touchSlop) cancelContentLongPress()
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL,
-                MotionEvent.ACTION_POINTER_DOWN -> cancelLongPress()
+                MotionEvent.ACTION_POINTER_DOWN -> cancelContentLongPress()
             }
         }
         return gestures.onTouchEvent(e)
@@ -529,7 +529,7 @@ abstract class PanelView(context: Context) : View(context) {
 
     override fun onDetachedFromWindow() {
         stopRepeat()
-        cancelLongPress()
+        cancelContentLongPress()
         removeCallbacks(flingRunnable)
         super.onDetachedFromWindow()
     }
