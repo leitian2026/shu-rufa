@@ -96,7 +96,6 @@ object ClipSync {
     @Volatile private var engine: ClipRelayCore.Engine? = null
     private var engineExec: ScheduledThreadPoolExecutor? = null
     private var engineNet: ClipRelayNet? = null
-    private var dns: RelayDns? = null
     private val davSyncing = AtomicBoolean(false)
     @Volatile private var davLastAttemptAt = 0L
     @Volatile private var davPushPending = false
@@ -307,8 +306,7 @@ object ClipSync {
 
     // ------------------------------------------------------------ Worker 设置变了
 
-    @Synchronized
-    private fun relayDns(app: Context): RelayDns = dns ?: RelayDns(app.applicationContext).also { dns = it }
+    private fun relayDns(app: Context): RelayDns = RelayDns.get(app)
 
     /**
      * 保存了新的 Worker 地址 / 口令之后调用:断开旧连接,清掉这台设备的联动状态(不同的 Worker 里序号和快照互不相关),
@@ -331,6 +329,7 @@ object ClipSync {
         val app = ctx.applicationContext
         closeEngine()
         relayDns(app).reset()
+        Translator.dnsChanged()   // 翻译走 Worker 的连接池里已经建好的连接也要丢掉,不然还在用旧解析的 IP
         BackupConfig.prefs(app).edit().putLong(K_NEXT, 0L).apply()
         notifyStatus()
     }
@@ -342,8 +341,12 @@ object ClipSync {
     fun testRelay(ctx: Context, normalizedUrl: String, secretOrNull: String?): Outcome {
         val app = ctx.applicationContext
         val secret = secretOrNull?.takeIf { it.isNotEmpty() } ?: RelayCfg.secret(app) ?: return Outcome(false, "失败:没有口令")
-        val err = ClipRelayNet.test(normalizedUrl, secret, relayDns(app))
-        return if (err == null) Outcome(true, "Worker 连接正常(口令对、R2 已绑定、是 v2 脚本)") else Outcome(false, "失败:$err")
+        val dns = relayDns(app)
+        val err = ClipRelayNet.test(normalizedUrl, secret, dns)
+        // 写明这个域名是怎么解析的(Host 映射 / 自建 DoH / 系统 DNS,是否回退),不用再猜是哪一路没通
+        val via = try { java.net.URI(normalizedUrl).host?.let { dns.sourceOf(it) } } catch (e: Exception) { null }
+        val viaText = if (via == null) "" else "\n域名解析:$via"
+        return if (err == null) Outcome(true, "Worker 连接正常(口令对、R2 已绑定、是 v2 脚本)$viaText") else Outcome(false, "失败:$err$viaText")
     }
 
     // ------------------------------------------------------------ 触发(都很便宜:只丢给引擎的执行器,不在调用线程上联网)

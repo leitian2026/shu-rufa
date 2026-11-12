@@ -20,7 +20,8 @@ import java.util.regex.Pattern;
  *
  * 解析顺序:
  *  1. Host 映射(有总开关,默认开):每行「域名 IP [IP…]」。命中就直接用,不发任何 DNS 查询;一个域名可以填多个 IP,连不上会依次换下一个。
- *  2. 自建 DoH(有开关,默认关):每行一个 https 地址,按顺序试。只对没有 Host 映射的域名生效;局域网名字(没有点、.local 等)不走 DoH。加密 DNS,运营商看不到也改不了。
+ *     所有映射的 IP 都连不上以后(RelayDns 记下),下一次解析改成先问 DoH / 系统 DNS,映射的 IP 排在后面当备选,不会死锁在失效的 IP 上。
+ *  2. 自建 DoH(有开关,默认关):每行一个 https 地址,按顺序试;全失败的域名 1 分钟内不再问(不用每次白等超时)。只对没有 Host 映射的域名生效;局域网名字(没有点、.local 等)不走 DoH。加密 DNS,运营商看不到也改不了。
  *  3. 系统 DNS(有开关,默认开):开着,前面都没解析出来就用系统 DNS;关着,绝不碰系统 DNS,前面都没解析出来就是连不上。
  * 注意:这只解决 DNS 被改;TLS 握手里的域名(SNI)仍是明文。
  */
@@ -206,31 +207,57 @@ public final class RelayDnsCore {
 
     // ------------------------------------------------------------ 按顺序解析
 
-    /** 带 5 分钟缓存(只缓存 DoH 的结果)的解析器。设置变了要 reset()。 */
+    /** 带 5 分钟缓存(只缓存 DoH 的成功结果)的解析器;DoH 全失败的域名 1 分钟内不再问 DoH。设置变了要 reset()。 */
     public static final class Resolver {
         private static final long TTL_MS = 5 * 60_000L;
+        private static final long DOH_RETRY_MS = 60_000L;
         private final ConcurrentHashMap<String, Object[]> cache = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<String, Object[]> dohFail = new ConcurrentHashMap<>();   // 域名 → {失败时间, 原因}
 
         public void reset() {
             cache.clear();
+            dohFail.clear();
+        }
+
+        public Result resolve(String hostname, Map<String, List<InetAddress>> hosts, boolean dohOn, List<Lookup> dohs, boolean sysOk,
+                              Lookup system, long now) throws UnknownHostException {
+            return resolve(hostname, hosts, dohOn, dohs, sysOk, system, now, false);
         }
 
         /**
-         * @param hosts  当前生效的 Host 映射(开关关着就传空 Map)
-         * @param dohOn  自建 DoH 开关
-         * @param dohs   按顺序要问的 DoH(已经去掉了没法引导的);dohOn 为 false 或为空就不问
-         * @param sysOk  系统 DNS 开关
-         * @param system 问系统 DNS 的办法
+         * @param hosts       当前生效的 Host 映射(开关关着就传空 Map)
+         * @param dohOn       自建 DoH 开关
+         * @param dohs        按顺序要问的 DoH;dohOn 为 false 或为空就不问
+         * @param sysOk       系统 DNS 开关
+         * @param system      问系统 DNS 的办法
+         * @param hostsFailed 这个域名的 Host 映射 IP 刚刚连不上:先按 DoH / 系统 DNS 解析,映射的 IP 排在后面当备选(解析不出来就还是用映射的 IP)
          */
         public Result resolve(String hostname, Map<String, List<InetAddress>> hosts, boolean dohOn, List<Lookup> dohs, boolean sysOk,
-                              Lookup system, long now) throws UnknownHostException {
+                              Lookup system, long now, boolean hostsFailed) throws UnknownHostException {
             String host = hostname.toLowerCase(java.util.Locale.ROOT);
             // 1. Host 映射
             List<InetAddress> m = hosts.get(host);
-            if (m != null && !m.isEmpty()) return new Result(m, "Host 映射");
+            boolean hit = m != null && !m.isEmpty();
+            if (hit && !hostsFailed) return new Result(m, "Host 映射");
+            Result r;
+            try {
+                r = viaNetwork(hostname, host, dohOn, dohs, sysOk, system, now);
+            } catch (UnknownHostException e) {
+                if (hit) return new Result(m, "Host 映射(它刚连不上,DoH / 系统 DNS 也没解析出来)");
+                throw e;
+            }
+            if (!hit) return r;
+            List<InetAddress> out = new ArrayList<>(r.addrs);
+            for (InetAddress a : m) if (!out.contains(a)) out.add(a);
+            return new Result(out, r.source + ";Host 映射的 IP 刚连不上,排在后面");
+        }
+
+        private Result viaNetwork(String hostname, String host, boolean dohOn, List<Lookup> dohs, boolean sysOk,
+                                  Lookup system, long now) throws UnknownHostException {
             // 2. 自建 DoH
             Exception last = null;
             boolean dohTried = false;
+            String why = null;
             if (dohOn && !dohs.isEmpty() && !isLocalName(host)) {
                 Object[] c = cache.get(host);
                 if (c != null && now - (Long) c[0] < TTL_MS) {
@@ -238,25 +265,35 @@ public final class RelayDnsCore {
                     List<InetAddress> cached = (List<InetAddress>) c[1];
                     return new Result(cached, "自建 DoH");
                 }
-                for (Lookup d : dohs) {
+                Object[] f = dohFail.get(host);
+                if (f != null && now - (Long) f[0] < DOH_RETRY_MS) {
+                    // 刚失败过:不再每次都白等超时
                     dohTried = true;
-                    try {
-                        List<InetAddress> a = ipv4First(d.lookup(hostname));
-                        if (!a.isEmpty()) {
-                            cache.put(host, new Object[]{now, a});
-                            return new Result(a, "自建 DoH");
+                    why = f[1] + "(刚失败过,1 分钟内不重试)";
+                } else {
+                    for (Lookup d : dohs) {
+                        dohTried = true;
+                        try {
+                            List<InetAddress> a = ipv4First(d.lookup(hostname));
+                            if (!a.isEmpty()) {
+                                cache.put(host, new Object[]{now, a});
+                                dohFail.remove(host);
+                                return new Result(a, "自建 DoH");
+                            }
+                        } catch (IOException e) {
+                            last = e;
+                        } catch (RuntimeException e) {
+                            last = e;
                         }
-                    } catch (IOException e) {
-                        last = e;
-                    } catch (RuntimeException e) {
-                        last = e;
                     }
+                    why = last == null ? "没有返回地址" : (last.getMessage() != null ? last.getMessage() : last.getClass().getSimpleName());
+                    dohFail.put(host, new Object[]{now, why});
                 }
             }
             // 3. 系统 DNS:开关开着才用;关着就是连不上
             if (sysOk) {
                 try {
-                    return new Result(ipv4First(system.lookup(hostname)), dohTried ? "系统 DNS(DoH 没解析出来,已回退)" : "系统 DNS");
+                    return new Result(ipv4First(system.lookup(hostname)), dohTried ? "系统 DNS(DoH 没解析出来,已回退:" + why + ")" : "系统 DNS");
                 } catch (UnknownHostException e) {
                     throw e;
                 } catch (IOException e) {
@@ -265,9 +302,8 @@ public final class RelayDnsCore {
                     throw u;
                 }
             }
-            String why = last == null ? null : (last.getMessage() != null ? last.getMessage() : last.getClass().getSimpleName());
             String msg = dohTried
-                ? "自建 DoH 解析 " + hostname + " 失败:" + (why == null ? "没有返回地址" : why) + "(已关闭「使用系统 DNS」,不回退)"
+                ? "自建 DoH 解析 " + hostname + " 失败:" + why + "(已关闭「使用系统 DNS」,不回退)"
                 : hostname + " 没有 Host 映射" + (dohOn ? "、没有可用的自建 DoH" : "") + ",且已关闭「使用系统 DNS」,没法解析";
             UnknownHostException u = new UnknownHostException(msg);
             if (last != null) u.initCause(last);

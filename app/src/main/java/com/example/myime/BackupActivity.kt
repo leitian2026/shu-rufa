@@ -481,8 +481,9 @@ class BackupActivity : Activity() {
         val hostsEt = multi("每行:域名 IP [IP…]\n例:wo.example.com 45.139.193.125", hosts0)
         val dohEt = multi("每行一个 https:// 地址\n例:https://dns.example.com/dns-query", doh0)
         val note = TextView(this).apply {
-            text = "按顺序解析:① Host 映射(给域名指定 IP,命中就不查 DNS,连不上自动换下一个 IP)→ ② 自建 DoH(加密 DNS,只对没有映射的域名)→ " +
-                "③ 系统 DNS。三个都关着或都没解析出来就连不上。只管联动连 Worker 的这一路。"
+            text = "按顺序解析:① Host 映射(给域名指定 IP,命中就不查 DNS,连不上自动换下一个 IP;所有 IP 都连不上后,下次改成先走 ② ③,映射的 IP 当备选)→ " +
+                "② 自建 DoH(加密 DNS,只对没有映射的域名)→ ③ 系统 DNS。三个都关着或都没解析出来就连不上。" +
+                "DoH 服务器自己的域名始终查上面的映射(引导),不受「使用 Host 映射」开关影响。只管联动和翻译连 Worker 的这一路;「测试连接」会写明实际走了哪一路。"
             setTextColor(0xFF666666.toInt())
             textSize = 13f
             setPadding(0, 0, 0, dpi(8f))
@@ -491,7 +492,7 @@ class BackupActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dpi(20f), dpi(8f), dpi(20f), 0)
             addView(note)
-            addView(switchRowFor("使用 Host 映射", "关闭时下面填的内容保留但不使用", hostsSw))
+            addView(switchRowFor("使用 Host 映射", "关闭时,连 Worker 不查这些映射(内容保留);DoH 服务器的域名仍会查", hostsSw))
             addView(hostsEt)
             addView(switchRowFor("使用自建 DoH", "没有 Host 映射的域名先用它解析;地址里常带随机路径,加密保存", dohSw))
             addView(dohEt)
@@ -514,8 +515,8 @@ class BackupActivity : Activity() {
                 RelayCfg.setDns(this, hostsOn, h.trim(), dohOn, d.trim(), sysOn)
                 ClipSync.onDnsChanged(this)
                 refresh()
-                val warn = if (dohOn) RelayDnsCore.dohWarning(d, if (hostsOn) h else "", sysOn) else null
-                say(warn ?: "域名解析设置已保存")
+                val warn = if (dohOn) RelayDnsCore.dohWarning(d, h, sysOn) else null
+                say(if (warn == null) "域名解析设置已保存" else "域名解析设置已保存。\n注意:$warn")
             }
             .setNegativeButton("取消", null).showPage()
     }

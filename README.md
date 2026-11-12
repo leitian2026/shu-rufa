@@ -720,6 +720,16 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 - **服务接入**(`MyImeService`):`markClips` 里通知联动"本机有变化"(别的设备传来的改动不算);`clipSyncHost` 在主线程读出 / 换掉三份列表(换掉后照常落盘、刷新剪贴板页);同步流程读写模型时整段切到主线程,所以界面列表和模型不会互相踩。引擎自己的线程闲着 10 秒就退出。
 - **自测**:`tools/ClipSyncSelfTest.java`(模型:对账、合并、上限、读回、两条通道各记各的待发送,45 项)、`tools/ClipDavE2E.java`(备用通道:用 `fake_dav.py` 模拟几台设备共用坚果云,37 项)、`tools/ClipDualE2E.java`(两条通道同时开着:Worker 发完坚果云照样传、同一条改动两条通道都收到不重复、连不上 Worker 的设备靠坚果云同步收发删除上锁,16 项)、`tools/RelayDnsSelfTest.java`(域名解析规则:Host 映射文本各种写法和坏行提示、DoH 地址检查、解析顺序和各开关、缓存、关了系统 DNS 绝不碰它、错误提示,42 项)、`tools/worker/worker_test.mjs`(**真正的 Worker 脚本**在 Node 里跑,Cloudflare 环境用 `tools/worker/mock.mjs` 模拟:老 App 场景在 v1 和 v2 上各跑一遍逐条对比,加命名空间隔离 / 跨 App / R2 前缀 / 请求头格式 / 翻译转发等,78 项)、`tools/ClipRelayE2E.java`(`tools/worker/server.mjs` 用真 Worker 脚本起一个能用真 WebSocket / HTTP 连的本机服务,几台模拟设备用 JDK 自带的 WebSocket 互相同步:第一次加入、秒到且不轮询 R2、删除 / 上锁 / 恢复 / 挪顺序联动、对方离线补发后不重复、暂存被清造成缺号后读快照追上、新设备加入和"欢迎"、分包、2 万字和特殊字符、密钥不一致的设备、断网恢复,46 项),都在 `tools/run_selftests.sh` 里(Worker 两项需要 node 22+)。**这些测试验证的是协议和 Worker 脚本的逻辑;`ClipRelayNet.kt`(OkHttp)、`ClipSync.kt`、服务和界面的改动没有编译验证、没有在手机上跑过,真实的 Cloudflare 环境(Durable Object 休眠、Worker 的 90 秒心跳、运营商对空闲连接的处理)也没验证过**,需要部署后用两台设备实测。
 
+## 域名解析整理(0.47.8)
+
+「域名解析…」(Host 映射 / 自建 DoH / 系统 DNS)的几处逻辑改顺了,规则本体仍在 `RelayDnsCore.java`,自测 `RelayDnsSelfTest` 50 项通过;`RelayDns.kt`、`ClipSync.kt`、`Translator.kt`、`ClipRelayNet.kt`、`BackupActivity.kt` 的改动没有编译验证、没在手机上跑过。
+
+- **Host 映射不再死锁**:映射的 IP 连不上时(OkHttp 的 `connectFailed` 事件记下这个域名),2 分钟内下一次解析改成先问自建 DoH / 系统 DNS,映射的 IP 排在后面当备选;DoH / 系统也解析不出来就还是用映射的 IP;连上了(`connectEnd`)就清掉记录。全靠连接事件触发,没有定时器、不轮询。
+- **看得出走了哪一路**:`RelayDns.sourceOf(域名)` 记着最近一次的解析来源(含回退到系统 DNS 的原因),「测试连接」成功和失败都会多一行「域名解析:…」。
+- **开关不再互相牵连**:DoH 服务器自己的域名始终查 Host 映射(引导),不受「使用 Host 映射」开关影响;关了系统 DNS 又没法引导的 DoH 不再静默跳过,而是记成一次失败,最后的错误里写明原因;保存后的提醒不再顶掉「已保存」。
+- **改设置立即两边生效**:`RelayDns` 全进程一个实例(`RelayDns.get`),剪贴板联动和翻译共用;`ClipSync.onDnsChanged` 同时调用 `Translator.dnsChanged()`,丢掉翻译连到 Worker 的旧客户端和连接池里已建好的连接。
+- **DoH 不通不再卡很久**:DoH 请求超时 4 秒连接 / 4 秒读 / 总共 6 秒(原来 8+8);某个域名 DoH 全失败后 1 分钟内不再问 DoH,直接走系统 DNS(没关的话)。
+
 ## 谷歌免费接口直连加浏览器请求头(0.47.2)
 
 键盘直连谷歌免费接口(`translate_a/single`,没填密钥、没开 Worker 中转)时,请求原来就带 Chrome 的 User-Agent、Accept、Accept-Language;0.47.2 再补上 Chrome 地址栏直接打开网址时会带的 `sec-ch-ua`、`sec-ch-ua-mobile`、`sec-ch-ua-platform`、`Sec-Fetch-*`、`Upgrade-Insecure-Requests`,Accept 也换成浏览器打开网页的写法。只用于这一条路径,微软、官方 Cloud Translation、Worker 中转都不变。这只是试一试:谷歌若按 TLS 握手特征拦,这些头不一定管用,测试仍是 429 就说明这条路走不通。

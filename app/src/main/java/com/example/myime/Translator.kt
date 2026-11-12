@@ -352,9 +352,17 @@ object Translator {
         }
     }
 
+    /** 域名解析设置改了:丢掉连到 Worker 的旧客户端和它连接池里已建好的连接,下次按新设置重新解析、重新连。 */
+    @Synchronized
+    fun dnsChanged() {
+        workerHttp?.connectionPool?.evictAll()
+        workerHttp = null
+    }
+
     @Synchronized
     private fun workerClient(app: Context): OkHttpClient = workerHttp ?: OkHttpClient.Builder()
-        .dns(RelayDns(app))
+        .dns(RelayDns.get(app))
+        .eventListenerFactory(RelayDns.get(app).eventFactory)
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(6, TimeUnit.SECONDS)
         .writeTimeout(6, TimeUnit.SECONDS)

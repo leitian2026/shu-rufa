@@ -125,6 +125,36 @@ public class RelayDnsSelfTest {
         } catch (UnknownHostException e) {
             check(e.getMessage().contains("没有可用的自建 DoH"), "DoH 开着但一个能用的都没有(引导不了):提示没有可用的 DoH");
         }
+        // ---- 0.47.8:映射的 IP 连不上不再死锁;DoH 全失败不每次白等
+        r.reset(); dohCalls.set(0); sysCalls.set(0);
+        res = r.resolve("wo.example.com", hosts, true, Arrays.asList(doh), true, sys, now, true);
+        check(strs(res.addrs).equals("[9.9.9.9, 2001:db8:0:0:0:0:0:9, 45.1.1.1, 45.2.2.2]") && res.source.contains("自建 DoH") && res.source.contains("排在后面"),
+            "映射的 IP 刚连不上:先用 DoH 的结果,映射的 IP 排后面当备选");
+        res = r.resolve("wo.example.com", hosts, false, new ArrayList<>(), true, h -> { throw new UnknownHostException(h); }, now, true);
+        check(strs(res.addrs).equals("[45.1.1.1, 45.2.2.2]") && res.source.contains("也没解析出来"), "映射的 IP 连不上、别的路也解析不出来:还是用映射的 IP,不报错");
+        res = r.resolve("wo.example.com", hosts, true, Arrays.asList(doh), true, sys, now, false);
+        check(res.source.equals("Host 映射"), "没有连接失败记录时:映射照样直接用");
+        r.reset(); dohCalls.set(0);
+        r.resolve("slow.example.com", none, true, Arrays.asList(dohFail), true, sys, now);
+        r.resolve("slow.example.com", none, true, Arrays.asList(dohFail), true, sys, now + 30_000);
+        check(dohCalls.get() == 1, "DoH 全失败后 1 分钟内不再问 DoH(不用每次白等超时)");
+        res = r.resolve("slow.example.com", none, true, Arrays.asList(dohFail), true, sys, now + 30_000);
+        check(res.source.contains("已回退") && res.source.contains("DoH 连不上"), "回退到系统 DNS 时,来源里写着 DoH 失败的原因");
+        r.resolve("slow.example.com", none, true, Arrays.asList(dohFail), true, sys, now + 61_000);
+        check(dohCalls.get() == 2, "1 分钟后再问一次 DoH");
+        try {
+            r.resolve("slow.example.com", none, true, Arrays.asList(dohFail), false, sys, now + 30_000 + 61_000 * 0);
+        } catch (UnknownHostException e) {
+            check(e.getMessage().contains("DoH 连不上"), "关了系统 DNS:DoH 刚失败过,错误里仍带原因");
+        }
+        RelayDnsCore.Lookup dohNoBoot = h -> { throw new IOException("DoH 服务器 d.example.com 没有 Host 映射,又关了「使用系统 DNS」,没法引导"); };
+        r.reset();
+        try {
+            r.resolve("k.example.com", none, true, Arrays.asList(dohNoBoot), false, sys, now);
+            check(false, "没法引导的 DoH 应该报错");
+        } catch (UnknownHostException e) {
+            check(e.getMessage().contains("没法引导"), "没法引导的 DoH 不再悄悄跳过:错误里写明原因");
+        }
         dohCalls.set(0);
         res = r.resolve("nas.local", none, true, Arrays.asList(doh), true, sys, now);
         check(dohCalls.get() == 0 && res.source.equals("系统 DNS"), "局域网名字(.local)不走 DoH");

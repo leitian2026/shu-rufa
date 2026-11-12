@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit
 class ClipRelayNet(baseUrl: String, private val secret: String, private val dev: String, dns: Dns) : ClipRelayCore.Transport {
     private val base = baseUrl.trim().trimEnd('/')
     private val wsUrl = base.replaceFirst("https://", "wss://") + "/ws"
-    private val http: OkHttpClient = baseHttp.newBuilder().dns(dns).build()
+    private val http: OkHttpClient = baseHttp.newBuilder().dns(dns).apply { (dns as? RelayDns)?.let { eventListenerFactory(it.eventFactory) } }.build()
 
     /** WebSocket 不设读超时(长连接,Worker 空闲 90 秒后自己断)。 */
     private val wsHttp: OkHttpClient = http.newBuilder().readTimeout(0, TimeUnit.MILLISECONDS).build()
@@ -49,7 +49,7 @@ class ClipRelayNet(baseUrl: String, private val secret: String, private val dev:
          */
         fun test(baseUrl: String, secret: String, dns: Dns): String? {
             val base = baseUrl.trim().trimEnd('/')
-            val c = baseHttp.newBuilder().dns(dns).connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
+            val c = baseHttp.newBuilder().dns(dns).apply { (dns as? RelayDns)?.let { eventListenerFactory(it.eventFactory) } }.connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
             fun get(path: String, app: String?): Pair<Int, String> {
                 val b = Request.Builder().url(base + path).header("X-Relay-Secret", secret)
                 if (app != null) b.header("X-App", app)
