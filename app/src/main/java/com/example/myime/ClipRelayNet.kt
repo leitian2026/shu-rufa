@@ -1,5 +1,6 @@
 package com.example.myime
 
+import okhttp3.ConnectionPool
 import okhttp3.Dns
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -35,8 +36,12 @@ class ClipRelayNet(baseUrl: String, private val secret: String, private val dev:
     @Volatile private var gen = 0
 
     companion object {
+        /** 存取 R2 的连接池:空闲这么久(秒)就自己关,下次用时重连,避免用到被网络悄悄断掉的旧连接(那样会一直等到 20 秒的读超时)。不发心跳,不耗电。 */
+        private const val POOL_IDLE_S = 30L
+
         private val baseHttp: OkHttpClient by lazy {
             OkHttpClient.Builder()
+                .connectionPool(ConnectionPool(2, POOL_IDLE_S, TimeUnit.SECONDS))
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(20, TimeUnit.SECONDS)
                 .writeTimeout(20, TimeUnit.SECONDS)

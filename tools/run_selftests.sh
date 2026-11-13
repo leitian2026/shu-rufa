@@ -68,6 +68,7 @@ run_test FuzzySelfTest "$PIN GramPack SentenceDecoder"
 run_test UserWordsSelfTest "$PIN GramPack SentenceDecoder" "" SentenceSelfTest
 run_test WordsSyncSelfTest "$PIN"
 run_test ClipSyncSelfTest "ClipSyncCore BackupCrypto"
+run_test ClipRelayStaleSelfTest "ClipRelayCore ClipSyncCore BackupCrypto"
 run_test RelayDnsSelfTest "RelayDnsCore"
 run_test CharsSelfTest "$PIN"
 run_test PerfSelfTest "$PIN Typo GramPack SentenceDecoder" "" SentenceSelfTest

@@ -10,6 +10,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import okhttp3.ConnectionPool
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -21,7 +22,8 @@ class TransResult(val text: String, val engine: String)
 
 /**
  * 省电相关:同一句翻过有缓存;请求前先看原文变没变(变了就不发);连接读完不 disconnect,复用连接池里的连接,
- * 省掉每次的握手;超时 4 / 6 秒,不会长时间占着网络。
+ * 省掉每次的握手;超时 4 / 6 秒,不会长时间占着网络。经 Worker 的连接池里,空闲 30 秒的连接自己关掉(不发心跳,不耗电):
+ * 手机闲置后,运营商或路由器常悄悄断掉空闲连接,继续用它会一直等到读超时,所以闲久了的第一次翻译宁可重新握手。
  *
  * 翻译:微软(Edge 浏览器内置翻译用的接口)和谷歌(translate.googleapis.com 的 gtx 接口),
  * 都不需要自己的密钥。只用设置里选的那一个引擎,它翻不了就提示失败(和原因),不会自动换另一个。
@@ -151,6 +153,9 @@ object Translator {
     }
 
     private const val WARM_EVERY_MS = 4 * 60_000L
+
+    /** 到 Worker 的连接池:空闲这么久(秒)就自己关,下次用时重连,避免用到被网络悄悄断掉的旧连接。 */
+    private const val WORKER_POOL_IDLE_S = 30L
 
     private fun withQuery(base: String, query: String) = base + (if (base.contains('?')) "&" else "?") + query
 
@@ -345,6 +350,7 @@ object Translator {
     @Synchronized
     private fun workerClient(app: Context): OkHttpClient = workerHttp ?: OkHttpClient.Builder()
         .dns(RelayDns(app).also { workerDns = it })
+        .connectionPool(ConnectionPool(2, WORKER_POOL_IDLE_S, TimeUnit.SECONDS))
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(6, TimeUnit.SECONDS)
         .writeTimeout(6, TimeUnit.SECONDS)

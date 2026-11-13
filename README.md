@@ -67,7 +67,7 @@ base64 -w0 release.jks        # macOS: base64 -i release.jks
 - **省电**:没有任何定时轮询,只有「翻译框的原文变了」这一个触发。
   - 停 0.6 秒才发请求,连续打字不会每个字都联网(`TRANS_DEBOUNCE_MS` 可调,越长越省)。
   - 一次只发一个请求;排队里已经过期的,不再发。
-  - 连接读完不断开,复用系统连接池,省掉每次的 TCP + TLS 握手;超时 4 / 6 秒;微软令牌缓存约 10 分钟。
+  - 连接读完不断开,复用系统连接池,省掉每次的 TCP + TLS 握手;超时 4 / 6 秒;微软令牌缓存约 10 分钟。经 Worker 那一路的连接池里,空闲 30 秒的连接自己关掉(0.47.13,见文末),闲久了的第一次翻译重新握手,不去用可能已被网络悄悄断掉的旧连接。
   - 发请求前先看有没有网,没网直接标「翻译失败」不空等超时,并只在没网时临时挂一个网络回调,网络一回来重试一次就摘掉。
   - 键盘收起时丢掉没发出的翻译、放掉请求和网络回调;再打开时才补翻。
   - 翻译框只在内容有变化时重画,打字过程中不重新排版。
@@ -718,7 +718,7 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 - **本机记录**:`files/user/clipmeta.txt`(每条内容的 id、状态、时间,不含文字;和剪贴板文件一样加密保存、随备份还原,备份时解成明文)。同步状态(序号、收到每台设备哪个序号、名册、是否加入过)在 `backupcfg`(设备专属,不进备份)。从备份还原后 `ClipSync.afterRestore` 清掉这些,当作第一次加入重来。
 - **界面**:备份页「5. 剪贴板联动」有两个通道开关、「立即同步剪贴板」、「删除云端本机的快照」,状态里显示连接情况、上次成功时间、解不开的消息数;剪贴板页标题行下面那行小字,联动开着时改成联动状态(「联动:已连接,实时同步」「联动:同步失败…」「联动:等待网络」),关着时仍是原来的提示。标题行已经放不下第四个按键,所以快速开关只在备份页;为了让标题右边放得下条数("17/500"),剪贴板页标题行的键排得紧了一点(每个键左右的空白 24dp → 16dp,键间距 6dp → 4dp,别的面板不变);屏幕太窄放不下时条数照旧不画。
 - **服务接入**(`MyImeService`):`markClips` 里通知联动"本机有变化"(别的设备传来的改动不算);`clipSyncHost` 在主线程读出 / 换掉三份列表(换掉后照常落盘、刷新剪贴板页);同步流程读写模型时整段切到主线程,所以界面列表和模型不会互相踩。引擎自己的线程闲着 10 秒就退出。
-- **自测**:`tools/ClipSyncSelfTest.java`(模型:对账、合并、上限、读回、两条通道各记各的待发送,45 项)、`tools/ClipDavE2E.java`(备用通道:用 `fake_dav.py` 模拟几台设备共用坚果云,37 项)、`tools/ClipDualE2E.java`(两条通道同时开着:Worker 发完坚果云照样传、同一条改动两条通道都收到不重复、连不上 Worker 的设备靠坚果云同步收发删除上锁,16 项)、`tools/RelayDnsSelfTest.java`(域名解析规则:Host 映射文本各种写法和坏行提示、DoH 地址检查、解析顺序和各开关、缓存、关了系统 DNS 绝不碰它、错误提示,42 项)、`tools/worker/worker_test.mjs`(**真正的 Worker 脚本**在 Node 里跑,Cloudflare 环境用 `tools/worker/mock.mjs` 模拟:老 App 场景在 v1 和 v2 上各跑一遍逐条对比,加命名空间隔离 / 跨 App / R2 前缀 / 请求头格式 / 翻译转发等,78 项)、`tools/ClipRelayE2E.java`(`tools/worker/server.mjs` 用真 Worker 脚本起一个能用真 WebSocket / HTTP 连的本机服务,几台模拟设备用 JDK 自带的 WebSocket 互相同步:第一次加入、秒到且不轮询 R2、删除 / 上锁 / 恢复 / 挪顺序联动、对方离线补发后不重复、暂存被清造成缺号后读快照追上、新设备加入和"欢迎"、分包、2 万字和特殊字符、密钥不一致的设备、断网恢复,46 项),都在 `tools/run_selftests.sh` 里(Worker 两项需要 node 22+)。**这些测试验证的是协议和 Worker 脚本的逻辑;`ClipRelayNet.kt`(OkHttp)、`ClipSync.kt`、服务和界面的改动没有编译验证、没有在手机上跑过,真实的 Cloudflare 环境(Durable Object 休眠、Worker 的 90 秒心跳、运营商对空闲连接的处理)也没验证过**,需要部署后用两台设备实测。
+- **自测**:`tools/ClipSyncSelfTest.java`(模型:对账、合并、上限、读回、两条通道各记各的待发送,45 项)、`tools/ClipRelayStaleSelfTest.java`(过了 Worker 空闲时限的连接要重连、没过期的不乱重连,假网络层 + 假时钟,不联网,21 项)、`tools/ClipDavE2E.java`(备用通道:用 `fake_dav.py` 模拟几台设备共用坚果云,37 项)、`tools/ClipDualE2E.java`(两条通道同时开着:Worker 发完坚果云照样传、同一条改动两条通道都收到不重复、连不上 Worker 的设备靠坚果云同步收发删除上锁,16 项)、`tools/RelayDnsSelfTest.java`(域名解析规则:Host 映射文本各种写法和坏行提示、DoH 地址检查、解析顺序和各开关、缓存、关了系统 DNS 绝不碰它、错误提示,42 项)、`tools/worker/worker_test.mjs`(**真正的 Worker 脚本**在 Node 里跑,Cloudflare 环境用 `tools/worker/mock.mjs` 模拟:老 App 场景在 v1 和 v2 上各跑一遍逐条对比,加命名空间隔离 / 跨 App / R2 前缀 / 请求头格式 / 翻译转发等,78 项)、`tools/ClipRelayE2E.java`(`tools/worker/server.mjs` 用真 Worker 脚本起一个能用真 WebSocket / HTTP 连的本机服务,几台模拟设备用 JDK 自带的 WebSocket 互相同步:第一次加入、秒到且不轮询 R2、删除 / 上锁 / 恢复 / 挪顺序联动、对方离线补发后不重复、暂存被清造成缺号后读快照追上、新设备加入和"欢迎"、分包、2 万字和特殊字符、密钥不一致的设备、断网恢复,46 项),都在 `tools/run_selftests.sh` 里(Worker 两项需要 node 22+)。**这些测试验证的是协议和 Worker 脚本的逻辑;`ClipRelayNet.kt`(OkHttp)、`ClipSync.kt`、服务和界面的改动没有编译验证、没有在手机上跑过,真实的 Cloudflare 环境(Durable Object 休眠、Worker 的 90 秒心跳、运营商对空闲连接的处理)也没验证过**,需要部署后用两台设备实测。
 
 ## 域名解析整理(0.47.10)
 
@@ -751,3 +751,21 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 ## 改动:翻译不再自动换引擎(0.47.12)
 
 - 只用选中的引擎翻,翻不了就提示失败和原因,不再自动换另一个引擎;去掉了失败退避和预热失败记录。Worker 这条失败也不再换微软。
+
+## 修复:空闲后首次联网偶尔超时(0.47.13)
+
+**现象**:手机闲置一阵后,第一次翻译(经 Worker)偶尔显示「谷歌超时」,紧接着再翻就好了。
+
+**原因**:OkHttp 默认把空闲连接留 5 分钟,而运营商或路由器常在这之前悄悄断掉空闲连接,手机并不知道。下一次请求写出去不报错,然后一直等到读超时(翻译 6 秒、剪贴板存取 R2 20 秒);`retryOnConnectionFailure` 又是关的,不会自动重试。超时后这条死连接被丢掉,再请求就是新连接,所以「连上了就没问题」。剪贴板联动的 WebSocket 有类似的情况:Worker 空闲 90 秒后自己关连接,关闭通知如果因为手机休眠、换网络没送到,手机还以为连着,下次写进去要等 8 秒收不到确认才发现。
+
+**改动**(都不加定时器、不发心跳,不增加耗电):
+
+- 翻译经 Worker 的连接池(`Translator.workerClient`)、剪贴板联动存取 R2 的连接池(`ClipRelayNet.baseHttp`):空闲 30 秒的连接自己关,下次用时重新握手(多一次握手,不再等超时)。30 秒是偏保守的取值,各网络真正的断连时间不知道;嫌握手多可以调大(`WORKER_POOL_IDLE_S`、`POOL_IDLE_S`)。
+- 剪贴板联动的 WebSocket(`ClipRelayCore.Engine`):记下最近一次连上、或发出 ping 的时刻(Worker 的 `HEARTBEAT_TIMEOUT_MS` 也是 90 秒,只认 ping 和连上的那一刻,notify / ack 不重置它);再次要用时如果已超过 90 秒,就不再相信「已连接」,先关掉再重连。界面上的「已连接」超过 90 秒没 ping 也改显示未连接。ping 没发出去不算续命;还没记录过时刻时不乱重连。`Config.staleAfterMs` 可调,自测会对照 Worker 脚本检查它不比 Worker 的时限长。
+- 版本号 0.47.12 → 0.47.13。
+
+**验证到哪一步**:
+
+- 新自测 `ClipRelayStaleSelfTest`(21 项)和原有的剪贴板自测(含连真的 Worker 脚本的 `ClipRelayE2E`、`ClipDualE2E`)都通过;用旧逻辑跑新自测有 7 项失败,说明它抓得住这个问题。
+- `Translator.kt`、`ClipRelayNet.kt` 的改动(各三处:`import`、常量、`connectionPool(...)` 一行)**没有编译验证、没在手机上跑过**(写这次改动的机器上没有 Kotlin 编译器);`ConnectionPool(2, 30, TimeUnit.SECONDS)` 是 OkHttp 4.12 的标准写法。
+- 只管得了「空闲超过 30 秒(HTTP)/ 90 秒(WebSocket)」以后的情况;连接在更短时间内就被网络断掉的话,这次改动管不到,仍会等到超时。

@@ -35,6 +35,8 @@ import java.util.regex.Pattern;
  * <li>欢迎:在线的设备发现有陌生设备上线(不在名册里),马上把自己当前的内容整份推给它(消息里 w:1)。新设备读到的快照可能比对方最近的几次改动旧
  *     (快照要等发完以后稍等一会儿才更新),这样不用等对方下次再改,新设备就是最新的。</li>
  * <li>连接:需要的时候才连(键盘弹出、本机有变化),发完发一个文本 ping,Worker 在 90~120 秒没动静后自己断开,这边不设定时器去关、也不自动重连。
+ *     但上次发 ping(或刚连上)已经过了 90 秒,下一次要用时不再相信"还连着":Worker 多半已经把它关了,关闭通知可能因为手机休眠、换网络、
+ *     路由器断了空闲连接而没送到,继续用会写进一条死连接、等到超时才发现。这时直接关掉重连(没有定时器、没有心跳,不增加耗电)。
  *     连接开着的时候别的设备的变化直接推过来(秒到)。</li>
  * </ul>
  * 所有工作在一个单线程执行器上顺序做(状态不用加锁);网络回调线程只把消息丢进来,收到发送确认(sent / error)直接在回调线程里处理,
@@ -143,6 +145,10 @@ public final class ClipRelayCore {
         public long rosterTtlMs = 3_600_000;   // 设备名册缓存多久
         public long replyTimeoutMs = 8_000;    // 等 Worker 确认"收到了"的时间
         public long connectTimeoutMs = 15_000;
+        /** 连着的连接超过这么久没发过 ping(也没重新连过),就当 Worker 已经把它关了,下次用之前重连。
+         *  Worker 的 HEARTBEAT_TIMEOUT_MS 也是 90 秒,而且只认 ping 和连上的那一刻(notify、ack 不重置它),所以这里也只算这两样;
+         *  不能比 Worker 的时限长,自测会对照 tools/worker/hulian-worker.js 检查。 */
+        public long staleAfterMs = 90_000;
     }
 
     // ------------------------------------------------------------ 很小的 JSON 解析(Worker 的消息都很简单,不用引入库)
@@ -338,10 +344,12 @@ public final class ClipRelayCore {
         private final java.util.concurrent.atomic.AtomicBoolean shownQueued = new java.util.concurrent.atomic.AtomicBoolean();
         private volatile boolean dirtyHint = true;            // 本机可能有还没发出去的改动(进程刚启动时也当作有,让第一次对一次账)
         private long lastFlushAt;                             // 只在执行器线程里用
+        private volatile long keepAt;                         // 最近一次连上、或发出 ping 的时刻(clock);Worker 的 90 秒空闲计时就是从这两样算起的。0 = 还没连过
 
         private final Listener listener = new Listener() {
             @Override
             public void onOpen() {
+                keepAt = clock.getAsLong();
                 closedWhy = null;
                 openLatch.countDown();
             }
@@ -387,8 +395,15 @@ public final class ClipRelayCore {
             this.cfg = cfg;
         }
 
+        /** 连着、而且没过 Worker 的空闲时限(过了的话 Worker 多半已经关了它,界面上也该显示没连着)。 */
         public boolean isConnected() {
-            return t.isOpen();
+            return t.isOpen() && !stale();
+        }
+
+        /** 上次连上 / 发 ping 已经超过 staleAfterMs。keepAt 是 0(还没记录过)时当作没过期,不乱重连。 */
+        private boolean stale() {
+            long k = keepAt;
+            return k > 0 && clock.getAsLong() - k > cfg.staleAfterMs;
         }
 
         public void close() {
@@ -481,7 +496,7 @@ public final class ClipRelayCore {
                 if (force || !st.inited()) initialJoin();
                 if (flush || dirtyHint) flushDirty();
                 if (st.snapDirty()) scheduleSnapshot();
-                t.send("ping");   // 让 Worker 的 90 秒计时从现在重新算
+                if (t.send("ping")) keepAt = clock.getAsLong();   // 让 Worker 的 90 秒计时从现在重新算(发出去了才记)
                 sink.ok(force ? "已同步" : "已连接");
                 return true;
             } catch (IOException e) {
@@ -496,7 +511,11 @@ public final class ClipRelayCore {
         }
 
         private void ensureConnected() throws IOException {
-            if (t.isOpen()) return;
+            if (t.isOpen()) {
+                if (!stale()) return;
+                // 标志是开着,但已经过了 Worker 的空闲时限:不信它,先关掉再重连(关的时候会回调 onClosed,清掉旧的在线名单)
+                t.close();
+            }
             openLatch = new CountDownLatch(1);
             closedWhy = null;
             t.connect(listener);
