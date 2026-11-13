@@ -718,7 +718,7 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 - **本机记录**:`files/user/clipmeta.txt`(每条内容的 id、状态、时间,不含文字;和剪贴板文件一样加密保存、随备份还原,备份时解成明文)。同步状态(序号、收到每台设备哪个序号、名册、是否加入过)在 `backupcfg`(设备专属,不进备份)。从备份还原后 `ClipSync.afterRestore` 清掉这些,当作第一次加入重来。
 - **界面**:备份页「5. 剪贴板联动」有两个通道开关、「立即同步剪贴板」、「删除云端本机的快照」,状态里显示连接情况、上次成功时间、解不开的消息数;剪贴板页标题行下面那行小字,联动开着时改成联动状态(「联动:已连接,实时同步」「联动:同步失败…」「联动:等待网络」),关着时仍是原来的提示。标题行已经放不下第四个按键,所以快速开关只在备份页;为了让标题右边放得下条数("17/500"),剪贴板页标题行的键排得紧了一点(每个键左右的空白 24dp → 16dp,键间距 6dp → 4dp,别的面板不变);屏幕太窄放不下时条数照旧不画。
 - **服务接入**(`MyImeService`):`markClips` 里通知联动"本机有变化"(别的设备传来的改动不算);`clipSyncHost` 在主线程读出 / 换掉三份列表(换掉后照常落盘、刷新剪贴板页);同步流程读写模型时整段切到主线程,所以界面列表和模型不会互相踩。引擎自己的线程闲着 10 秒就退出。
-- **自测**:`tools/ClipSyncSelfTest.java`(模型:对账、合并、上限、读回、两条通道各记各的待发送,45 项)、`tools/ClipRelayStaleSelfTest.java`(过了 Worker 空闲时限的连接要重连、没过期的不乱重连,假网络层 + 假时钟,不联网,21 项)、`tools/ClipDavE2E.java`(备用通道:用 `fake_dav.py` 模拟几台设备共用坚果云,37 项)、`tools/ClipDualE2E.java`(两条通道同时开着:Worker 发完坚果云照样传、同一条改动两条通道都收到不重复、连不上 Worker 的设备靠坚果云同步收发删除上锁,16 项)、`tools/RelayDnsSelfTest.java`(域名解析规则:Host 映射文本各种写法和坏行提示、DoH 地址检查、解析顺序和各开关、缓存、关了系统 DNS 绝不碰它、错误提示,42 项)、`tools/worker/worker_test.mjs`(**真正的 Worker 脚本**在 Node 里跑,Cloudflare 环境用 `tools/worker/mock.mjs` 模拟:老 App 场景在 v1 和 v2 上各跑一遍逐条对比,加命名空间隔离 / 跨 App / R2 前缀 / 请求头格式 / 翻译转发等,78 项)、`tools/ClipRelayE2E.java`(`tools/worker/server.mjs` 用真 Worker 脚本起一个能用真 WebSocket / HTTP 连的本机服务,几台模拟设备用 JDK 自带的 WebSocket 互相同步:第一次加入、秒到且不轮询 R2、删除 / 上锁 / 恢复 / 挪顺序联动、对方离线补发后不重复、暂存被清造成缺号后读快照追上、新设备加入和"欢迎"、分包、2 万字和特殊字符、密钥不一致的设备、断网恢复,46 项),都在 `tools/run_selftests.sh` 里(Worker 两项需要 node 22+)。**这些测试验证的是协议和 Worker 脚本的逻辑;`ClipRelayNet.kt`(OkHttp)、`ClipSync.kt`、服务和界面的改动没有编译验证、没有在手机上跑过,真实的 Cloudflare 环境(Durable Object 休眠、Worker 的 90 秒心跳、运营商对空闲连接的处理)也没验证过**,需要部署后用两台设备实测。
+- **自测**:`tools/ClipSyncSelfTest.java`(模型:对账、合并、上限、读回、两条通道各记各的待发送,45 项)、`tools/ClipRelayStaleSelfTest.java`(过了 Worker 空闲时限的连接要重连、没过期的不乱重连,假网络层 + 假时钟,不联网,21 项)、`tools/ClipDavE2E.java`(备用通道:用 `fake_dav.py` 模拟几台设备共用坚果云,37 项)、`tools/ClipDualE2E.java`(两条通道同时开着:Worker 发完坚果云照样传、同一条改动两条通道都收到不重复、连不上 Worker 的设备靠坚果云同步收发删除上锁,16 项)、`tools/RelayDnsSelfTest.java`(域名解析规则:Host 映射文本各种写法和坏行提示、DoH 地址检查、解析顺序和各开关、缓存、关了系统 DNS 绝不碰它、错误提示,42 项)、`tools/worker/worker_test.mjs`(**真正的 Worker 脚本**在 Node 里跑,Cloudflare 环境用 `tools/worker/mock.mjs` 模拟:老 App 场景在 v1 和 v2 上各跑一遍逐条对比,加命名空间隔离 / 跨 App / R2 前缀 / 请求头格式 / 翻译转发等,86 项)、`tools/ClipRelayE2E.java`(`tools/worker/server.mjs` 用真 Worker 脚本起一个能用真 WebSocket / HTTP 连的本机服务,几台模拟设备用 JDK 自带的 WebSocket 互相同步:第一次加入、秒到且不轮询 R2、删除 / 上锁 / 恢复 / 挪顺序联动、对方离线补发后不重复、暂存被清造成缺号后读快照追上、新设备加入和"欢迎"、分包、2 万字和特殊字符、密钥不一致的设备、断网恢复,46 项),都在 `tools/run_selftests.sh` 里(Worker 两项需要 node 22+)。**这些测试验证的是协议和 Worker 脚本的逻辑;`ClipRelayNet.kt`(OkHttp)、`ClipSync.kt`、服务和界面的改动没有编译验证、没有在手机上跑过,真实的 Cloudflare 环境(Durable Object 休眠、Worker 的 90 秒心跳、运营商对空闲连接的处理)也没验证过**,需要部署后用两台设备实测。
 
 ## 域名解析整理(0.47.10)
 
@@ -743,10 +743,10 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 
 谷歌翻译(gtx 免费接口)在有些网络里直连不上。在「翻译接口设置」里打开**「谷歌翻译经 Cloudflare Worker 中转」**,谷歌这一路就不再直连,改发给你自己的 Worker,由它转给谷歌;微软那一路不变(国内本来就能直连)。
 
-- **Worker(v3 脚本,规则 9)**:`POST /tr/google?sl=源语言&tl=目标语言`,必须带口令和 `X-App: tr`。键盘发给 Worker 的原文放在请求体 `q=…` 里(表单格式),**不放进网址**,所以不会出现在 Worker 收到的请求的网址里;只转发到写死的 `https://translate.googleapis.com/translate_a/single?client=gtx…`(**不是通用代理**,别的路径和网址一律 404),请求体里只取 `q`,别的字段不转发;语言代码格式和请求体大小(最大 40 KB)都检查。**Worker 发给谷歌那一段**:原文不长(编码后 ≤ 1500 字符)先用 **GET**(`q` 放在网址里,和浏览器直接访问一样——0.47.0 里一律用 POST,在实测中被谷歌回了 429,而同样的网址在 Chrome 里能出结果,所以改成这样),被拒绝或太长再用 **POST**,请求头带浏览器的 User-Agent / Accept / Accept-Language;不记录、不缓存内容(返回 `no-store`,成功时响应头 `x-tr-via` 写明是 GET 还是 POST)。全部失败时,错误里写明每种方式的结果(如「谷歌拒绝了:GET 429、POST 429」)和谷歌返回内容的开头一小段(去掉标签、限 200 字,不含原文);谷歌返回 429 就回 429,其余失败回 502。这条路径不碰 `/ws`、`/r2`,别的 App 的行为不变(自测里老 App 场景在 v1 和 v3 上逐条一致)。
+- **Worker(v3 脚本,规则 9)**:`POST /tr/google?sl=源语言&tl=目标语言`,必须带口令和 `X-App: tr`。键盘发给 Worker 的原文放在请求体 `q=…` 里(表单格式),**不放进网址**,所以不会出现在 Worker 收到的请求的网址里;只转发到写死的 `https://translate.googleapis.com/translate_a/single?client=gtx…`(**不是通用代理**,别的路径和网址一律 404),请求体里只取 `q`,别的字段不转发;语言代码格式和请求体大小(最大 40 KB)都检查。**Worker 发给谷歌那一段**(v3.3 起不再用 `fetch`,改用 `connect()` 直连、自己写 HTTP 请求,见文末「Worker 翻译改用 connect() 出站」;下面 GET 先 POST 后的规则不变):原文不长(编码后 ≤ 1500 字符)先用 **GET**(`q` 放在网址里,和浏览器直接访问一样——0.47.0 里一律用 POST,在实测中被谷歌回了 429,而同样的网址在 Chrome 里能出结果,所以改成这样),被拒绝或太长再用 **POST**,请求头带浏览器的 User-Agent / Accept / Accept-Language;不记录、不缓存内容(返回 `no-store`,成功时响应头 `x-tr-via` 写明是 GET 还是 POST;v3.3 起写 `connect-GET` / `connect-POST`)。全部失败时,错误里写明每种方式的结果(如「谷歌拒绝了:connect-GET 429、connect-POST 429」)和谷歌返回内容的开头一小段(去掉标签、限 200 字,不含原文);谷歌返回 429 就回 429,其余失败回 502。这条路径不碰 `/ws`、`/r2`,别的 App 的行为不变(自测里老 App 场景在 v1 和 v3 上逐条一致)。
 - **键盘**(`Translator.kt`):开关打开后,失败时「测试谷歌」会显示 Worker 写的原因和谷歌返回内容的开头,翻译失败的简短原因显示「Worker:…」;开关打开后 `google()` 改走 `googleViaWorker()`:OkHttp POST,请求头带口令和 `X-App: tr`,返回的格式和谷歌直连一样,所以解析是同一个 `parseGtx`。地址、口令、域名解析(Host 映射 / 自建 DoH / 系统 DNS)直接用备份页「5. 剪贴板联动」里填好的那一套(`RelayCfg`、`RelayDns`),不用再填;和剪贴板联动的两个通道开关互不影响。开着时「谷歌:接口地址 / 密钥」不起作用。超时和直连一样(连接 4 秒、读 6 秒),连接池里的连接复用;预热(`warm`)也改成预热到 Worker 的连接。**这条失败照样自动换微软**(原来的"主用失败换备用、失败的 10 分钟内先放后面"逻辑不变);没设置 Worker 时失败原因显示「没设Worker」。口令在内存里缓存(每次翻译不用再过一遍 Keystore)。
 - **加密**:键盘到 Worker、Worker 到谷歌都是 HTTPS(Worker 到谷歌这一段短文本在网址里,HTTPS 会把网址一起加密,Worker 脚本不记录,谷歌当然能看到)。翻译做不到剪贴板联动那种端到端加密(谷歌要读到原文才能翻译,所以 Worker 必须看到明文),原文对你自己的 Worker 和 Cloudflare 可见(谷歌本来就能看到);脚本里没有任何日志输出,但 Cloudflare 自己会留常规的访问元数据。
-- **没验证的**:谷歌的免费接口有时会拒绝 Cloudflare 的出口 IP(很多人共用,可能 429 或要求验证),要部署后在手机上试;这个接口本身不是官方的,随时可能变(和直连是同样的风险)。键盘一侧(Translator.kt、设置页)没有编译验证。Worker 一侧用 Cloudflare 环境的最小模拟在 Node 里跑过(`tools/worker/worker_test.mjs`,上游用假的 fetch,只能验证转发逻辑,验证不了谷歌是否放行 Worker 发出的请求)。
+- **没验证的**:谷歌的免费接口有时会拒绝 Cloudflare 的出口 IP(很多人共用,可能 429 或要求验证),要部署后在手机上试;这个接口本身不是官方的,随时可能变(和直连是同样的风险)。键盘一侧(Translator.kt、设置页)没有编译验证。Worker 一侧用 Cloudflare 环境的最小模拟在 Node 里跑过(`tools/worker/worker_test.mjs`,上游用假的连接(v3.3 起是假的 `connect()`,之前是假的 `fetch`),只能验证转发逻辑,验证不了谷歌是否放行 Worker 发出的请求;线上是否放行见文末 v3.3 一节;谷歌拒绝时怎么排查见文末「排查记录」)。
 
 ## 改动:翻译不再自动换引擎(0.47.12)
 
@@ -769,3 +769,82 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 - 新自测 `ClipRelayStaleSelfTest`(21 项)和原有的剪贴板自测(含连真的 Worker 脚本的 `ClipRelayE2E`、`ClipDualE2E`)都通过;用旧逻辑跑新自测有 7 项失败,说明它抓得住这个问题。
 - `Translator.kt`、`ClipRelayNet.kt` 的改动(各三处:`import`、常量、`connectionPool(...)` 一行)**没有编译验证、没在手机上跑过**(写这次改动的机器上没有 Kotlin 编译器);`ConnectionPool(2, 30, TimeUnit.SECONDS)` 是 OkHttp 4.12 的标准写法。
 - 只管得了「空闲超过 30 秒(HTTP)/ 90 秒(WebSocket)」以后的情况;连接在更短时间内就被网络断掉的话,这次改动管不到,仍会等到超时。
+
+## 改动:Worker 翻译改用 connect() 出站(Worker v3.3,App 0.47.14)
+
+**背景**:Worker(v3)翻译用 `fetch()` 发给谷歌,实测 GET、POST 都被回了 429;同一个 Worker 的剪贴板同步、同一个域名经 Clash 隧道访问谷歌都正常。v3.3 把这一段改成用 `connect()` 直连 `translate.googleapis.com:443`(TLS 由 Workers 运行时做)、自己写一个最简单的 HTTP/1.1 请求,部署后线上实测翻译恢复正常。
+
+**为什么有用(推断,没有定论)**:`fetch()` 发出的子请求会被 Cloudflare 自动加上 `CF-Worker` 等请求头(官方文档写的是:值为 Worker 所属 zone 的名字),`connect()` 是纯 TCP 字节流,请求头完全是自己写的。具体是哪一项让谷歌拒绝,没有查出来。换成 `connect()` 之后出口 IP 仍是 Cloudflare 的、TLS 指纹是 Workers 运行时的(不是浏览器的),谷歌以后仍有可能拒绝。
+
+**改动**:
+
+- `tools/worker/hulian-worker.js`(现在就是线上跑的 v3.3):翻译只用 `connect()`,不再有 `fetch`。先 GET 后 POST 的规则、请求头(Chrome 的 User-Agent / Accept / Accept-Language,另加 `Accept-Encoding: identity`、`Connection: close`)、40 KB 限制、写死的目标(只连这一个主机、这一个路径,不是通用代理)都不变。整体时限 5 秒(键盘最多等 6 秒,GET 卡住后 POST 不再接着卡);响应最大 256 KB;能解 chunked 和 gzip / deflate。成功时 `x-tr-via` 是 `connect-GET` / `connect-POST`,失败信息写成「谷歌拒绝了:connect-GET 429、connect-POST 429」这样。
+- 自测:`tools/worker/mock.mjs` 用 Node 的模块钩子把 `cloudflare:sockets` 指到 `globalThis.__cfConnect`(真正的脚本一个字不改地被加载,`server.mjs` 的 E2E 也走同一套);`worker_test.mjs` 里翻译那一段改成按 Worker 写进假连接里的请求原文判断,并新增:请求头里没有 `cf-` / 转发头 / Referer / Origin、chunked(多字节字符被切在两块之间)、gzip、响应超过 256 KB、谷歌一直不回(约 5 秒后 502、关掉连接)、全程没有调用 `fetch`。Worker 自测 78 → 86 项。
+- 剪贴板、R2、`/ws`、口令、`X-App` 校验都没改。App 代码没有改动,版本号 0.47.13 → 0.47.14 只为区分压缩包。
+
+**验证到哪一步**:全部 29 项自测通过(含走 `server.mjs` 的 `ClipRelayE2E`、`ClipDualE2E`);用旧的 `fetch` 版 Worker 跑新的翻译测试会直接失败,说明测试抓得住。谷歌是否放行,只能在线上看:v3.3 部署后翻译已恢复正常,但谷歌的限流会随出口 IP 和时间变化,过一阵再出现 429 的话,先看翻译测试按钮显示的 `connect-GET 429` 之类,再决定要不要走「手机自己做 TLS、Worker 只搬字节」的做法(没做)。
+
+## 排查记录:谷歌翻译经 Worker 不通(0.47.15 整理)
+
+把 0.47.13 到 0.47.15 期间查出来的东西记在一起,以后再遇到「翻译不通」先看这里。**已确认的事实**、**推断**、**没做的**分开写,别把推断当结论。本压缩包包含 0.47.13(空闲后首次联网超时)和 0.47.14(Worker v3.3,翻译改用 `connect()`)的全部改动,README 里按版本顺序写。
+
+### 先判断是哪一段不通
+
+链路:键盘 →(HTTPS;域名由 Host 映射 / 自建 DoH / 系统 DNS 解析)→ Cloudflare → Worker → 谷歌。翻译测试按钮或翻译框里的提示能看出卡在哪一段:
+
+| 看到的 | 说明 | 往哪查 |
+|---|---|---|
+| 「谷歌拒绝了:connect-GET 429、connect-POST 429」,详情里有 unusual traffic | 请求到了谷歌,被谷歌拒绝。429 是谷歌返回的;Cloudflare 自己拦的会是 403 或 1xxx 错误页,带 `cf-ray` | Worker 到谷歌这一段:出口 IP、请求特征,见下面「已确认」和「推断」 |
+| 「connect-GET 超时、connect-POST 没时间了」 | Worker 里 5 秒时限到了,连谷歌卡住 | Worker 到谷歌;换个时间再试 |
+| 「connect-GET Network connection lost」之类 | `connect()` 没连上谷歌 | 同上 |
+| 键盘只显示「超时」,没有 connect- 字样 | 手机到 Cloudflare 这一段超时(连接 4 秒、读 6 秒) | 空闲后第一次连接(0.47.13 已处理);否则查域名解析 / Host 映射里的 IP |
+| 提示里是 401、403、400、413 或口令不对之类 | Worker 自己拒绝,请求没到谷歌 | 口令、`X-App: tr`、语言代码、40 KB 限制 |
+| 旧版 Worker 的 `x-tr-via` 只有 `GET` / `POST`,没有 `connect-` 前缀 | 线上还是用 `fetch` 的旧 Worker | 重新部署 v3.3,见下面「怎么确认线上跑的是 v3.3」 |
+
+### 已确认的事实(实测,或读代码、读文档得到)
+
+1. Worker v3 用 `fetch()` 发给谷歌时,GET、POST 都是 429;换成 `connect()` 后恢复正常(0.47.14 部署后持续正常)。
+2. 同一个 Worker 的剪贴板同步一直正常,说明手机到 Worker 这一段(域名解析、口令、HTTPS)没问题,问题只在 Worker 到谷歌。
+3. 把 Worker 绑到经 Clash 隧道能通的 `ccwu.cc` 域名,`fetch()` 仍然是 429,所以不是域名(zone 名)本身的问题。
+4. 键盘开着 Clash 时翻译能通,说明谷歌这个接口本身可用。
+5. 在浏览器里直接打开 `https://translate.googleapis.com/translate_a/single?client=gtx&sl=zh-CN&tl=en&dt=t&q=你好`,不通的出口会跳 `google.com/sorry` 人机验证页(截图里谷歌看到的 IP 是 Cloudflare 的 IPv6,`2a09:bac1:…`)。
+6. 两个 Worker 的差别:VLESS 代理脚本(`_worker.js`)直连时只搬原始 TCP 字节,请求头和 TLS 握手都是手机自己的,谷歌看不到代理域名;hulian-worker 的 v3 翻译是 Worker 自己用 `fetch()` 构造请求(UA 等写死在脚本里)。
+7. Cloudflare 文档写的:`fetch()` 发出的 Worker 子请求会自动带 `CF-Worker` 头,值是 Worker 所属 zone 的名字;发往非 Cloudflare 站点时,`CF-Connecting-IP` 和 `x-real-ip` 反映的是客户端 IP(`developers.cloudflare.com/fundamentals/get-started/reference/http-request-headers/`)。按 zone 分配的专用出口 IP 不适用于 `connect()` 建立的连接(`developers.cloudflare.com/smart-shield/configuration/dedicated-egress-ips/other-products/`)。
+8. `connect()` 是纯 TCP,Cloudflare 没法往里加 HTTP 头;v3.3 的请求头全是自己写的,自测检查了里面没有 `cf-`、转发头、Referer、Origin。
+
+### 推断(没有直接证据)
+
+- `fetch()` 被谷歌拒绝,最可能是 Cloudflare 自动加的请求头(`CF-Worker` 等)造成的。依据只有一条:同一个 Worker、同一个域名,只把 `fetch()` 换成 `connect()` 就通了。`connect()` 和 `fetch()` 还有别的差别(TLS 指纹、出站路径),不能排除。
+- 以后可能再被拒绝:`connect()` 的出口 IP 仍是 Cloudflare 的,TLS 指纹是 Workers 运行时的(不是浏览器的),谷歌的限流也会随出口 IP 和时间变化。通了不等于一直通。
+
+### 没解决的:Clash / VLESS 代理那边(不是本 App 的代码,记在这里供对照)
+
+- 两份配置只有节点身份(UUID、域名)不同,一份谷歌翻译通、一份弹验证;入口 IP、并发、规则、DNS 全一样。
+- 不通的域名(`kadalmati.eu.org`、`us.ci`)换成入口 IP `162.159.153.2` 就通了;同一个入口 IP `104.17.146.59` 在能通的域名下通、在另一个域名下不通。所以结果取决于「域名 + 入口 IP」的组合,不是哪一个单独决定的。
+- 用 `162.159.153.2` 作入口去连剪贴板 Worker 的域名不通,所以这个 IP 不是万能的。
+- 原因没查出来。VLESS 走的是 `connect()`、不带 HTTP 头,`CF-Worker` 头解释不了它。猜过「域名后缀(eu.org、us.ci)口碑差」,没有证据。
+
+### 没做的验证和做法
+
+- 在 v3.3 的 `connect()` 请求里临时手加一个 `CF-Worker: <你的域名>` 头测一次(测完删掉):如果翻译重新变成 429,基本就坐实是这个头。
+- VLESS 脚本的 `/admin/cf.json`:在通的和不通的域名下各看几次 `colo`,对比机房有没有差别。
+- 做法 A:手机自己和谷歌做 TLS,Worker 只用 `connect()` 搬字节(WebSocket 隧道)。这样请求和 TLS 指纹都是手机的,Worker 也看不到原文;代价是 App 要写一层 socket,握手和保活更费电。
+
+### 怎么确认线上跑的是 v3.3
+
+在电脑或手机终端里执行(把 `<Worker 域名>` 和 `<口令>` 换成自己的,口令别发给别人):
+
+```
+curl -i -X POST "https://<Worker 域名>/tr/google?sl=zh-CN&tl=en" -H "X-Relay-Secret: <口令>" -H "X-App: tr" --data-urlencode "q=你好"
+```
+
+看响应头 `x-tr-via`:`connect-GET` 或 `connect-POST` 就是 v3.3;只有 `GET` 或 `POST` 说明线上还是旧的 `fetch` 版;没有这个头而是 JSON 错误,看错误里的文字,对照上面的表。多测几次、隔一段时间再测,谷歌的限流会变。
+
+### 再出现 429 时,按这个顺序查
+
+1. 看提示里 `connect-` 前缀的结果和详情,确认是谷歌拒绝(见上面的表),不是手机到 Worker 这一段的问题。
+2. 看是不是改过 Worker 的域名、Host 映射里的 IP:同一个 Worker 换域名或入口 IP,结果会不同(VLESS 那边见过)。
+3. 换另一个入口 IP、另一个域名再试。
+4. 做上面「没做的验证」里加假 `CF-Worker` 头的那一条,判断是不是这个头。
+5. 还不行,再考虑做法 A。
+6. 临时办法:开着 Clash 用。

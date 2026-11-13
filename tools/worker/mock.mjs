@@ -2,6 +2,7 @@
 // 被测的是真正的 Worker 脚本;这里模拟的只是 Cloudflare 的运行环境。
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
+import { register } from "node:module";
 
 let installed = false;
 export class MockSock {
@@ -94,8 +95,28 @@ function mockBucket() {
   };
 }
 
+// 脚本里有 `import { connect } from "cloudflare:sockets"`(只有 Cloudflare 的运行环境才有这个模块,Node 里加载会报错)。
+// 用 Node 的模块钩子把它指到一个小模拟:connect(...) 转给 globalThis.__cfConnect,由测试提供假的连接。真正的脚本一个字不改地被加载。
+let socketsHooked = false;
+function hookSockets() {
+  if (socketsHooked) return;
+  socketsHooked = true;
+  globalThis.__cfConnect ??= () => { throw new Error("这个测试没有模拟 connect()"); };
+  const code = `
+    export async function resolve(spec, ctx, next) {
+      if (spec === "cloudflare:sockets") return { url: "cf-mock:sockets", shortCircuit: true };
+      return next(spec, ctx);
+    }
+    export async function load(url, ctx, next) {
+      if (url === "cf-mock:sockets") return { format: "module", shortCircuit: true, source: "export function connect(...a) { return globalThis.__cfConnect(...a); }" };
+      return next(url, ctx);
+    }`;
+  register("data:text/javascript," + encodeURIComponent(code), import.meta.url);
+}
+
 export async function createWorld(modPath, { secret = "s3cret" } = {}) {
   installGlobals();
+  hookSockets();
   const mod = await import(pathToFileURL(modPath).href + "?w=" + Math.random());
   const db = new DatabaseSync(":memory:");
   const sockets = new Set();

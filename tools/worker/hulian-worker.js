@@ -3,7 +3,7 @@
 // 收到 App 回的 {op:"ack", n:序号} 才删；没回执的会在它下次连上时补发。旧版 App 不带这个头，行为和以前完全一样。
 //
 // ======================================================================================================
-//  多个 App 共用这个 Worker 的规则（v2 起；v3 加了第 9 条）。以后加新 App 的人请先读完，并且不要改变已有命名空间的行为
+//  多个 App 共用这个 Worker 的规则（v2 起；v3 加了第 9 条；v3.3 翻译出站改为只用 connect()）。以后加新 App 的人请先读完，并且不要改变已有命名空间的行为
 // ======================================================================================================
 //  1. 命名空间：每个 App 连接 /ws 和访问 /r2 时，用请求头 X-App 声明自己的命名空间（小写字母或数字，最长 16 位，例如 clip）。
 //     不带 X-App 的都算“老 App”这一组（命名空间是空字符串），互传目前就是这一组，行为和 v1 完全一样。
@@ -22,11 +22,15 @@
 //     客户端发给本 Worker 的原文放在请求体的 q=… 里（表单格式），不放进网址，所以不会出现在本 Worker 收到的请求的网址里。
 //     只转发到写死的 https://translate.googleapis.com/translate_a/single（不是通用代理，别的路径和网址一律 404）；
 //     请求体里只取 q，别的字段不转发；语言代码和请求体大小（最大 40 KB）都检查。
-//     本 Worker 发给谷歌那一段：原文不长（编码后不超过 1500 字符）先用 GET（q 放在网址里，和浏览器直接访问一样，这样最不容易被谷歌限流），
-//     被拒绝或原文太长就用 POST（q 在请求体里）。两段都是 HTTPS；本脚本不记录、不缓存内容（返回 no-store），谷歌自己当然能看到原文。
-//     全部失败时，返回的错误里带上每一种方式的结果（例如「GET 429、POST 429」）和谷歌返回内容的开头一小段（去掉标签、限 200 字，不含原文），方便看出原因；
-//     谷歌返回 429 就回 429，其余失败回 502。成功时响应头 x-tr-via 写明是 GET 还是 POST。
+//     本 Worker 发给谷歌那一段（v3.3 起只用 connect()，不再用 fetch）：用 connect() 直接连 translate.googleapis.com:443（TLS 由运行时完成），
+//     自己写一个最简单的 HTTP/1.1 请求，不带 Cloudflare 给 fetch 自动加的头；只连这一个主机、这一个路径，不是通用代理。
+//     原文不长（编码后不超过 1500 字符）先用 GET（q 放在网址里，和浏览器直接访问一样，这样最不容易被谷歌限流），
+//     被拒绝或原文太长就用 POST（q 在请求体里）。整体时限 5 秒（键盘最多等回复 6 秒），响应最大 256 KB。
+//     本脚本不记录、不缓存内容（返回 no-store），谷歌自己当然能看到原文。
+//     全部失败时，返回的错误里带上每一种方式的结果（例如「connect-GET 429、connect-POST 429」）和谷歌返回内容的开头一小段（去掉标签、限 200 字，不含原文），方便看出原因；
+//     谷歌返回 429 就回 429，其余失败回 502。成功时响应头 x-tr-via 是 connect-GET 或 connect-POST。
 //     这条路径不碰 /ws、/r2 和任何命名空间的数据，别的 App 的行为不受影响。
+import { connect } from "cloudflare:sockets";   // 翻译出站用（规则 9）
 var DEVICE = /^[A-Za-z0-9_-]{1,64}$/;
 var APP = /^[a-z0-9]{1,16}$/;
 var MAX_ACCEPT = 8;
@@ -98,6 +102,122 @@ function snippet(text) {
   return String(text).replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
 }
 
+// ---- 翻译出站（v3.3）：用 connect() 直连谷歌，自己写 HTTP/1.1 请求（规则 9）----
+var GOOGLE_HOST = "translate.googleapis.com";
+var CONNECT_TOTAL_MS = 5000;          // 整体时限（键盘读超时是 6 秒，留 1 秒余量）
+var MAX_CONNECT_RESP = 256 * 1024;    // 响应最大 256 KB
+var TXT_ENC = new TextEncoder();
+var TXT_DEC = new TextDecoder();
+
+function concatBytes(parts) {
+  let n = 0;
+  for (const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+/** 响应头和正文的分界（\r\n\r\n）的位置，找不到返回 -1 */
+function headerEnd(b) {
+  for (let i = 0; i + 3 < b.length; i++) {
+    if (b[i] === 13 && b[i + 1] === 10 && b[i + 2] === 13 && b[i + 3] === 10) return i;
+  }
+  return -1;
+}
+
+/** 解 chunked 正文（按字节拼，最后一起解码，所以多字节字符被切在两块之间也没问题） */
+function decodeChunked(b) {
+  const parts = [];
+  let i = 0;
+  while (i < b.length) {
+    let j = i;
+    while (j + 1 < b.length && !(b[j] === 13 && b[j + 1] === 10)) j++;
+    if (j + 1 >= b.length) break;
+    const size = parseInt(TXT_DEC.decode(b.subarray(i, j)).split(";")[0].trim(), 16);
+    if (!(size >= 0)) throw new Error("chunk 格式不对");
+    i = j + 2;
+    if (size === 0) break;
+    parts.push(b.subarray(i, Math.min(i + size, b.length)));
+    i += size + 2;
+  }
+  return concatBytes(parts);
+}
+
+async function inflateBytes(b, format) {
+  const ds = new DecompressionStream(format);
+  const w = ds.writable.getWriter();
+  w.write(b).catch(() => {});
+  w.close().catch(() => {});
+  return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+}
+
+/** 解析一个完整的 HTTP/1.1 响应（连接关闭时读到的全部字节） */
+async function parseHttpResponse(raw) {
+  const he = headerEnd(raw);
+  if (he < 0) throw new Error("响应不完整");
+  const lines = TXT_DEC.decode(raw.subarray(0, he)).split("\r\n");
+  const m = /^HTTP\/1\.[01] (\d{3})/.exec(lines[0] || "");
+  if (!m) throw new Error("响应格式不对");
+  const hdr = {};
+  for (let k = 1; k < lines.length; k++) {
+    const c = lines[k].indexOf(":");
+    if (c > 0) hdr[lines[k].slice(0, c).trim().toLowerCase()] = lines[k].slice(c + 1).trim();
+  }
+  let body = raw.subarray(he + 4);
+  if ((hdr["transfer-encoding"] || "").toLowerCase().includes("chunked")) body = decodeChunked(body);
+  else if (/^\d+$/.test(hdr["content-length"] || "")) body = body.subarray(0, parseInt(hdr["content-length"], 10));
+  const ce = (hdr["content-encoding"] || "").toLowerCase();
+  if (ce === "gzip" || ce === "x-gzip") body = await inflateBytes(body, "gzip");
+  else if (ce === "deflate") body = await inflateBytes(body, "deflate");
+  else if (ce && ce !== "identity") throw new Error("不支持的压缩 " + ce);
+  return { status: parseInt(m[1], 10), text: TXT_DEC.decode(body) };
+}
+
+/** 翻译出站：connect() 直连谷歌（TLS 由运行时完成），自己写一个最简单的 HTTP/1.1 请求。GET 时 body 传 null。deadline 是整体截止时间 */
+async function googleViaConnect(method, pathQs, body, deadline) {
+  const remain = deadline - Date.now();
+  if (remain < 500) throw new Error("没时间了");
+  const payload = body === null ? new Uint8Array(0) : TXT_ENC.encode(body);
+  const head =
+    method + " " + pathQs + " HTTP/1.1\r\n" +
+    "Host: " + GOOGLE_HOST + "\r\n" +
+    "User-Agent: " + TR_HEADERS["user-agent"] + "\r\n" +
+    "Accept: " + TR_HEADERS["accept"] + "\r\n" +
+    "Accept-Language: " + TR_HEADERS["accept-language"] + "\r\n" +
+    "Accept-Encoding: identity\r\n" +
+    (method === "POST" ? "Content-Type: application/x-www-form-urlencoded; charset=UTF-8\r\nContent-Length: " + payload.length + "\r\n" : "") +
+    "Connection: close\r\n\r\n";
+  let socket = null;
+  let timer = null;
+  try {
+    socket = connect({ hostname: GOOGLE_HOST, port: 443 }, { secureTransport: "on", allowHalfOpen: false });
+    const work = (async () => {
+      await socket.opened;
+      const w = socket.writable.getWriter();
+      await w.write(concatBytes([TXT_ENC.encode(head), payload]));
+      w.releaseLock();
+      const rd = socket.readable.getReader();
+      const parts = [];
+      let n = 0;
+      for (;;) {
+        const { value, done } = await rd.read();
+        if (done) break;
+        n += value.length;
+        if (n > MAX_CONNECT_RESP) throw new Error("响应太大");
+        parts.push(value);
+      }
+      return concatBytes(parts);
+    })();
+    work.catch(() => {});
+    const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("超时")), remain); });
+    return await parseHttpResponse(await Promise.race([work, timeout]));
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+    try { if (socket) socket.close(); } catch (_) {}
+  }
+}
+
 /** 翻译转发（规则 9）：只转发到谷歌的 translate_a/single，原文不记录、不缓存 */
 async function handleTranslateGoogle(req, url) {
   if (req.method !== "POST") return json({ ok: false, error: "只接受 POST（原文放在请求体里，不进网址）" }, 405);
@@ -113,22 +233,24 @@ async function handleTranslateGoogle(req, url) {
   const methods = enc.length <= MAX_GET_Q ? ["GET", "POST"] : ["POST"];
   const tried = [];
   let last = null;
+  const bu = new URL(base);
+  const pathQs = bu.pathname + bu.search;
+  const deadline = Date.now() + CONNECT_TOTAL_MS;
   for (const m of methods) {
     let r;
     try {
       r = m === "GET"
-        ? await fetch(base + "&q=" + enc, { method: "GET", headers: TR_HEADERS })
-        : await fetch(base, { method: "POST", headers: Object.assign({ "content-type": "application/x-www-form-urlencoded; charset=UTF-8" }, TR_HEADERS), body: "q=" + enc });
-    } catch (_) {
-      tried.push(m + " 连不上");
+        ? await googleViaConnect("GET", pathQs + "&q=" + enc, null, deadline)
+        : await googleViaConnect("POST", pathQs, "q=" + enc, deadline);
+    } catch (e) {
+      tried.push("connect-" + m + " " + String((e && e.message) || "失败").slice(0, 24));
       continue;
     }
-    const text = await r.text();
-    if (r.ok) {
-      return new Response(text, { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-tr-via": m } });
+    if (r.status >= 200 && r.status < 300) {
+      return new Response(r.text, { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-tr-via": "connect-" + m } });
     }
-    tried.push(m + " " + r.status);
-    last = { status: r.status, text };
+    tried.push("connect-" + m + " " + r.status);
+    last = { status: r.status, text: r.text };
   }
   const code = last && last.status === 429 ? 429 : 502;
   return json({ ok: false, error: "谷歌拒绝了:" + tried.join("、"), detail: last ? snippet(last.text) : "" }, code);
