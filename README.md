@@ -795,6 +795,8 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 | 看到的 | 说明 | 往哪查 |
 |---|---|---|
 | 「谷歌拒绝了:connect-GET 429、connect-POST 429」,详情里有 unusual traffic | 请求到了谷歌,被谷歌拒绝。429 是谷歌返回的;Cloudflare 自己拦的会是 403 或 1xxx 错误页,带 `cf-ray` | Worker 到谷歌这一段:出口 IP、请求特征,见下面「已确认」和「推断」 |
+| 「谷歌拒绝了:connect-GET 302 → www.google.com/sorry/index、connect-POST 302 → …」 | 谷歌把请求跳转到「异常流量」人机验证页(Worker 只留跳转地址的主机和路径,`?` 后面带原文的参数已去掉)。和 429 同类:请求到了谷歌,被谷歌拒绝 | Worker 到谷歌这一段的出口被谷歌限流;换个时间再试,或见「没做的验证和做法」 |
+| 「谷歌拒绝了:connect-GET 302 → www.google.com/sorry/index」(谷歌把请求跳转到「异常流量」验证页) | 和 429 是同一类:谷歌这一刻拒绝了这个出口,不是网络问题,过一阵可能又好。「→ 跳转地址」是线上较新 Worker 的写法,仓库里的 v3.3 只写状态码 | 同上;多试几次、隔一段时间再试 |
 | 「connect-GET 超时、connect-POST 没时间了」 | Worker 里 5 秒时限到了,连谷歌卡住 | Worker 到谷歌;换个时间再试 |
 | 「connect-GET Network connection lost」之类 | `connect()` 没连上谷歌 | 同上 |
 | 键盘只显示「超时」,没有 connect- 字样 | 手机到 Cloudflare 这一段超时(连接 4 秒、读 6 秒) | 空闲后第一次连接(0.47.13 已处理);否则查域名解析 / Host 映射里的 IP |
@@ -811,6 +813,7 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 6. 两个 Worker 的差别:VLESS 代理脚本(`_worker.js`)直连时只搬原始 TCP 字节,请求头和 TLS 握手都是手机自己的,谷歌看不到代理域名;hulian-worker 的 v3 翻译是 Worker 自己用 `fetch()` 构造请求(UA 等写死在脚本里)。
 7. Cloudflare 文档写的:`fetch()` 发出的 Worker 子请求会自动带 `CF-Worker` 头,值是 Worker 所属 zone 的名字;所以 v3 时谷歌能看到 Worker 所属的域名。`CF-Connecting-IP`、`x-real-ip` 在发往非 Cloudflare 站点的子请求里由 Worker 脚本控制:只有「原样转发了原请求的头」时,它们才是客户端的 IP;v3 的 `fetch()` 用的是脚本自己写的 `TR_HEADERS`,没有转发手机发来的任何头,整个脚本里也没有转发 IP 的代码,所以大概率没有把手机 IP 带给谷歌。文档没有说「Worker 自己写了头时,Cloudflare 会不会另外加」,没有抓包验证过(`developers.cloudflare.com/fundamentals/reference/http-headers/`)。按 zone 分配的专用出口 IP 不适用于 `connect()` 建立的连接(`developers.cloudflare.com/smart-shield/configuration/dedicated-egress-ips/other-products/`)。
 8. `connect()` 是纯 TCP,Cloudflare 没法往里加 HTTP 头;v3.3 的请求头全是自己写的,自测检查了里面没有 `cf-`、转发头、Referer、Origin。
+9. 2026-11-14 的翻译测试按钮显示「谷歌拒绝了:connect-GET 302 → www.google.com/sorry/index、connect-POST 302 → www.google.com/sorry/index」:Worker 用 `connect()`(v3.3 / v3.6)访问谷歌,在某些时候也会被谷歌判成异常流量、跳到人机验证页。「通了不等于一直通」已经出现。这时请求到了谷歌,和连接超时无关,0.47.13、0.47.17 的改动也解决不了它。
 
 ### 推断(没有直接证据)
 
@@ -830,6 +833,7 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 - 部署一个临时测试 Worker,用和 v3 一样的 `fetch(..., { headers: TR_HEADERS })` 去请求 `https://httpbin.org/headers`,看返回里有没有 `Cf-Connecting-Ip`、`X-Real-Ip`、`Cf-Worker`,确认 v3 的 `fetch()` 到底有没有把手机 IP 带给谷歌。
 - VLESS 脚本的 `/admin/cf.json`:在通的和不通的域名下各看几次 `colo`,对比机房有没有差别。
 - 做法 A:手机自己和谷歌做 TLS,Worker 只用 `connect()` 搬字节(WebSocket 隧道)。这样请求和 TLS 指纹都是手机的,Worker 也看不到原文;代价是 App 要写一层 socket,握手和保活更费电。
+- 谷歌回 302 跳 sorry 或 429 时,Worker 自己没法换出口(`connect()` 的出口由 Cloudflare 分配)。能试的办法都还没做:让 Worker 在 GET、POST 都被拒时用新连接再试一次(新连接可能换到别的出口,没有证据);换谷歌接口的 `client=` 参数(限流的分桶可能不同,不保证);允许翻译失败后换直连或微软(0.47.12 刻意去掉了自动换引擎,要改回来需要你同意)。做法 A 也解决不了出口被限流。
 
 ### 怎么确认线上跑的是 v3.3
 
@@ -849,3 +853,18 @@ curl -i -X POST "https://<Worker 域名>/tr/google?sl=zh-CN&tl=en" -H "X-Relay-S
 4. 做上面「没做的验证」里加假 `CF-Worker` 头的那一条,判断是不是这个头。
 5. 还不行,再考虑做法 A。
 6. 临时办法:开着 Clash 用。
+
+## 改动:翻译第一次连接提速(0.47.17)
+
+**原因**:0.47.13 把到 Worker 的空闲连接改成 30 秒就关,但预热(打开键盘时提前把连接建好)的间隔还是 4 分钟。结果是预热建好的连接 30 秒后就被关了,而预热又要等 4 分钟才会再做,第一句翻译还是得现握手。
+
+**改动**(都不加定时器、不发心跳,不增加耗电):
+
+- **开始输入翻译内容时预热**(`MyImeService.transChanged` → `warmOnTyping`):翻译框里有了没翻过的原文、要等 0.6 秒才发请求时,顺手把连接预热好,握手藏在这 0.6 秒里。为了不让每个按键都去读设置和查网络,这里每 8 秒最多检查一次,真正要不要发 HEAD 仍由 `Translator.warm` 按间隔决定。
+- **预热间隔和"刚用过"**(`Translator.kt`):经 Worker 的预热间隔改成 25 秒(`WARM_WORKER_EVERY_MS`,比连接池空闲 30 秒短 5 秒,随 `WORKER_POOL_IDLE_S` 一起变);翻译成功也算"刚用过"(`noteWorkerUsed`),连接是热的就不预热。直连(微软、谷歌直连)走系统自己的连接池,间隔仍是 4 分钟。
+- **自建 DoH 客户端加 30 秒空闲连接池**(`RelayDns.kt`):解析结果只缓存 5 分钟,缓存过期后的第一次查询如果用一条闲了 5 分钟的旧连接,常被网络悄悄断掉,会白等 4 秒读超时。这一项只影响用 DoH 的域名;域名有 Host 映射时根本不会问 DoH。
+- **工程里的 Worker 同步成线上的 v3.6**(`tools/worker/hulian-worker.js`):v3.6 = v3.3 的 `connect()` 做法 + 谷歌回 3xx 时错误里带跳转地址(只留主机和路径,`?` 和 `#` 后面的参数去掉,最多 60 字;谷歌的验证页会把原网址连原文放进 `continue=` 参数,所以必须去掉)。v3.5 曾加过 `fetch()` 备用、v3.6 又去掉了,翻译出站仍然只用 `connect()`。Worker 自测补了 3 项(86 → 89):302 的跳转地址、参数不外泄、60 字上限。
+
+**验证到哪一步**:这三处都是 Kotlin 改动,**没有编译验证、没在手机上跑过**(写这次改动的机器上没有 Kotlin 编译器);原有的 29 项自测都是纯 JDK 的,不覆盖这几处。握手大约两个往返,能省多少没法在这里量,要在手机上看。
+
+**这次改动解决不了的**:谷歌拒绝(429,或 302 跳到 `www.google.com/sorry/index`)。那是谷歌对出口的判断,和连接快慢无关,见上面「排查记录」。

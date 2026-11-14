@@ -88,7 +88,7 @@ object Translator {
     @Volatile private var workerOn = false   // 谷歌这一路经你自己的 Worker 中转(设置里的开关,键 g_worker)
     @Volatile private var appCtx: Context? = null
     private var workerHttp: OkHttpClient? = null
-    private var workerDns: RelayDns? = null   // 和剪贴板联动共用的解析器(同一个 Worker),见 ClipSync.sharedDns
+    private var workerDns: RelayDns? = null   // 翻译自己的解析器(和剪贴板联动的互不影响)
 
     /** 没有设置 Worker 地址和口令(开了「经 Worker 中转」却没设置)。 */
     private class NotSet : IOException("没有设置 Worker 地址和口令")
@@ -124,21 +124,13 @@ object Translator {
     fun warm(primary: String) {
         val eng = if (primary == GOOGLE) GOOGLE else MS
         val viaWorker = workerOn && eng == GOOGLE
+        // 经 Worker 的连接池里空闲 30 秒的连接就自己关了,所以间隔要比它短;直连走系统自己的连接池(留得久),仍是 4 分钟
+        val every = if (viaWorker) WARM_WORKER_EVERY_MS else WARM_EVERY_MS
         val now = SystemClock.elapsedRealtime()
-        if (viaWorker) {
-            // 经 Worker:连接池里的连接闲 30 秒就关,4 分钟一次的节流会让预热白做。改成看池子:还有活着的连接就不发,
-            // 没有(第一次 / 闲久了被关了)就立刻补建;正在建的、3 秒内刚试过的不重复发。事件触发(键盘弹出、翻译框里打第一个字),没有定时器。
-            val c = workerHttp
-            if (c != null && c.connectionPool.connectionCount() > 0) return
-            if (workerWarming.get() || now - warmedAt < 3_000L) return
-            warmedAt = now
-        } else {
-            if (now - warmedAt < WARM_EVERY_MS) return
-            warmedAt = now
-        }
+        if (now - warmedAt < every) return
+        warmedAt = now
         val base = if (eng == GOOGLE) gUrl.ifBlank { DEF_G_FREE } else msUrl.ifBlank { DEF_MS_FREE }
         val app = appCtx
-        if (viaWorker) workerWarming.set(true)
         Thread {
             try {
                 if (viaWorker) {
@@ -158,18 +150,22 @@ object Translator {
                 if (c.responseCode < 400) c.inputStream.close() else c.errorStream?.close()
             } catch (t: Throwable) {
                 warmedAt = -WARM_EVERY_MS   // 没成功:下次还可以再试
-            } finally {
-                if (viaWorker) workerWarming.set(false)
             }
         }.start()
     }
-
-    private val workerWarming = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private const val WARM_EVERY_MS = 4 * 60_000L
 
     /** 到 Worker 的连接池:空闲这么久(秒)就自己关,下次用时重连,避免用到被网络悄悄断掉的旧连接。 */
     private const val WORKER_POOL_IDLE_S = 30L
+
+    /** 经 Worker 的预热间隔:比连接池的空闲时限短 5 秒,这样只有连接可能已经被关了的时候才预热。 */
+    private const val WARM_WORKER_EVERY_MS = (WORKER_POOL_IDLE_S - 5) * 1000L
+
+    /** 刚用过到 Worker 的连接(翻译成功):池里这条是热的,预热的计时从现在重新算。 */
+    private fun noteWorkerUsed() {
+        warmedAt = SystemClock.elapsedRealtime()
+    }
 
     private fun withQuery(base: String, query: String) = base + (if (base.contains('?')) "&" else "?") + query
 
@@ -341,6 +337,7 @@ object Translator {
                 }
                 throw WorkerFail(r.code, msg, detail)
             }
+            noteWorkerUsed()   // 连接刚用过,池里这条是热的:下一次预热从现在起 25 秒后再算
             return parseGtx(r.body?.string() ?: "")
         }
     }
@@ -363,7 +360,7 @@ object Translator {
 
     @Synchronized
     private fun workerClient(app: Context): OkHttpClient = workerHttp ?: OkHttpClient.Builder()
-        .dns(ClipSync.sharedDns(app).also { workerDns = it })
+        .dns(RelayDns(app).also { workerDns = it })
         .connectionPool(ConnectionPool(2, WORKER_POOL_IDLE_S, TimeUnit.SECONDS))
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(6, TimeUnit.SECONDS)

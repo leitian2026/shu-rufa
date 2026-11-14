@@ -237,6 +237,8 @@ globalThis.__cfConnect = (opts, o) => {
         if (upMode === "429") chunks = [resp(429, HTML_429, "Content-Type: text/html\n")];
         else if (upMode === "getfail") chunks = [m === "GET" ? resp(429, "slow down") : resp(200, OK_BODY)];
         else if (upMode === "500") chunks = [resp(500, "oops")];
+        else if (upMode === "302") chunks = [resp(302, "<HTML><HEAD><TITLE>302 Moved</TITLE></HEAD><BODY><H1>302 Moved</H1>The document has moved <A HREF=\"https://www.google.com/sorry/index?continue=x\">here</A>.</BODY></HTML>", "Location: https://www.google.com/sorry/index?continue=https%3A%2F%2Ftranslate.googleapis.com%2Ftranslate_a%2Fsingle%3Fq%3Dsecret-text&q=secret-text#frag\n")];
+        else if (upMode === "302long") chunks = [resp(302, "moved", "Location: /" + "a".repeat(100) + "?q=secret-text\n")];
         else if (upMode === "chunked") chunks = [chunkedResp(CHUNK_BODY, 7)];
         else if (upMode === "gzip") {
           const gz = zlib.gzipSync(OK_BODY);
@@ -309,6 +311,20 @@ tr = await trPost("?sl=zh-CN&tl=en", "q=" + encodeURIComponent("你好"));
 upMode = "500";
 tr = await trPost("?sl=zh-CN&tl=en", "q=hi");
 t(tr.status === 502 && JSON.parse(tr.text).error.includes("connect-GET 500、connect-POST 500"), "翻译转发:谷歌返回别的错误 → 回 502,错误里写明");
+upMode = "302";
+tr = await trPost("?sl=zh-CN&tl=en", "q=" + encodeURIComponent("秘密原文"));
+{
+  const e = JSON.parse(tr.text).error;
+  t(tr.status === 502 && e.includes("connect-GET 302 → www.google.com/sorry/index、connect-POST 302 → www.google.com/sorry/index"), "翻译转发:谷歌回 302 跳到 sorry 验证页 → 错误里写明跳转到哪(只有主机和路径),状态码 502");
+  t(!e.includes("?") && !e.includes("continue") && !e.includes("secret-text") && !e.includes("frag") && !e.includes("秘密原文"), "翻译转发:跳转地址里 ? 和 # 后面的参数(里面有原文)一律去掉,错误信息里不含原文");
+}
+upMode = "302long";
+tr = await trPost("?sl=zh-CN&tl=en", "q=hi");
+{
+  const e = JSON.parse(tr.text).error;
+  const m = /connect-GET 302 → (\S+?)、/.exec(e);
+  t(m && m[1].length === 60 && !e.includes("secret-text"), "翻译转发:跳转地址最多 60 字,相对路径也一样去掉参数");
+}
 upMode = "throw";
 tr = await trPost("?sl=zh-CN&tl=en", "q=hi");
 {

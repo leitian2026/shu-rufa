@@ -145,7 +145,6 @@ public final class ClipRelayCore {
         public long rosterTtlMs = 3_600_000;   // 设备名册缓存多久
         public long replyTimeoutMs = 8_000;    // 等 Worker 确认"收到了"的时间
         public long connectTimeoutMs = 15_000;
-        public long firstTryMs = 5_000;        // 第一次连接只等这么久,超时就关掉重连一次(重连那次才等满 connectTimeoutMs)
         /** 连着的连接超过这么久没发过 ping(也没重新连过),就当 Worker 已经把它关了,下次用之前重连。
          *  Worker 的 HEARTBEAT_TIMEOUT_MS 也是 90 秒,而且只认 ping 和连上的那一刻(notify、ack 不重置它),所以这里也只算这两样;
          *  不能比 Worker 的时限长,自测会对照 tools/worker/hulian-worker.js 检查。 */
@@ -517,21 +516,17 @@ public final class ClipRelayCore {
                 // 标志是开着,但已经过了 Worker 的空闲时限:不信它,先关掉再重连(关的时候会回调 onClosed,清掉旧的在线名单)
                 t.close();
             }
-            // 第一次只等 firstTryMs:这一跳多半是 SYN 被丢 / 路径卡住,等满 15 秒不如关掉重来一次(重来时 DNS 结果已在缓存里);
-            // 重试那次才等满 connectTimeoutMs。明确失败(证书、被拒、DNS 失败)不重试,原样报错。
-            long first = Math.min(cfg.firstTryMs, cfg.connectTimeoutMs);
-            for (int attempt = 0; ; attempt++) {
-                openLatch = new CountDownLatch(1);
-                closedWhy = null;
-                t.connect(listener);
-                try {
-                    if (openLatch.await(attempt == 0 ? first : cfg.connectTimeoutMs, TimeUnit.MILLISECONDS)) break;
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new IOException("被中断");
+            openLatch = new CountDownLatch(1);
+            closedWhy = null;
+            t.connect(listener);
+            try {
+                if (!openLatch.await(cfg.connectTimeoutMs, TimeUnit.MILLISECONDS)) {
+                    t.close();
+                    throw new IOException("连接 Worker 超时");
                 }
-                t.close();
-                if (attempt >= 1 || first >= cfg.connectTimeoutMs) throw new IOException("连接 Worker 超时");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("被中断");
             }
             if (!t.isOpen()) throw new IOException(closedWhy == null ? "连接 Worker 失败" : closedWhy);
         }

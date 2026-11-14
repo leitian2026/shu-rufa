@@ -311,9 +311,6 @@ object ClipSync {
     @Synchronized
     private fun relayDns(app: Context): RelayDns = dns ?: RelayDns(app.applicationContext).also { dns = it }
 
-    /** 翻译(经 Worker)和剪贴板联动连的是同一个 Worker,共用这一个解析器:谁先解析,另一个直接用缓存,不再各问一遍。 */
-    fun sharedDns(app: Context): RelayDns = relayDns(app)
-
     /**
      * 保存了新的 Worker 地址 / 口令之后调用:断开旧连接,清掉这台设备的联动状态(不同的 Worker 里序号和快照互不相关),
      * 当作第一次加入重来。联动开着就马上连一次。
@@ -335,7 +332,7 @@ object ClipSync {
         val app = ctx.applicationContext
         closeEngine()
         relayDns(app).reset()
-        Translator.dnsChanged()   // 翻译和这里共用解析器,但各有各的连接池;设置改了它的连接池也要清
+        Translator.dnsChanged()   // 翻译有自己的解析器和连接池(和这里互不影响),设置改了它的也要清
         BackupConfig.prefs(app).edit().putLong(K_NEXT, 0L).apply()
         notifyStatus()
     }
@@ -375,17 +372,6 @@ object ClipSync {
             if (!online(app)) setMsg(app, "等待网络") else withEngine(app) { it.onShown() }
         }
         if (davUsable(app)) davRequest(app, manual = false, minGap = DAV_PULL_GAP_MS)
-    }
-
-    /** 打开剪贴板面板时(后台线程调):联动开着、没连着、有网才连(连着就什么都不发,不额外联网)。 */
-    fun onPanelOpened(app: Context) {
-        try {
-            if (!relayUsable(app) || !online(app)) return
-            if (engine?.isConnected() == true) return
-            withEngine(app) { it.onShown() }
-        } catch (e: Exception) {
-            // 联动出任何问题都不能影响打字
-        }
     }
 
     /** 键盘收起时(后台线程调):本机有还没发出去的改动就发。 */

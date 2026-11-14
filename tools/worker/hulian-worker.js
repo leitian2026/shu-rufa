@@ -3,7 +3,7 @@
 // 收到 App 回的 {op:"ack", n:序号} 才删；没回执的会在它下次连上时补发。旧版 App 不带这个头，行为和以前完全一样。
 //
 // ======================================================================================================
-//  多个 App 共用这个 Worker 的规则（v2 起；v3 加了第 9 条；v3.3 翻译出站改为只用 connect()）。以后加新 App 的人请先读完，并且不要改变已有命名空间的行为
+//  多个 App 共用这个 Worker 的规则（v2 起；v3 加了第 9 条；v3.3 翻译出站改为只用 connect()；v3.4 谷歌回 3xx 时错误里带上跳转地址；v3.5 曾加 fetch() 备用，v3.6 已去掉，翻译出站仍然只用 connect()）。以后加新 App 的人请先读完，并且不要改变已有命名空间的行为
 // ======================================================================================================
 //  1. 命名空间：每个 App 连接 /ws 和访问 /r2 时，用请求头 X-App 声明自己的命名空间（小写字母或数字，最长 16 位，例如 clip）。
 //     不带 X-App 的都算“老 App”这一组（命名空间是空字符串），互传目前就是这一组，行为和 v1 完全一样。
@@ -28,6 +28,7 @@
 //     被拒绝或原文太长就用 POST（q 在请求体里）。整体时限 5 秒（键盘最多等回复 6 秒），响应最大 256 KB。
 //     本脚本不记录、不缓存内容（返回 no-store），谷歌自己当然能看到原文。
 //     全部失败时，返回的错误里带上每一种方式的结果（例如「connect-GET 429、connect-POST 429」）和谷歌返回内容的开头一小段（去掉标签、限 200 字，不含原文），方便看出原因；
+//     谷歌回 3xx（例如 302 跳到 google.com/sorry 人机验证页）时，结果里多带一段跳转地址：只留主机和路径，网址里 ? 后面的参数一律去掉（那里面有原文），最多 60 字，例如「connect-GET 302 → www.google.com/sorry/index」；
 //     谷歌返回 429 就回 429，其余失败回 502。成功时响应头 x-tr-via 是 connect-GET 或 connect-POST。
 //     这条路径不碰 /ws、/r2 和任何命名空间的数据，别的 App 的行为不受影响。
 import { connect } from "cloudflare:sockets";   // 翻译出站用（规则 9）
@@ -171,7 +172,12 @@ async function parseHttpResponse(raw) {
   if (ce === "gzip" || ce === "x-gzip") body = await inflateBytes(body, "gzip");
   else if (ce === "deflate") body = await inflateBytes(body, "deflate");
   else if (ce && ce !== "identity") throw new Error("不支持的压缩 " + ce);
-  return { status: parseInt(m[1], 10), text: TXT_DEC.decode(body) };
+  return { status: parseInt(m[1], 10), text: TXT_DEC.decode(body), location: hdr["location"] || "" };
+}
+
+/** 3xx 的跳转地址只留主机和路径：去掉 ? 和 # 后面的（谷歌的验证页会把原网址连原文一起放在 continue= 参数里），最多 60 字 */
+function locBrief(loc) {
+  return String(loc || "").split("?")[0].split("#")[0].replace(/^https?:\/\//i, "").slice(0, 60);
 }
 
 /** 翻译出站：connect() 直连谷歌（TLS 由运行时完成），自己写一个最简单的 HTTP/1.1 请求。GET 时 body 传 null。deadline 是整体截止时间 */
@@ -249,7 +255,8 @@ async function handleTranslateGoogle(req, url) {
     if (r.status >= 200 && r.status < 300) {
       return new Response(r.text, { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-tr-via": "connect-" + m } });
     }
-    tried.push("connect-" + m + " " + r.status);
+    const lb = r.status >= 300 && r.status < 400 ? locBrief(r.location) : "";
+    tried.push("connect-" + m + " " + r.status + (lb ? " → " + lb : ""));
     last = { status: r.status, text: r.text };
   }
   const code = last && last.status === 429 ? 429 : 502;

@@ -1877,10 +1877,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         mode = target
         refreshLayout(animate = true)
         if (target == Mode.SETTINGS) refreshCharCount()
-        if (target == Mode.CLIPBOARD) {
-            val app = applicationContext
-            ioPool.execute { ClipSync.onPanelOpened(app) }   // 打开剪贴板面板:Worker 连接闲久了断了就趁现在连上(连着的话不做事)
-        }
     }
 
     /** 功能页标题旁边的「已用过不同汉字 N 个」:每次打开功能页在后台线程算一次(读几张表,几毫秒到几十毫秒),算完再显示。上次的数先留着,不闪。 */
@@ -3858,13 +3854,27 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
 
     /**
      * 翻译打开时,提前在后台把到翻译服务器的连接(域名解析 + TLS 握手)建好并放进连接池,
-     * 这样第一句翻译不用再等握手。只发一个很小的 HEAD 请求,4 分钟内最多一次;没开翻译 / 没网时不发。
+     * 这样第一句翻译不用再等握手。只发一个很小的 HEAD 请求;经 Worker 的 25 秒内最多一次(连接池 30 秒就关空闲连接),
+     * 直连的 4 分钟内最多一次;没开翻译 / 没网时不发。
      */
     private fun warmTranslate() {
         if (!transActive || !isOnline()) return
         val primary = DictConfig.translateEngine(applicationContext)
         Translator.load(applicationContext)
         Translator.warm(primary)
+    }
+
+    private var typeWarmAt = -8_000L   // 上次因为打字检查预热的时刻(elapsedRealtime)
+
+    /**
+     * 翻译框里有了没翻过的原文、要等 0.6 秒才发请求时,顺手把连接预热好:握手藏在这 0.6 秒里。
+     * 每 8 秒最多检查一次,免得每个按键都去读设置和查网络;要不要真发 HEAD 由 Translator.warm 按间隔决定。
+     */
+    private fun warmOnTyping() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - typeWarmAt < 8_000L) return
+        typeWarmAt = now
+        warmTranslate()
     }
 
     private fun setTransOn(on: Boolean) {
@@ -3890,7 +3900,6 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (filled != transFilled) {
             transFilled = filled
             refreshLayout(animate = false)
-            if (filled) warmTranslate()   // 翻译框里打第一个字:连接要是闲久了被池子关了,趁 0.6 秒防抖的空档补建(池子里有活连接就什么都不做)
         }
         if (transBuf.isBlank()) {
             transStatus = TranslateBarView.STATUS_NONE
@@ -3905,6 +3914,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             transSrc = src
             writeShown(hit)
         } else {
+            warmOnTyping()   // 握手藏在下面这 0.6 秒的等待里
             main.postDelayed(transRun, TRANS_DEBOUNCE_MS)
         }
         transUi()

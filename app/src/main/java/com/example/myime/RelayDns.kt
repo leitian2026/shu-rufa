@@ -31,14 +31,10 @@ class RelayDns(private val app: Context) : Dns {
         val dohOn = RelayCfg.dohOn(app)
         val sysOk = RelayCfg.sysDns(app)
         val dohs = if (dohOn) dohList(RelayCfg.dohText(app), hosts, hostsText, sysOk) else emptyList()
-        // 剪贴板和翻译共用这个解析器、而且键盘一弹出就同时来问同一个域名:DoH 开着时排队,后到的直接吃前一个写进缓存的结果,不重复问 DoH 服务器
-        val res = if (dohOn) synchronized(dohLock) { resolver.resolve(hostname, hosts, dohOn, dohs, sysOk, system, System.currentTimeMillis()) }
-        else resolver.resolve(hostname, hosts, dohOn, dohs, sysOk, system, System.currentTimeMillis())
+        val res = resolver.resolve(hostname, hosts, dohOn, dohs, sysOk, system, System.currentTimeMillis())
         sources[hostname.lowercase()] = res.source
         return res.addrs
     }
-
-    private val dohLock = Any()
 
     /** 这个域名最近一次(这个实例里)是怎么解析出来的:Host 映射 / 自建 DoH / 系统 DNS;还没解析过是 null。给「测试连接」用。 */
     fun sourceOf(host: String): String? = sources[host.lowercase()]
@@ -58,6 +54,7 @@ class RelayDns(private val app: Context) : Dns {
         val key = text + "\n" + hostsKey + "\n" + sysOk
         dohCache?.let { if (it.first == key) return it.second }
         val client = OkHttpClient.Builder()
+            .connectionPool(okhttp3.ConnectionPool(1, DOH_POOL_IDLE_S, TimeUnit.SECONDS))
             .connectTimeout(4, TimeUnit.SECONDS)
             .readTimeout(4, TimeUnit.SECONDS)
             .callTimeout(6, TimeUnit.SECONDS)
@@ -81,3 +78,9 @@ class RelayDns(private val app: Context) : Dns {
         return list
     }
 }
+
+/**
+ * 自建 DoH 客户端的连接池:空闲这么久(秒)就自己关,下次用时重连。解析结果只缓存 5 分钟,缓存过期后的第一次查询,
+ * 如果用一条闲了 5 分钟的旧连接,常常是被网络悄悄断掉的,会白等 4 秒读超时才失败。不发心跳,不耗电。
+ */
+private const val DOH_POOL_IDLE_S = 30L
