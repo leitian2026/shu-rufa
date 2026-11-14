@@ -3829,6 +3829,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         transBar?.setContent(
             transBuf.toString(), Translator.pairs[transPair].label, transStatus,
             if (transStatus == TranslateBarView.STATUS_FAILED && isOnline()) Translator.lastFail else "",
+            Translator.lastColo,
         )
     }
 

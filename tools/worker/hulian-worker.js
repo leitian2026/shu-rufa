@@ -3,7 +3,7 @@
 // 收到 App 回的 {op:"ack", n:序号} 才删；没回执的会在它下次连上时补发。旧版 App 不带这个头，行为和以前完全一样。
 //
 // ======================================================================================================
-//  多个 App 共用这个 Worker 的规则（v2 起；v3 加了第 9 条；v3.3 翻译出站改为只用 connect()；v3.4 谷歌回 3xx 时错误里带上跳转地址；v3.5 曾加 fetch() 备用，v3.6 已去掉，翻译出站仍然只用 connect()）。以后加新 App 的人请先读完，并且不要改变已有命名空间的行为
+//  多个 App 共用这个 Worker 的规则（v2 起；v3 加了第 9 条；v3.3 翻译出站改为只用 connect()；v3.4 谷歌回 3xx 时错误里带上跳转地址；v3.5 曾加 fetch() 备用，v3.6 已去掉，翻译出站仍然只用 connect()；v3.7 翻译的响应里带上机房）。以后加新 App 的人请先读完，并且不要改变已有命名空间的行为
 // ======================================================================================================
 //  1. 命名空间：每个 App 连接 /ws 和访问 /r2 时，用请求头 X-App 声明自己的命名空间（小写字母或数字，最长 16 位，例如 clip）。
 //     不带 X-App 的都算“老 App”这一组（命名空间是空字符串），互传目前就是这一组，行为和 v1 完全一样。
@@ -30,6 +30,9 @@
 //     全部失败时，返回的错误里带上每一种方式的结果（例如「connect-GET 429、connect-POST 429」）和谷歌返回内容的开头一小段（去掉标签、限 200 字，不含原文），方便看出原因；
 //     谷歌回 3xx（例如 302 跳到 google.com/sorry 人机验证页）时，结果里多带一段跳转地址：只留主机和路径，网址里 ? 后面的参数一律去掉（那里面有原文），最多 60 字，例如「connect-GET 302 → www.google.com/sorry/index」；
 //     谷歌返回 429 就回 429，其余失败回 502。成功时响应头 x-tr-via 是 connect-GET 或 connect-POST。
+//     v3.7 起，成功和失败的响应里都带机房（这次请求落在哪个 Cloudflare 机房，request.cf.colo，例如 HKG）：响应头 x-tr-colo，失败时错误 JSON 里也有 colo 字段。
+//     Worker 在哪个机房跑，访问谷歌的出口 IP 就是从那个机房的地址池里分的，所以手机把它显示出来，方便观察哪些机房被谷歌限流。
+//     只留字母数字、最多 8 位、统一大写；取不到就不带；不含任何原文。
 //     这条路径不碰 /ws、/r2 和任何命名空间的数据，别的 App 的行为不受影响。
 import { connect } from "cloudflare:sockets";   // 翻译出站用（规则 9）
 var DEVICE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -75,8 +78,8 @@ function tagOf(app, dev) {
   return app ? app + "~" + dev : dev;
 }
 
-function json(o, status = 200) {
-  return new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+function json(o, status = 200, extra = null) {
+  return new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json; charset=utf-8", ...(extra || {}) } });
 }
 
 /** 需要回执的通知：新消息、已收到(got)、取消 / 拒绝、已读 / 撤回等控制消息（丢了发送方状态就不对了）。分段进度、暂停、取消等丢了有网盘兜底，不走回执 */
@@ -224,6 +227,12 @@ async function googleViaConnect(method, pathQs, body, deadline) {
   }
 }
 
+/** 这次请求落在哪个 Cloudflare 机房（request.cf.colo，例如 HKG）。只留字母和数字、最多 8 位、统一大写；取不到或格式不对就是空（不原样回显别人给的东西） */
+function coloOf(req) {
+  const c = req && req.cf && req.cf.colo ? String(req.cf.colo) : "";
+  return /^[A-Za-z0-9]{1,8}$/.test(c) ? c.toUpperCase() : "";
+}
+
 /** 翻译转发（规则 9）：只转发到谷歌的 translate_a/single，原文不记录、不缓存 */
 async function handleTranslateGoogle(req, url) {
   if (req.method !== "POST") return json({ ok: false, error: "只接受 POST（原文放在请求体里，不进网址）" }, 405);
@@ -242,6 +251,8 @@ async function handleTranslateGoogle(req, url) {
   const bu = new URL(base);
   const pathQs = bu.pathname + bu.search;
   const deadline = Date.now() + CONNECT_TOTAL_MS;
+  const colo = coloOf(req);
+  const cx = colo ? { "x-tr-colo": colo } : {};
   for (const m of methods) {
     let r;
     try {
@@ -253,14 +264,14 @@ async function handleTranslateGoogle(req, url) {
       continue;
     }
     if (r.status >= 200 && r.status < 300) {
-      return new Response(r.text, { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-tr-via": "connect-" + m } });
+      return new Response(r.text, { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-tr-via": "connect-" + m, ...cx } });
     }
     const lb = r.status >= 300 && r.status < 400 ? locBrief(r.location) : "";
     tried.push("connect-" + m + " " + r.status + (lb ? " → " + lb : ""));
     last = { status: r.status, text: r.text };
   }
   const code = last && last.status === 429 ? 429 : 502;
-  return json({ ok: false, error: "谷歌拒绝了:" + tried.join("、"), detail: last ? snippet(last.text) : "" }, code);
+  return json({ ok: false, error: "谷歌拒绝了:" + tried.join("、"), detail: last ? snippet(last.text) : "", ...(colo ? { colo } : {}) }, code, cx);
 }
 
 /** 经 Worker 存取 R2（绑定变量名 BUCKET）：手机不用持有 R2 密钥。对象名 = /r2/ 后面的路径；列表返回和 S3 ListObjectsV2 相同的 XML 子集 */

@@ -348,7 +348,22 @@ upMode = "hang";
   const e = JSON.parse(tr.text).error;
   t(tr.status === 502 && e.includes("connect-GET 超时") && e.includes("connect-POST 没时间了") && dt >= 4800 && dt < 6000 && upCalls.at(-1).closed, `翻译转发:谷歌一直不回 → 约 5 秒后 502、关掉连接,GET 卡住后 POST 不再接着卡(用时 ${dt} ms,键盘最多等 6 秒)`);
 }
+// 机房(v3.7):成功和失败的响应都带 request.cf.colo,键盘和测试按钮里用来观察
 upMode = "ok";
+{
+  const q = (colo) => w.http("POST", "/tr/google?sl=zh-CN&tl=en", { headers: TR, body: "q=hi", colo });
+  const c1 = await q("HKG");
+  t(c1.status === 200 && c1.headers.get("x-tr-colo") === "HKG", "翻译转发:成功时响应头带机房 x-tr-colo");
+  t((await q("hkg")).headers.get("x-tr-colo") === "HKG", "翻译转发:机房统一成大写");
+  t((await q(undefined)).headers.get("x-tr-colo") === null, "翻译转发:取不到机房就不带这个头");
+  t((await q("H K<G>")).headers.get("x-tr-colo") === null, "翻译转发:机房里有字母数字以外的字符就不带(不原样回显)");
+  upMode = "429";
+  const e1 = await q("SJC");
+  const ej = JSON.parse(e1.text);
+  t(e1.status === 429 && e1.headers.get("x-tr-colo") === "SJC" && ej.colo === "SJC" && ej.error.includes("connect-GET 429"), "翻译转发:失败时响应头和错误 JSON 里都带机房");
+  t(!("colo" in JSON.parse((await q(undefined)).text)), "翻译转发:取不到机房时错误 JSON 里没有 colo 字段");
+  upMode = "ok";
+}
 t(fetchCalls === 0, "翻译转发:全程没有调用 fetch(翻译只用 connect())");
 const n1 = upCalls.length;
 t((await trPost("/x?sl=zh-CN&tl=en", "q=hi")).status === 404, "翻译转发:不是 /tr/google 的路径 404");

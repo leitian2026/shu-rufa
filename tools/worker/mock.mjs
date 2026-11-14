@@ -198,11 +198,13 @@ export async function createWorld(modPath, { secret = "s3cret" } = {}) {
       };
       return c;
     },
-    async http(method, path, { headers = {}, body, secretOverride } = {}) {
+    async http(method, path, { headers = {}, body, secretOverride, colo } = {}) {
       const h = new Headers({ "X-Relay-Secret": secretOverride ?? secret, ...headers });
       const init = { method, headers: h };
       if (body !== undefined && method !== "GET") init.body = body;
-      const res = await mod.default.fetch(new Request("https://w.example" + path, init), env);
+      const rq = new Request("https://w.example" + path, init);
+      if (colo !== undefined) Object.defineProperty(rq, "cf", { value: { colo } });   // 模拟 Cloudflare 给请求挂上的 request.cf
+      const res = await mod.default.fetch(rq, env);
       const text = await res.text();
       return { status: res.status, text, headers: res.headers };
     },

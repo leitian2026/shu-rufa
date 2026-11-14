@@ -60,6 +60,9 @@ object Translator {
 
     /** 最近一次翻译失败的原因,给翻译框显示(例如「微软403」「谷歌超时」),方便判断是网络还是接口的问题。 */
     @Volatile var lastFail = ""
+
+    /** 经 Worker 翻译时,Worker 回的机房(Cloudflare 数据中心代码,例如 HKG):Worker 在哪个机房跑,访问谷歌的出口 IP 就是从那个机房的地址池里分的。每次 Worker 回应(成功或失败)都更新;空 = 还不知道(没开 Worker、还没翻过、连不上)。键盘翻译框和「测试谷歌」用它来显示,方便观察。 */
+    @Volatile var lastColo = ""
         private set
 
     private class HttpFail(val code: Int) : IOException("HTTP $code")
@@ -94,10 +97,11 @@ object Translator {
     private class NotSet : IOException("没有设置 Worker 地址和口令")
 
     /** Worker 返回了错误:msg 是 Worker 写的原因(例如「谷歌拒绝了:GET 429、POST 429」),detail 是谷歌返回内容的开头一小段(不含原文)。 */
-    private class WorkerFail(val code: Int, val msg: String, val detail: String) : IOException("HTTP $code $msg")
+    private class WorkerFail(val code: Int, val msg: String, val detail: String, val colo: String = "") : IOException("HTTP $code $msg")
 
     fun load(ctx: android.content.Context) {
         workerOn = DictConfig.transSetting(ctx, "g_worker") == "1"
+        if (!workerOn) lastColo = ""
         appCtx = ctx.applicationContext
         msUrl = DictConfig.transSetting(ctx, "ms_url")
         msKey = DictConfig.transSetting(ctx, "ms_key")
@@ -108,6 +112,13 @@ object Translator {
 
     /** 主页的「测试」按钮用:只试指定的一个引擎(不换备用、不查缓存),返回译文或失败原因。后台线程调用。 */
     fun test(e: String): String {
+        if (e == GOOGLE && workerOn) lastColo = ""   // 先清掉,免得显示上一次的机房
+        val r = testOnce(e)
+        val c = lastColo
+        return if (e == GOOGLE && workerOn && c.isNotEmpty()) "$r(机房 $c)" else r
+    }
+
+    private fun testOnce(e: String): String {
         val p = pairs[0]
         return try {
             val out = if (e == GOOGLE) google("你好", p) else microsoft("你好", p)
@@ -182,6 +193,7 @@ object Translator {
         cache.get(key(text, p))?.let { return TransResult(it, "cache") }
         if (cancelled()) return null   // 原文已经又变了:不再发请求
         val e = if (primary == GOOGLE) GOOGLE else MS
+        if (!(workerOn && e == GOOGLE)) lastColo = ""   // 这次不经 Worker:别显示上一次的机房
         var reason: String
         try {
             val out = if (e == GOOGLE) google(text, p) else microsoft(text, p)
@@ -335,11 +347,22 @@ object Translator {
                 } catch (e: Exception) {
                     // 不是 Worker 的错误格式(比如口令不对时别的网关回的页面):只报状态码
                 }
-                throw WorkerFail(r.code, msg, detail)
+                throw WorkerFail(r.code, msg, detail, noteColo(r.header("x-tr-colo")))
             }
             noteWorkerUsed()   // 连接刚用过,池里这条是热的:下一次预热从现在起 25 秒后再算
+            noteColo(r.header("x-tr-colo"))
             return parseGtx(r.body?.string() ?: "")
         }
+    }
+
+    /** 记下 Worker 回的机房:只收 1~8 位字母数字(防止乱七八糟的内容进到界面上),取不到就保持原来的。返回这次的机房(可能为空)。 */
+    private fun noteColo(c: String?): String {
+        val v = c?.trim().orEmpty()
+        if (v.length in 1..8 && v.all { it.isLetterOrDigit() && it.code < 128 }) {
+            lastColo = v.uppercase()
+            return lastColo
+        }
+        return ""
     }
 
     /** 域名解析设置改了:清掉翻译自己的解析缓存,丢掉连到 Worker 的旧客户端和它连接池里已建好的连接,下次按新设置重新解析、重新连。 */

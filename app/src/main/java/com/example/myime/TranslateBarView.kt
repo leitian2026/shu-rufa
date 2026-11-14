@@ -38,6 +38,7 @@ class TranslateBarView(
     private var lang = ""
     private var status = STATUS_NONE
     private var detail = ""
+    private var colo = ""   // Worker 所在的机房(例如 HKG),翻译成功后用淡色小字显示在框里,方便观察出口
 
     private val bgPaint = Paint()
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -212,10 +213,11 @@ class TranslateBarView(
     }
 
     /** 原文、方向按钮上的文字、状态(转圈用的 … / 失败)变了就重画;都没变不重画。 */
-    fun setContent(text: String, lang: String, status: Int, detail: String = "") {
+    fun setContent(text: String, lang: String, status: Int, detail: String = "", colo: String = "") {
         val t = text.replace('\n', ' ')
-        if (t == this.text && lang == this.lang && status == this.status && detail == this.detail) return
+        if (t == this.text && lang == this.lang && status == this.status && detail == this.detail && colo == this.colo) return
         this.detail = detail
+        this.colo = colo
         // 排版只和「方向文字」「框里有没有字(完成 / 关闭)」有关,打字过程中不用重排
         val relayout = lang != this.lang || t.isEmpty() != this.text.isEmpty()
         this.text = t
@@ -313,10 +315,15 @@ class TranslateBarView(
             canvas.drawLine(cx, cy - context.dpf(10f), cx, cy + context.dpf(10f), linePaint)
             canvas.restore()
 
-            // 状态:翻译中 / 失败(画在 × 的左边)
+            // 状态:翻译中 / 失败(画在 × 的左边);失败时后面带上机房
             if (status != STATUS_NONE) {
                 smallPaint.color = if (status == STATUS_FAILED) 0xFFD93025.toInt() else palette.textFaint
-                canvas.drawText(if (status == STATUS_FAILED) (if (detail.isEmpty()) "翻译失败" else "失败:$detail") else "…", innerR - context.dpf(2f), cy + smallBase, smallPaint)
+                val msg = if (status == STATUS_FAILED) (if (detail.isEmpty()) "翻译失败" else "失败:$detail") + (if (colo.isEmpty()) "" else " · $colo") else "…"
+                canvas.drawText(msg, innerR - context.dpf(2f), cy + smallBase, smallPaint)
+            } else if (colo.isNotEmpty()) {
+                // 没在翻译也没失败:右边用淡色小字显示 Worker 所在的机房;原文太长放不下就不画,不挡着输入
+                smallPaint.color = palette.textFaint
+                if (tw + caretGap + smallPaint.measureText(colo) + context.dpf(10f) <= innerW) canvas.drawText(colo, innerR - context.dpf(2f), cy + smallBase, smallPaint)
             }
 
             // × 清空

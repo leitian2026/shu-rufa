@@ -718,7 +718,7 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 - **本机记录**:`files/user/clipmeta.txt`(每条内容的 id、状态、时间,不含文字;和剪贴板文件一样加密保存、随备份还原,备份时解成明文)。同步状态(序号、收到每台设备哪个序号、名册、是否加入过)在 `backupcfg`(设备专属,不进备份)。从备份还原后 `ClipSync.afterRestore` 清掉这些,当作第一次加入重来。
 - **界面**:备份页「5. 剪贴板联动」有两个通道开关、「立即同步剪贴板」、「删除云端本机的快照」,状态里显示连接情况、上次成功时间、解不开的消息数;剪贴板页标题行下面那行小字,联动开着时改成联动状态(「联动:已连接,实时同步」「联动:同步失败…」「联动:等待网络」),关着时仍是原来的提示。标题行已经放不下第四个按键,所以快速开关只在备份页;为了让标题右边放得下条数("17/500"),剪贴板页标题行的键排得紧了一点(每个键左右的空白 24dp → 16dp,键间距 6dp → 4dp,别的面板不变);屏幕太窄放不下时条数照旧不画。
 - **服务接入**(`MyImeService`):`markClips` 里通知联动"本机有变化"(别的设备传来的改动不算);`clipSyncHost` 在主线程读出 / 换掉三份列表(换掉后照常落盘、刷新剪贴板页);同步流程读写模型时整段切到主线程,所以界面列表和模型不会互相踩。引擎自己的线程闲着 10 秒就退出。
-- **自测**:`tools/ClipSyncSelfTest.java`(模型:对账、合并、上限、读回、两条通道各记各的待发送,45 项)、`tools/ClipRelayStaleSelfTest.java`(过了 Worker 空闲时限的连接要重连、没过期的不乱重连,假网络层 + 假时钟,不联网,21 项)、`tools/ClipDavE2E.java`(备用通道:用 `fake_dav.py` 模拟几台设备共用坚果云,37 项)、`tools/ClipDualE2E.java`(两条通道同时开着:Worker 发完坚果云照样传、同一条改动两条通道都收到不重复、连不上 Worker 的设备靠坚果云同步收发删除上锁,16 项)、`tools/RelayDnsSelfTest.java`(域名解析规则:Host 映射文本各种写法和坏行提示、DoH 地址检查、解析顺序和各开关、缓存、关了系统 DNS 绝不碰它、错误提示,42 项)、`tools/worker/worker_test.mjs`(**真正的 Worker 脚本**在 Node 里跑,Cloudflare 环境用 `tools/worker/mock.mjs` 模拟:老 App 场景在 v1 和 v2 上各跑一遍逐条对比,加命名空间隔离 / 跨 App / R2 前缀 / 请求头格式 / 翻译转发等,86 项)、`tools/ClipRelayE2E.java`(`tools/worker/server.mjs` 用真 Worker 脚本起一个能用真 WebSocket / HTTP 连的本机服务,几台模拟设备用 JDK 自带的 WebSocket 互相同步:第一次加入、秒到且不轮询 R2、删除 / 上锁 / 恢复 / 挪顺序联动、对方离线补发后不重复、暂存被清造成缺号后读快照追上、新设备加入和"欢迎"、分包、2 万字和特殊字符、密钥不一致的设备、断网恢复,46 项),都在 `tools/run_selftests.sh` 里(Worker 两项需要 node 22+)。**这些测试验证的是协议和 Worker 脚本的逻辑;`ClipRelayNet.kt`(OkHttp)、`ClipSync.kt`、服务和界面的改动没有编译验证、没有在手机上跑过,真实的 Cloudflare 环境(Durable Object 休眠、Worker 的 90 秒心跳、运营商对空闲连接的处理)也没验证过**,需要部署后用两台设备实测。
+- **自测**:`tools/ClipSyncSelfTest.java`(模型:对账、合并、上限、读回、两条通道各记各的待发送,45 项)、`tools/ClipRelayStaleSelfTest.java`(过了 Worker 空闲时限的连接要重连、没过期的不乱重连,假网络层 + 假时钟,不联网,21 项)、`tools/ClipDavE2E.java`(备用通道:用 `fake_dav.py` 模拟几台设备共用坚果云,37 项)、`tools/ClipDualE2E.java`(两条通道同时开着:Worker 发完坚果云照样传、同一条改动两条通道都收到不重复、连不上 Worker 的设备靠坚果云同步收发删除上锁,16 项)、`tools/RelayDnsSelfTest.java`(域名解析规则:Host 映射文本各种写法和坏行提示、DoH 地址检查、解析顺序和各开关、缓存、关了系统 DNS 绝不碰它、错误提示,42 项)、`tools/worker/worker_test.mjs`(**真正的 Worker 脚本**在 Node 里跑,Cloudflare 环境用 `tools/worker/mock.mjs` 模拟:老 App 场景在 v1 和 v2 上各跑一遍逐条对比,加命名空间隔离 / 跨 App / R2 前缀 / 请求头格式 / 翻译转发等,95 项)、`tools/ClipRelayE2E.java`(`tools/worker/server.mjs` 用真 Worker 脚本起一个能用真 WebSocket / HTTP 连的本机服务,几台模拟设备用 JDK 自带的 WebSocket 互相同步:第一次加入、秒到且不轮询 R2、删除 / 上锁 / 恢复 / 挪顺序联动、对方离线补发后不重复、暂存被清造成缺号后读快照追上、新设备加入和"欢迎"、分包、2 万字和特殊字符、密钥不一致的设备、断网恢复,46 项),都在 `tools/run_selftests.sh` 里(Worker 两项需要 node 22+)。**这些测试验证的是协议和 Worker 脚本的逻辑;`ClipRelayNet.kt`(OkHttp)、`ClipSync.kt`、服务和界面的改动没有编译验证、没有在手机上跑过,真实的 Cloudflare 环境(Durable Object 休眠、Worker 的 90 秒心跳、运营商对空闲连接的处理)也没验证过**,需要部署后用两台设备实测。
 
 ## 域名解析整理(0.47.10)
 
@@ -778,7 +778,7 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 
 **改动**:
 
-- `tools/worker/hulian-worker.js`(现在就是线上跑的 v3.3):翻译只用 `connect()`,不再有 `fetch`。先 GET 后 POST 的规则、请求头(Chrome 的 User-Agent / Accept / Accept-Language,另加 `Accept-Encoding: identity`、`Connection: close`)、40 KB 限制、写死的目标(只连这一个主机、这一个路径,不是通用代理)都不变。整体时限 5 秒(键盘最多等 6 秒,GET 卡住后 POST 不再接着卡);响应最大 256 KB;能解 chunked 和 gzip / deflate。成功时 `x-tr-via` 是 `connect-GET` / `connect-POST`,失败信息写成「谷歌拒绝了:connect-GET 429、connect-POST 429」这样。
+- `tools/worker/hulian-worker.js`(0.47.14 时是 v3.3;0.47.17 起同步成当时线上的 v3.6;0.47.18 起是 v3.7,见最后一节「翻译显示出口机房」):翻译只用 `connect()`,不再有 `fetch`。先 GET 后 POST 的规则、请求头(Chrome 的 User-Agent / Accept / Accept-Language,另加 `Accept-Encoding: identity`、`Connection: close`)、40 KB 限制、写死的目标(只连这一个主机、这一个路径,不是通用代理)都不变。整体时限 5 秒(键盘最多等 6 秒,GET 卡住后 POST 不再接着卡);响应最大 256 KB;能解 chunked 和 gzip / deflate。成功时 `x-tr-via` 是 `connect-GET` / `connect-POST`,失败信息写成「谷歌拒绝了:connect-GET 429、connect-POST 429」这样。
 - 自测:`tools/worker/mock.mjs` 用 Node 的模块钩子把 `cloudflare:sockets` 指到 `globalThis.__cfConnect`(真正的脚本一个字不改地被加载,`server.mjs` 的 E2E 也走同一套);`worker_test.mjs` 里翻译那一段改成按 Worker 写进假连接里的请求原文判断,并新增:请求头里没有 `cf-` / 转发头 / Referer / Origin、chunked(多字节字符被切在两块之间)、gzip、响应超过 256 KB、谷歌一直不回(约 5 秒后 502、关掉连接)、全程没有调用 `fetch`。Worker 自测 78 → 86 项。
 - 剪贴板、R2、`/ws`、口令、`X-App` 校验都没改。App 代码没有改动,版本号 0.47.13 → 0.47.14 只为区分压缩包。
 
@@ -848,6 +848,7 @@ curl -i -X POST "https://<Worker 域名>/tr/google?sl=zh-CN&tl=en" -H "X-Relay-S
 ### 再出现 429 时,按这个顺序查
 
 1. 看提示里 `connect-` 前缀的结果和详情,确认是谷歌拒绝(见上面的表),不是手机到 Worker 这一段的问题。
+   0.47.18 起提示末尾带「(机房 XXX)」,键盘翻译框里也会显示机房:多测几次,记下被拒绝时的机房;如果总是同几个机房被拒,说明和那几个机房的出口地址池有关。
 2. 看是不是改过 Worker 的域名、Host 映射里的 IP:同一个 Worker 换域名或入口 IP,结果会不同(VLESS 那边见过)。
 3. 换另一个入口 IP、另一个域名再试。
 4. 做上面「没做的验证」里加假 `CF-Worker` 头的那一条,判断是不是这个头。
@@ -868,3 +869,24 @@ curl -i -X POST "https://<Worker 域名>/tr/google?sl=zh-CN&tl=en" -H "X-Relay-S
 **验证到哪一步**:这三处都是 Kotlin 改动,**没有编译验证、没在手机上跑过**(写这次改动的机器上没有 Kotlin 编译器);原有的 29 项自测都是纯 JDK 的,不覆盖这几处。握手大约两个往返,能省多少没法在这里量,要在手机上看。
 
 **这次改动解决不了的**:谷歌拒绝(429,或 302 跳到 `www.google.com/sorry/index`)。那是谷歌对出口的判断,和连接快慢无关,见上面「排查记录」。
+
+## 改动:翻译显示出口机房(Worker v3.7,App 0.47.18)
+
+**要解决的问题**:翻译经 Worker 访问谷歌,谷歌是否放行看的是出口 IP,而出口 IP 是 Worker 所在的 Cloudflare 机房分配的。之前看不出每次落在哪个机房,没法观察「哪些机房被谷歌拒绝」。
+
+**做了什么**:
+
+- Worker(`tools/worker/hulian-worker.js`,v3.7):翻译的成功和失败响应里都带机房,取自 `request.cf.colo`(例如 `HKG`、`SJC`)。成功时是响应头 `x-tr-colo`,失败时响应头和错误 JSON 里的 `colo` 字段都有。只留字母数字、最多 8 位、统一大写,取不到或格式不对就不带;不含任何原文。
+- 键盘翻译框(`TranslateBarView`):翻译成功后,框右边用淡色小字显示机房(例如 `HKG`);原文太长放不下就不画,不挡着输入。失败时在失败原因后面接上「 · HKG」。
+- 设置页「测试谷歌」:结果后面加「(机房 HKG)」,成功和失败都有;测试前先清掉上一次的机房,取不到(例如没连上 Worker)就不显示,不会显示过期的。
+- 只在经 Worker 的谷歌翻译时显示;换成微软、或不经 Worker 时清空,不会显示上一次的机房。
+
+**省电**:机房随翻译的响应一起回来,没有任何额外的请求;界面只在机房变了才重画。
+
+**要知道的**:
+
+- 要部署新的 Worker(v3.7),手机上才看得到机房;没部署时手机收不到这个头,什么都不显示,不会报错。
+- 机房是「Worker 在哪个机房跑」,出口 IP 是从那个机房的地址池里分的。出口 IP 本身 Worker 读不到,所以这里显示的是机房,不是具体 IP。
+- 机房只是方便观察,不能固定出口,也不能选机房。
+
+**验证到哪一步**:Worker 自测 89 → 95 项(成功带头、小写变大写、取不到不带、非字母数字不回显、失败时头和 JSON 都带、取不到时 JSON 里没有该字段),用的是模拟的 `request.cf`,没有在真实的 Cloudflare 上跑过。`Translator.kt`、`TranslateBarView.kt`、`MyImeService.kt` 的改动**没有编译验证、没在手机上跑过**(这台机器没有 Kotlin 编译器)。
