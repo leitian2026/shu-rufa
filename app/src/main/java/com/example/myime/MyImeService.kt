@@ -1877,6 +1877,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         mode = target
         refreshLayout(animate = true)
         if (target == Mode.SETTINGS) refreshCharCount()
+        if (target == Mode.CLIPBOARD) {
+            val app = applicationContext
+            ioPool.execute { ClipSync.onPanelOpened(app) }   // 打开剪贴板面板:Worker 连接闲久了断了就趁现在连上(连着的话不做事)
+        }
     }
 
     /** 功能页标题旁边的「已用过不同汉字 N 个」:每次打开功能页在后台线程算一次(读几张表,几毫秒到几十毫秒),算完再显示。上次的数先留着,不闪。 */
@@ -3886,6 +3890,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (filled != transFilled) {
             transFilled = filled
             refreshLayout(animate = false)
+            if (filled) warmTranslate()   // 翻译框里打第一个字:连接要是闲久了被池子关了,趁 0.6 秒防抖的空档补建(池子里有活连接就什么都不做)
         }
         if (transBuf.isBlank()) {
             transStatus = TranslateBarView.STATUS_NONE

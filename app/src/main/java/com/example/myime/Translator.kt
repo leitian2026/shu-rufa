@@ -88,7 +88,7 @@ object Translator {
     @Volatile private var workerOn = false   // 谷歌这一路经你自己的 Worker 中转(设置里的开关,键 g_worker)
     @Volatile private var appCtx: Context? = null
     private var workerHttp: OkHttpClient? = null
-    private var workerDns: RelayDns? = null   // 翻译自己的解析器(和剪贴板联动的互不影响)
+    private var workerDns: RelayDns? = null   // 和剪贴板联动共用的解析器(同一个 Worker),见 ClipSync.sharedDns
 
     /** 没有设置 Worker 地址和口令(开了「经 Worker 中转」却没设置)。 */
     private class NotSet : IOException("没有设置 Worker 地址和口令")
@@ -122,13 +122,23 @@ object Translator {
 
     /** 提前建立到主用引擎服务器的连接(见 MyImeService.warmTranslate)。自己开一个短命线程,不堵翻译用的线程。 */
     fun warm(primary: String) {
-        val now = SystemClock.elapsedRealtime()
-        if (now - warmedAt < WARM_EVERY_MS) return
-        warmedAt = now
         val eng = if (primary == GOOGLE) GOOGLE else MS
-        val base = if (eng == GOOGLE) gUrl.ifBlank { DEF_G_FREE } else msUrl.ifBlank { DEF_MS_FREE }
         val viaWorker = workerOn && eng == GOOGLE
+        val now = SystemClock.elapsedRealtime()
+        if (viaWorker) {
+            // 经 Worker:连接池里的连接闲 30 秒就关,4 分钟一次的节流会让预热白做。改成看池子:还有活着的连接就不发,
+            // 没有(第一次 / 闲久了被关了)就立刻补建;正在建的、3 秒内刚试过的不重复发。事件触发(键盘弹出、翻译框里打第一个字),没有定时器。
+            val c = workerHttp
+            if (c != null && c.connectionPool.connectionCount() > 0) return
+            if (workerWarming.get() || now - warmedAt < 3_000L) return
+            warmedAt = now
+        } else {
+            if (now - warmedAt < WARM_EVERY_MS) return
+            warmedAt = now
+        }
+        val base = if (eng == GOOGLE) gUrl.ifBlank { DEF_G_FREE } else msUrl.ifBlank { DEF_MS_FREE }
         val app = appCtx
+        if (viaWorker) workerWarming.set(true)
         Thread {
             try {
                 if (viaWorker) {
@@ -148,9 +158,13 @@ object Translator {
                 if (c.responseCode < 400) c.inputStream.close() else c.errorStream?.close()
             } catch (t: Throwable) {
                 warmedAt = -WARM_EVERY_MS   // 没成功:下次还可以再试
+            } finally {
+                if (viaWorker) workerWarming.set(false)
             }
         }.start()
     }
+
+    private val workerWarming = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private const val WARM_EVERY_MS = 4 * 60_000L
 
@@ -349,7 +363,7 @@ object Translator {
 
     @Synchronized
     private fun workerClient(app: Context): OkHttpClient = workerHttp ?: OkHttpClient.Builder()
-        .dns(RelayDns(app).also { workerDns = it })
+        .dns(ClipSync.sharedDns(app).also { workerDns = it })
         .connectionPool(ConnectionPool(2, WORKER_POOL_IDLE_S, TimeUnit.SECONDS))
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(6, TimeUnit.SECONDS)

@@ -31,10 +31,14 @@ class RelayDns(private val app: Context) : Dns {
         val dohOn = RelayCfg.dohOn(app)
         val sysOk = RelayCfg.sysDns(app)
         val dohs = if (dohOn) dohList(RelayCfg.dohText(app), hosts, hostsText, sysOk) else emptyList()
-        val res = resolver.resolve(hostname, hosts, dohOn, dohs, sysOk, system, System.currentTimeMillis())
+        // 剪贴板和翻译共用这个解析器、而且键盘一弹出就同时来问同一个域名:DoH 开着时排队,后到的直接吃前一个写进缓存的结果,不重复问 DoH 服务器
+        val res = if (dohOn) synchronized(dohLock) { resolver.resolve(hostname, hosts, dohOn, dohs, sysOk, system, System.currentTimeMillis()) }
+        else resolver.resolve(hostname, hosts, dohOn, dohs, sysOk, system, System.currentTimeMillis())
         sources[hostname.lowercase()] = res.source
         return res.addrs
     }
+
+    private val dohLock = Any()
 
     /** 这个域名最近一次(这个实例里)是怎么解析出来的:Host 映射 / 自建 DoH / 系统 DNS;还没解析过是 null。给「测试连接」用。 */
     fun sourceOf(host: String): String? = sources[host.lowercase()]
