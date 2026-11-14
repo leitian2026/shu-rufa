@@ -786,7 +786,7 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 
 ## 排查记录:谷歌翻译经 Worker 不通(0.47.15 整理)
 
-把 0.47.13 到 0.47.15 期间查出来的东西记在一起,以后再遇到「翻译不通」先看这里。**已确认的事实**、**推断**、**没做的**分开写,别把推断当结论。本压缩包包含 0.47.13(空闲后首次联网超时)和 0.47.14(Worker v3.3,翻译改用 `connect()`)的全部改动,README 里按版本顺序写。
+把 0.47.13 到 0.47.16 期间查出来的东西记在一起,以后再遇到「翻译不通」先看这里。**已确认的事实**、**推断**、**没做的**分开写,别把推断当结论。本压缩包包含 0.47.13(空闲后首次联网超时)、0.47.14(Worker v3.3,翻译改用 `connect()`)、0.47.15(整理这份排查记录)的全部改动,README 里按版本顺序写;0.47.16 只更正了下面第 7 条里一处不准确的转述(手机 IP 会不会随 `fetch()` 带给谷歌)。
 
 ### 先判断是哪一段不通
 
@@ -809,7 +809,7 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 4. 键盘开着 Clash 时翻译能通,说明谷歌这个接口本身可用。
 5. 在浏览器里直接打开 `https://translate.googleapis.com/translate_a/single?client=gtx&sl=zh-CN&tl=en&dt=t&q=你好`,不通的出口会跳 `google.com/sorry` 人机验证页(截图里谷歌看到的 IP 是 Cloudflare 的 IPv6,`2a09:bac1:…`)。
 6. 两个 Worker 的差别:VLESS 代理脚本(`_worker.js`)直连时只搬原始 TCP 字节,请求头和 TLS 握手都是手机自己的,谷歌看不到代理域名;hulian-worker 的 v3 翻译是 Worker 自己用 `fetch()` 构造请求(UA 等写死在脚本里)。
-7. Cloudflare 文档写的:`fetch()` 发出的 Worker 子请求会自动带 `CF-Worker` 头,值是 Worker 所属 zone 的名字;发往非 Cloudflare 站点时,`CF-Connecting-IP` 和 `x-real-ip` 反映的是客户端 IP(`developers.cloudflare.com/fundamentals/get-started/reference/http-request-headers/`)。按 zone 分配的专用出口 IP 不适用于 `connect()` 建立的连接(`developers.cloudflare.com/smart-shield/configuration/dedicated-egress-ips/other-products/`)。
+7. Cloudflare 文档写的:`fetch()` 发出的 Worker 子请求会自动带 `CF-Worker` 头,值是 Worker 所属 zone 的名字;所以 v3 时谷歌能看到 Worker 所属的域名。`CF-Connecting-IP`、`x-real-ip` 在发往非 Cloudflare 站点的子请求里由 Worker 脚本控制:只有「原样转发了原请求的头」时,它们才是客户端的 IP;v3 的 `fetch()` 用的是脚本自己写的 `TR_HEADERS`,没有转发手机发来的任何头,整个脚本里也没有转发 IP 的代码,所以大概率没有把手机 IP 带给谷歌。文档没有说「Worker 自己写了头时,Cloudflare 会不会另外加」,没有抓包验证过(`developers.cloudflare.com/fundamentals/reference/http-headers/`)。按 zone 分配的专用出口 IP 不适用于 `connect()` 建立的连接(`developers.cloudflare.com/smart-shield/configuration/dedicated-egress-ips/other-products/`)。
 8. `connect()` 是纯 TCP,Cloudflare 没法往里加 HTTP 头;v3.3 的请求头全是自己写的,自测检查了里面没有 `cf-`、转发头、Referer、Origin。
 
 ### 推断(没有直接证据)
@@ -827,6 +827,7 @@ python3 tools/convert_rime_dict.py stroke app/src/main/assets/stroke.txt stroke.
 ### 没做的验证和做法
 
 - 在 v3.3 的 `connect()` 请求里临时手加一个 `CF-Worker: <你的域名>` 头测一次(测完删掉):如果翻译重新变成 429,基本就坐实是这个头。
+- 部署一个临时测试 Worker,用和 v3 一样的 `fetch(..., { headers: TR_HEADERS })` 去请求 `https://httpbin.org/headers`,看返回里有没有 `Cf-Connecting-Ip`、`X-Real-Ip`、`Cf-Worker`,确认 v3 的 `fetch()` 到底有没有把手机 IP 带给谷歌。
 - VLESS 脚本的 `/admin/cf.json`:在通的和不通的域名下各看几次 `colo`,对比机房有没有差别。
 - 做法 A:手机自己和谷歌做 TLS,Worker 只用 `connect()` 搬字节(WebSocket 隧道)。这样请求和 TLS 指纹都是手机的,Worker 也看不到原文;代价是 App 要写一层 socket,握手和保活更费电。
 
