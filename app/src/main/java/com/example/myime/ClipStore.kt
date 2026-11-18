@@ -171,7 +171,8 @@ object ClipStore {
             for (line in p.lines) {
                 if (line.length < 2 || line[0] != tag[0] || line[1] != '\t') continue
                 val t = unesc(line.substring(2))
-                if (t.isNotBlank() && !out.contains(t)) out.add(t)
+                // 不能用 isNotBlank:纯空格/Tab/换行也是复制内容的一部分,必须原样留在历史里。
+                if (t.isNotEmpty() && !out.contains(t)) out.add(t)
                 if (out.size >= max) break
             }
         } catch (e: Exception) {

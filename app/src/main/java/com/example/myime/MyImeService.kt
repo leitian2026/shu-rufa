@@ -1989,7 +1989,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             } catch (e: Exception) {
                 null
             }
-            if (text != null && text.isNotBlank() && text.length <= MAX_CLIP_CHARS) {
+            if (text != null && text.isNotEmpty() && text.length <= MAX_CLIP_CHARS) {
                 addClip(text)
                 if (cut) sendKey(KeyEvent.KEYCODE_DEL)
                 return
@@ -2008,7 +2008,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         val sys = try {
             val clip = (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
             if (clip != null && clip.itemCount > 0 && clip.description.hasMimeType("text/*")) {
-                clip.getItemAt(0).coerceToText(this)?.toString()
+                (clip.getItemAt(0).let { it.text ?: it.coerceToText(this) })?.toString()
             } else null
         } catch (e: Exception) {
             null   // 读不到(例如不是默认输入法)就退回历史
@@ -4191,7 +4191,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (!wasVisible) panel.onShow(false)   // 不做滑入/淡入动画,直接显示
     }
 
-    /** 系统剪贴板当前的文字(跳过非文字、被标记为敏感的内容如密码管理器复制的密码、空白和超长的);读不到返回 null。 */
+    /** 系统剪贴板当前的文字(跳过非文字、被标记为敏感的内容如密码管理器复制的密码、空内容和超长的);读不到返回 null。 */
     private fun readClipText(notify: Boolean = false): String? {
         try {
             val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
@@ -4203,8 +4203,10 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
                 if (notify) clipNotice("这次复制被来源应用标记为敏感内容(如验证码、密码),没有收进历史;要粘贴,到光标编辑页点「粘贴」")
                 return null
             }
-            val text = clip.getItemAt(0).coerceToText(this)?.toString() ?: return null
-            if (text.isBlank()) return null
+            // 优先取剪贴板提供的原始 CharSequence,不经 coerceToText 的格式转换;只有来源没提供 text 时才用系统兜底转换。
+            val item = clip.getItemAt(0)
+            val text = (item.text ?: item.coerceToText(this))?.toString() ?: return null
+            if (text.isEmpty()) return null
             if (text.length > MAX_CLIP_CHARS) {
                 // 以前这里一声不响地丢掉;现在告诉你实际有多少字(网页里选一大片,字数常比看上去多得多)
                 if (notify) clipNotice("这段文字有 ${text.length} 字,超过 $MAX_CLIP_CHARS 字的上限,没有收进剪贴板历史")
