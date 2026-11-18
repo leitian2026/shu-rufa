@@ -4191,7 +4191,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         if (!wasVisible) panel.onShow(false)   // 不做滑入/淡入动画,直接显示
     }
 
-    /** 系统剪贴板当前的文字(跳过非文字、被标记为敏感的内容如密码管理器复制的密码、空白和超长的);读不到返回 null。 */
+    /** 系统剪贴板当前的文字(跳过非文字、被标记为敏感的内容如密码管理器复制的密码、空内容和超长的);读不到返回 null。 */
     private fun readClipText(notify: Boolean = false): String? {
         try {
             val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
