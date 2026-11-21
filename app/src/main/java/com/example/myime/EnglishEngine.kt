@@ -66,6 +66,11 @@ class EnglishEngine(
         val n = typed.length
         val context = prev
 
+        val out = ArrayList<Candidate>()
+        val seen = HashSet<String>()
+        out.add(Candidate(literalOf(typed, lower), n, 0))
+        seen.add(lower)
+
         val rank = HashMap<String, Int>()
         if (context != null) {
             val s = succ[context]
@@ -83,8 +88,11 @@ class EnglishEngine(
                 val r = rank[keys[j]]
                 if (r != null) s += 700 - 90 * r
             }
-            heap.add((s.toLong() shl 32) or ids[j].toLong())
-            if (heap.size > POOL) heap.poll()
+            val key = (s.toLong() shl 32) or ids[j].toLong()
+            if (heap.size < POOL || key > heap.peek()) {
+                heap.add(key)
+                if (heap.size > POOL) heap.poll()
+            }
         }
         val scored = ArrayList<Pair<String, Int>>()
         val inPool = HashSet<String>()
@@ -126,10 +134,6 @@ class EnglishEngine(
             for (p in scored) order.add(p.first)
         }
 
-        val out = ArrayList<Candidate>()
-        val seen = HashSet<String>()
-        out.add(Candidate(literalOf(typed, lower), n, 0))
-        seen.add(lower)
         var completions = 0
         for (lw in order) {
             if (completions >= MAX_COMPLETIONS) break
