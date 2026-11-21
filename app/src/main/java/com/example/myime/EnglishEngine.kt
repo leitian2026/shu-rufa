@@ -36,6 +36,10 @@ class EnglishEngine(
     @Volatile
     var pick: UserFreq? = null
 
+    /** 当前英文查询是否已过期;由键盘服务按查询代数设置。 */
+    @Volatile
+    var stale: () -> Boolean = { false }
+
     init {
         val ord = order ?: IdxSort.by(words.size) { lowerById[it] }
         ids = ord
@@ -83,6 +87,7 @@ class EnglishEngine(
         val heap = PriorityQueue<Long>()
         val useRank = rank.isNotEmpty()
         for (j in lo until hi) {
+            if (((j - lo) and 1023) == 0 && stale()) return out
             var s = freqs[ids[j]]
             if (useRank) {
                 val r = rank[keys[j]]
@@ -144,7 +149,8 @@ class EnglishEngine(
 
         // 2. 纠错:不是词,而且补不出几个词的时候
         if (n >= 2 && !isKnown(lower) && completions < 3) {
-            val fixes = corrections(lower, context)
+            if (stale()) return out
+            val fixes = corrections(lower, context) ?: return out
             val fixOrder = if (pk != null) {
                 val win = pk.recent(lower)
                 fixes.sortedByDescending { UserFreq.rank(pk, lower, it.first, win, 0L) }   // 以前打成这样、点过的改正排前面(同分保持原顺序)
@@ -212,7 +218,7 @@ class EnglishEngine(
 
     // ------------------------------------------------------------ 纠错
 
-    private fun corrections(w: String, context: String?): List<Pair<String, Int>> {
+    private fun corrections(w: String, context: String?): List<Pair<String, Int>>? {
         val best = HashMap<String, Int>()
         val first = w[0]
 
@@ -232,7 +238,9 @@ class EnglishEngine(
             val lo = lowerBound(keys, first.toString())
             val hi = lowerBound(keys, (first.code + 1).toChar().toString())
             val rows = Array(3) { IntArray(w.length + 3) }
+            var scanned = 0
             for (j in lo until hi) {
+                if ((scanned++ and 1023) == 0 && stale()) return null
                 val k = keys[j]
                 if (abs(k.length - w.length) > 2) continue
                 if (withinTwo(w, k, rows)) consider(k, 700, 0)

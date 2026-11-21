@@ -2563,6 +2563,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
             val result = try {
                 (engine as? PinyinEngine)?.stale = { gen != queryGen }   // 查询中途又有新按键,贵的几步就不做了
+                (engine as? EnglishEngine)?.stale = { gen != queryGen }  // 英文前缀和纠错扫描也能被后来的按键打断
                 val found: List<Candidate> = when {
                     wordMode && engine is StrokeEngine -> engine.queryWords(code, pe, exact)
                     exact && engine is StrokeEngine -> engine.queryExact(code)
