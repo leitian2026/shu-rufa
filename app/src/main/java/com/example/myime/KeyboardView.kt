@@ -42,6 +42,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private var releasedAt = LongArray(0)
     private var subIndex = IntArray(0)
     private val pointerKey = SparseIntArray()
+    // 键布局或外观数据变化时递增,用于判断 onKey 是否触发了需要整块重画的变化。
+    private var layoutVersion = 0L
 
     // 尺寸(refresh() 里按是否宽屏重新计算)
     private var padX = 0f
@@ -134,6 +136,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     }
 
     private fun applyMetrics() {
+        layoutVersion++
         val wide = context.isWide()
         padX = context.dpf(4f)   // 平板也只留 4dp,左右占满
         padTop = context.dpf(5f)
@@ -204,6 +207,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     fun setLayout(l: Layout, animate: Boolean) {
         // 只是标签/高亮变了(大写键、分词键等),几何不变:保留按压状态,不重算
         if (!animate && sameShape(l)) {
+            layoutVersion++
             layout = l
             keys = l.keys.toTypedArray()
             invalidate()
@@ -212,6 +216,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
         stopRepeat()
         clearHold()
+        layoutVersion++
         layout = l
         keys = l.keys.toTypedArray()
         rects = Array(keys.size) { RectF() }
@@ -241,6 +246,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        layoutVersion++
         layoutKeys()
     }
 
@@ -262,6 +268,22 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         }
         hitSlopX = gx / 2f
         hitSlopY = gy / 2f
+    }
+
+    // 普通按键的局部重绘范围:包含键帽阴影和抗锯齿余量,并裁到本 View 内,避免父布局关闭裁剪时留下视图外残影。
+    private fun invalidateKey(i: Int, animated: Boolean = false) {
+        if (i !in rects.indices) {
+            if (animated) postInvalidateOnAnimation() else invalidate()
+            return
+        }
+        val r = rects[i]
+        val left = (r.left - 2f).toInt().coerceAtLeast(0)
+        val top = (r.top - 2f).toInt().coerceAtLeast(0)
+        val right = (r.right + shadowH + 2f).toInt().plus(1).coerceAtMost(width)
+        val bottom = (r.bottom + shadowH + 2f).toInt().plus(1).coerceAtMost(height)
+        if (right <= left || bottom <= top) return
+        if (animated) postInvalidateOnAnimation(left, top, right, bottom)
+        else invalidate(left, top, right, bottom)
     }
 
     // ---------------------------------------------------------------- 绘制
@@ -737,11 +759,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         releasedAt[i] = -1L
         pointerKey.put(id, i)
         Haptics.tap(this@KeyboardView, HapticFeedbackConstants.KEYBOARD_TAP)
+        val beforeLayout = layoutVersion
         listener.onKey(spec) // 可能触发 setLayout,会重置上面的状态
         // onKey 可能触发 setLayout 把按压状态清空;这时手指已不在跟踪里,抬起时收不到停止信号,
         // 连删会停不下来(把打的字全删光),所以只在仍被跟踪时才启动连发
         if (spec.repeatable && pointerKey.get(id, -1) >= 0) startRepeat(spec, id)
-        invalidate()
+        if (layoutVersion == beforeLayout) invalidateKey(i) else invalidate()
     }
 
     private fun pointerUp(id: Int) {
@@ -776,8 +799,15 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             releasedAt[i] = SystemClock.uptimeMillis()
         }
         if (repeatPointer == id) stopRepeat()
-        postInvalidateOnAnimation()
-        fire?.let { listener.onKey(it) }   // 放最后:onKey 可能触发 setLayout,会重置上面的按压状态
+        if (pend != null) {
+            // 长按备选路径保留原来的整块重绘。
+            postInvalidateOnAnimation()
+            fire?.let { listener.onKey(it) }   // 放最后:onKey 可能触发 setLayout
+        } else {
+            val beforeLayout = layoutVersion
+            fire?.let { listener.onKey(it) }   // 松手状态先更新;onKey 可能切换布局
+            if (layoutVersion == beforeLayout) invalidateKey(i, animated = true) else postInvalidateOnAnimation()
+        }
     }
 
     private fun releaseAll() {
