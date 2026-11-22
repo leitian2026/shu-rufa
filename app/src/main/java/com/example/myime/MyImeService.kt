@@ -246,11 +246,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     // 回收箱:剪贴板里删掉的内容先放这里,最多 10 条;最新删的在最前(界面最上面),满了挤掉最后一条(最旧的)。同样会落盘。
     private val trash = ArrayList<String>()
     private var ownClipClearAt = 0L   // 我们自己清空系统剪贴板的时刻:清空会再触发一次回调,那次不用再读
+    private var sensitiveClipTs = 0L  // 只保存系统描述中的状态和时间戳,绝不保存敏感正文
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
         val t = ownClipClearAt
         if (t != 0L) {
             ownClipClearAt = 0L
-            if (SystemClock.uptimeMillis() - t < 1500L) return@OnPrimaryClipChangedListener
+            if (SystemClock.uptimeMillis() - t < 1500L) {
+                setSensitiveClipState(false)
+                return@OnPrimaryClipChangedListener
+            }
         }
         captureClipboardNow()
     }
@@ -670,6 +674,34 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             }
         })
         val clip = ClipboardPanelView(this, object : ClipboardPanelView.Listener {
+            override fun onPasteSensitive() {
+                val current = try {
+                    (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
+                } catch (e: Exception) {
+                    null
+                }
+                val desc = current?.description
+                val sensitive = desc?.hasMimeType("text/*") == true &&
+                    desc.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true
+                updateSensitiveClip(sensitive, desc?.timestamp ?: 0L)
+                if (!sensitive || current == null || current.itemCount == 0) {
+                    clipNotice("剪贴板内容已变化")
+                    return
+                }
+                val text = try {
+                    current.getItemAt(0).coerceToText(this@MyImeService)?.toString()
+                } catch (e: Exception) {
+                    null
+                }
+                if (text.isNullOrEmpty()) {
+                    clipNotice("剪贴板内容已变化")
+                    return
+                }
+                if (!pasteFromHistory(text)) return
+                wipeSystemClip()
+                leavePage()
+            }
+
             override fun onPaste(text: String) {
                 if (!pasteFromHistory(text)) return   // 粘贴失败:留在剪贴板页,已弹提示
                 // 点过的这一条挪到剪贴板最前面(已经在最前面就什么都不动)
@@ -792,6 +824,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
         emojiPanel = emoji
         symbolPanel = symbol
         clip.setWipe(clipWipe)
+        clip.setSensitive(sensitiveClipTs)
         clipPanel = clip
         settingsPanel = settings
         choicePanel = choice
@@ -4149,6 +4182,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
             Mode.EMOJI -> showPanel(emojiPanel, animate)
             Mode.SYMBOL -> showPanel(symbolPanel, animate)
             Mode.CLIPBOARD -> {
+                clipPanel?.setSensitive(sensitiveClipTs)
                 clipPanel?.setWipe(clipWipe)
                 clipPanel?.setSyncStatus(ClipSync.statusLine(applicationContext))
                 clipPanel?.setLocked(locked.toSet())
@@ -4193,15 +4227,15 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     /** 系统剪贴板当前的文字(跳过非文字、被标记为敏感的内容如密码管理器复制的密码、空白和超长的);读不到返回 null。 */
-    private fun readClipText(notify: Boolean = false): String? {
+    private fun readClipText(notify: Boolean = false, description: android.content.ClipDescription?): String? {
         try {
             val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
             val clip = cm.primaryClip ?: return null
             if (clip.itemCount == 0) return null
-            val desc = clip.description
+            val desc = description ?: return null
             if (!desc.hasMimeType("text/*")) return null
             if (desc.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true) {
-                if (notify) clipNotice("这次复制被来源应用标记为敏感内容(如验证码、密码),没有收进历史;要粘贴,到光标编辑页点「粘贴」")
+                if (notify) clipNotice("已复制敏感内容,到剪贴板页点一下粘贴")
                 return null
             }
             val text = clip.getItemAt(0).coerceToText(this)?.toString() ?: return null
@@ -4231,19 +4265,37 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
      */
     private var lastClipTs = 0L   // 上次读过的那份系统剪贴板的时间戳
 
-    /** 系统剪贴板当前这份内容的时间戳(只读描述信息,不读正文,很轻);没有内容或读不到返回 0。 */
-    private fun clipStamp(): Long = try {
-        (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).primaryClipDescription?.timestamp ?: 0L
-    } catch (e: Exception) {
-        0L
+    /** 敏感状态只保留标记和时间戳;时间戳不可用时用 -1 表示「有,但无时间」。 */
+    private fun updateSensitiveClip(hasSensitive: Boolean, timestamp: Long = 0L) {
+        val next = if (!hasSensitive) 0L else if (timestamp > 0L) timestamp else -1L
+        if (sensitiveClipTs == next) return
+        sensitiveClipTs = next
+        clipPanel?.setSensitive(next)
+    }
+
+    private fun setSensitiveClipState(hasSensitive: Boolean) {
+        updateSensitiveClip(hasSensitive)
     }
 
     private fun captureClipboardNow(fromListener: Boolean = true) {
-        val ts = clipStamp()
-        // 键盘弹出时的补读:剪贴板自上次读过之后没变(时间戳一样),就不去读正文了;切到别的输入法期间复制过的,时间戳不同,照样补进来
+        val desc = try {
+            (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).primaryClipDescription
+        } catch (e: Exception) {
+            null
+        }
+        val ts = desc?.timestamp ?: 0L
+        val sensitive = desc?.hasMimeType("text/*") == true &&
+            desc.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true
+        updateSensitiveClip(sensitive, ts)
+        // 键盘弹出时的补读:同一时间戳不再读正文;敏感内容只更新占位状态,不触碰正文。
+        if (sensitive) {
+            if (ts != 0L) lastClipTs = ts
+            if (fromListener) clipNotice("已复制敏感内容,到剪贴板页点一下粘贴")
+            return
+        }
         if (!fromListener && ts != 0L && ts == lastClipTs) return
-        val text = readClipText(notify = fromListener)
-        if (ts != 0L) lastClipTs = ts   // 被拒收(太长 / 敏感)的也记下,免得每次弹出都再读一遍
+        if (ts != 0L) lastClipTs = ts
+        val text = readClipText(notify = fromListener, description = desc)
         if (text == null) return
         if (!clipWipe && !fromListener && text == lastSysClip) return   // 开关关着:系统剪贴板里还是上次收过的,别又顶到最前
         lastSysClip = if (clipWipe) null else text
@@ -4311,6 +4363,7 @@ class MyImeService : InputMethodService(), KeyboardView.Listener {
     }
 
     private fun wipeSystemClip() {
+        setSensitiveClipState(false)
         try {
             ownClipClearAt = SystemClock.uptimeMillis()
             val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
