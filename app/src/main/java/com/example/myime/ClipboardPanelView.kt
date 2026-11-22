@@ -36,6 +36,9 @@ class ClipboardPanelView(
 
         /** 点了顶部的「清空系统剪贴板」开关,on 是点完之后的状态。 */
         fun onToggleWipe(on: Boolean)
+
+        /** 点敏感内容占位行:读取系统剪贴板并粘贴。 */
+        fun onPasteSensitive() {}
     }
 
     private var clipItems: List<String> = emptyList()
@@ -44,6 +47,9 @@ class ClipboardPanelView(
     private var inTrash = false
     private var wipeOn = true
     private var syncText: String? = null   // 联动状态小字;null = 显示原来的提示
+    private var sensitiveTs = 0L
+    private var sensitiveLabel = ""
+    private var sensitiveCardH = 0f
     private var hintTop = 0f      // 常驻小字这一行占的高度(含下面的间距);回收箱里没有,为 0
     private var hintH = 0f
 
@@ -176,6 +182,22 @@ class ClipboardPanelView(
         invalidate()
     }
 
+    /** 系统剪贴板中的敏感文本时间戳;0 表示没有,-1 表示有但时间戳不可用。 */
+    fun setSensitive(ts: Long) {
+        if (sensitiveTs == ts) return
+        sensitiveTs = ts
+        sensitiveLabel = if (ts > 0L) {
+            "已复制敏感内容　　" + java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(ts))
+        } else {
+            "已复制敏感内容"
+        }
+        relayout()
+        offsetY = offsetY.coerceIn(0f, maxOffsetY())
+        invalidate()
+    }
+
+    private fun hasSensitiveRow(): Boolean = sensitiveTs != 0L && !inTrash && !selecting
+
     /** 开关的当前状态(服务创建面板、每次打开面板时调用)。 */
     fun setWipe(on: Boolean) {
         if (wipeOn == on) return
@@ -249,6 +271,7 @@ class ClipboardPanelView(
         selected.clear()
         if (first !in locked) selected.add(first)
         relayout()
+        offsetY = offsetY.coerceIn(0f, maxOffsetY())
         updateBar()
     }
 
@@ -256,6 +279,7 @@ class ClipboardPanelView(
         selecting = false
         selected.clear()
         relayout()
+        offsetY = offsetY.coerceIn(0f, maxOffsetY())
         updateBar()
     }
 
@@ -280,10 +304,12 @@ class ClipboardPanelView(
             hintH = if (inTrash) 0f else h
             hintTop = if (inTrash) 0f else h + curGap
         }
+        val showSensitive = hasSensitiveRow()
+        sensitiveCardH = if (showSensitive) curPad * 2f + lineH else 0f
         lines = items.map { wrap(it, baseTextW - (if (hasLock(it)) lockW else 0f)) }
         tops = FloatArray(items.size + 1)
         cardH = FloatArray(items.size)
-        var y = 0f
+        var y = if (showSensitive) sensitiveCardH + curGap else 0f
         for (i in items.indices) {
             tops[i] = y
             val h = curPad * 2 + maxOf(lines[i].size, 1) * lineH
@@ -359,20 +385,39 @@ class ClipboardPanelView(
         // 列表底色比面板深:白色卡片凸出来,边缘一眼就看得出
         fill.color = palette.clipListBg
         canvas.drawRect(0f, visTop, width.toFloat(), visBottom, fill)
+        val left = padX
+        val right = width - padX
+        val cardR = context.dpf(4f)   // 小圆角
+        if (hasSensitiveRow()) {
+            val top = 0f
+            val h = sensitiveCardH
+            tmp.set(left, top, right, top + h)
+            fill.color = palette.accent
+            canvas.drawRoundRect(tmp, cardR, cardR, fill)
+            tmp.left = left + accentW
+            fill.color = palette.key
+            canvas.drawRoundRect(tmp, cardR, cardR, fill)
+            textPaint.color = palette.text
+            canvas.drawText(
+                sensitiveLabel,
+                left + accentW + cardPad,
+                top + curPad + lineH * 0.5f + textBase,
+                textPaint,
+            )
+        }
         if (items.isEmpty()) {
-            hintPaint.color = palette.textFaint
-            val cy = viewportHeight() / 2f
-            val l1 = if (inTrash) "回收箱是空的" else "还没有复制过内容"
-            val l2 = if (inTrash) "剪贴板里删掉的内容会先放在这里,最多 10 条" else "复制文字后会出现在这里"
-            canvas.drawText(l1, width / 2f, cy - lineH * 0.6f + hintBase, hintPaint)
-            canvas.drawText(l2, width / 2f, cy + lineH * 0.6f + hintBase, hintPaint)
+            if (!hasSensitiveRow()) {
+                hintPaint.color = palette.textFaint
+                val cy = viewportHeight() / 2f
+                val l1 = if (inTrash) "回收箱是空的" else "还没有复制过内容"
+                val l2 = if (inTrash) "剪贴板里删掉的内容会先放在这里,最多 10 条" else "复制文字后会出现在这里"
+                canvas.drawText(l1, width / 2f, cy - lineH * 0.6f + hintBase, hintPaint)
+                canvas.drawText(l2, width / 2f, cy + lineH * 0.6f + hintBase, hintPaint)
+            }
             return
         }
         if (lines.size != items.size) return
 
-        val left = padX
-        val right = width - padX
-        val cardR = context.dpf(4f)   // 小圆角
         val textLeft = left + accentW + cardPad + (if (selecting) checkW else 0f)
         for (i in items.indices) {
             val top = tops[i]
@@ -443,6 +488,10 @@ class ClipboardPanelView(
     }
 
     override fun onContentTap(x: Float, y: Float): Boolean {
+        if (hasSensitiveRow() && y >= 0f && y <= sensitiveCardH) {
+            listener.onPasteSensitive()
+            return true
+        }
         val i = hit(y)
         if (i < 0) return false
         if (selecting) {
@@ -457,6 +506,7 @@ class ClipboardPanelView(
 
     /** 长按 0.8 秒:进入多选并选中这一条;已在多选时,长按等于点一下。 */
     override fun onContentLongPress(x: Float, y: Float) {
+        if (hasSensitiveRow() && y >= 0f && y <= sensitiveCardH) return
         val i = hit(y)
         if (i < 0) return
         if (selecting) toggle(items[i]) else enterSelect(items[i])
