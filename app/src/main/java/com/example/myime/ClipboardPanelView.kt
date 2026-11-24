@@ -153,9 +153,9 @@ class ClipboardPanelView(
 
     private fun applyClipMetrics() {
         val wide = context.isWide()
-        textPaint.textSize = context.spf(if (wide) 20.4f else 18f)
-        hintPaint.textSize = context.spf(if (wide) 19.2f else 16.8f)
-        lockPaint.textSize = context.spf(if (wide) 19.2f else 16.8f)   // 比条目文字(20.4 / 18)小一号
+        textPaint.textSize = context.spf(if (wide) 18f else 16f)
+        hintPaint.textSize = context.spf(if (wide) 17f else 15f)
+        lockPaint.textSize = context.spf(if (wide) 17f else 15f)   // 比条目文字(18 / 16)小一号
         titlePaint.textSize = context.spf(if (wide) 18f else 16f)
         countPaint.textSize = context.spf(if (wide) 15f else 13f)
         noteText.textSize = context.spf(if (wide) 14f else 12f)
