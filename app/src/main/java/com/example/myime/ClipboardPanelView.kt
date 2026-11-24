@@ -67,7 +67,7 @@ class ClipboardPanelView(
     private var cardPad = 0f
     private var cardGap = 0f
     private var accentW = 0f   // 卡片左边竖线的宽度
-    private var curPad = 0f      // 实际用的卡片上下内边距、间距:短内容一屏放 9 条,按屏高调整(字体不变)
+    private var curPad = 0f      // 实际用的卡片上下内边距、间距:短内容按一屏 7 个位置铺满
     private var curGap = 0f
     private var checkW = 0f      // 多选时每条左边圆圈占的宽度
     private var lockW = 0f       // 每条右边小锁占的宽度(也是点锁的有效区域宽度)
@@ -153,9 +153,9 @@ class ClipboardPanelView(
 
     private fun applyClipMetrics() {
         val wide = context.isWide()
-        textPaint.textSize = context.spf(if (wide) 17f else 15f)
-        hintPaint.textSize = context.spf(if (wide) 16f else 14f)
-        lockPaint.textSize = context.spf(if (wide) 16f else 14f)   // 比条目文字(17 / 15)小一号
+        textPaint.textSize = context.spf(if (wide) 20.4f else 18f)
+        hintPaint.textSize = context.spf(if (wide) 19.2f else 16.8f)
+        lockPaint.textSize = context.spf(if (wide) 19.2f else 16.8f)   // 比条目文字(20.4 / 18)小一号
         titlePaint.textSize = context.spf(if (wide) 18f else 16f)
         countPaint.textSize = context.spf(if (wide) 15f else 13f)
         noteText.textSize = context.spf(if (wide) 14f else 12f)
@@ -286,8 +286,8 @@ class ClipboardPanelView(
     private fun relayout() {
         if (width == 0) return
         val baseTextW = width - 2 * padX - 2 * cardPad - accentW - (if (selecting) checkW else 0f)
-        // 一屏正好 9 个位置(第 1 个到第 9 个刚好铺满内容区,不留空):间距固定,每个位置的高度按比例拉高,字体不动。
-        // 剪贴板页第 1 个位置给常驻小字,所以只放 8 条;回收箱 9 条。
+        // 一屏正好 7 个位置(第 1 个到第 7 个刚好铺满内容区,不留空):间距固定,每个位置的高度按比例拉高。
+        // 剪贴板页第 1 个位置给常驻小字,所以只放 6 条;回收箱 7 条。
         val total = contentBottom() - (padTop + barH + barGap)
         val n = ROWS_PER_SCREEN.toInt()
         if (total <= 0f) {
@@ -296,7 +296,7 @@ class ClipboardPanelView(
             hintH = 0f
             hintTop = 0f
         } else {
-            // 缝隙尽量用大的(cardGap);屏幕矮、一屏 9 个位置挤不下时才收小,但每条上下至少留 5dp
+            // 缝隙尽量用大的(cardGap);屏幕矮、一屏 7 个位置挤不下时才收小,但每条上下至少留 5dp
             val maxGap = (total - ROWS_PER_SCREEN * (lineH + 2 * context.dpf(5f))) / (n - 1)
             curGap = minOf(cardGap, maxGap).coerceAtLeast(context.dpf(3f))
             val h = (total - curGap * (n - 1)) / ROWS_PER_SCREEN
@@ -550,7 +550,7 @@ class ClipboardPanelView(
         const val ID_TRASH = 6
         const val ID_WIPE = 7
         const val NOTE = "验证码等敏感内容不存历史,在编辑页点「粘贴」;粘不了的 app:关上面开关再复制"
-        const val ROWS_PER_SCREEN = 9f
+        const val ROWS_PER_SCREEN = 7f
         const val PREVIEW_CHARS = 400   // 两行最多放得下的字数远小于这个
     }
 }
