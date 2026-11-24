@@ -162,7 +162,7 @@ class ClipboardPanelView(
         ring.strokeWidth = context.dpf(1.8f)
         lineH = textPaint.fontSpacing
         cardPad = context.dpf(if (wide) 14f else 10f)
-        cardGap = context.dpf(if (wide) 11f else 7f)   // 条与条之间的缝隙:宽屏 11dp,窄屏 7dp
+        cardGap = context.dpf(3f)   // 条与条之间的标准缝隙:3dp
         accentW = context.dpf(4f)
         checkW = context.dpf(if (wide) 40f else 34f)
         lockW = context.dpf(if (wide) 48f else 42f)
@@ -286,23 +286,31 @@ class ClipboardPanelView(
     private fun relayout() {
         if (width == 0) return
         val baseTextW = width - 2 * padX - 2 * cardPad - accentW - (if (selecting) checkW else 0f)
-        // 一屏正好 7 个位置(第 1 个到第 7 个刚好铺满内容区,不留空):间距固定,每个位置的高度按比例拉高。
-        // 剪贴板页第 1 个位置给常驻小字,所以只放 6 条;回收箱 7 条。
+        // 一屏仍按 7 个位置计算:剪贴板页小字行固定高度,6 张卡片平分剩余高度;回收箱 7 张卡片平分。
         val total = contentBottom() - (padTop + barH + barGap)
         val n = ROWS_PER_SCREEN.toInt()
+        val minPad = context.dpf(5f)
         if (total <= 0f) {
             curPad = cardPad
             curGap = cardGap
             hintH = 0f
             hintTop = 0f
-        } else {
-            // 缝隙尽量用大的(cardGap);屏幕矮、一屏 7 个位置挤不下时才收小,但每条上下至少留 5dp
-            val maxGap = (total - ROWS_PER_SCREEN * (lineH + 2 * context.dpf(5f))) / (n - 1)
+        } else if (inTrash) {
+            // 回收箱没有小字行:7 张卡片和 6 个缝隙铺满;每条上下至少留 5dp,缝隙至少 3dp。
+            val maxGap = (total - ROWS_PER_SCREEN * (lineH + 2 * minPad)) / (n - 1)
             curGap = minOf(cardGap, maxGap).coerceAtLeast(context.dpf(3f))
             val h = (total - curGap * (n - 1)) / ROWS_PER_SCREEN
-            curPad = ((h - lineH) / 2f).coerceAtLeast(context.dpf(2f))
-            hintH = if (inTrash) 0f else h
-            hintTop = if (inTrash) 0f else h + curGap
+            curPad = ((h - lineH) / 2f).coerceAtLeast(minPad)
+            hintH = 0f
+            hintTop = 0f
+        } else {
+            // 剪贴板页:小字行固定为 noteText 行高 + 上下各 5dp;剩余高度扣除 6 个缝隙后由 6 张卡片平分。
+            hintH = noteText.fontSpacing + 2f * minPad
+            val maxGap = (total - hintH - 6f * (lineH + 2f * minPad)) / 6f
+            curGap = minOf(cardGap, maxGap).coerceAtLeast(context.dpf(3f))
+            val h = (total - hintH - 6f * curGap) / 6f
+            curPad = ((h - lineH) / 2f).coerceAtLeast(minPad)
+            hintTop = hintH + curGap
         }
         val showSensitive = hasSensitiveRow()
         sensitiveCardH = if (showSensitive) curPad * 2f + lineH else 0f
