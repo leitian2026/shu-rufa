@@ -66,7 +66,7 @@ class ClipboardPanelView(
     private var lineH = 0f
     private var cardPad = 0f
     private var cardGap = 0f
-    private var accentW = 0f   // 卡片底部彩色边的高度
+    private var accentW = 0f   // 卡片左边竖线的宽度
     private var curPad = 0f      // 实际用的卡片上下内边距、间距:短内容按一屏 7 个位置铺满
     private var curGap = 0f
     private var checkW = 0f      // 多选时每条左边圆圈占的宽度
@@ -89,7 +89,6 @@ class ClipboardPanelView(
         strokeJoin = Paint.Join.ROUND
     }
     private val tmp = RectF()
-    private val cardPath = Path()
     private var textBase = 0f
     private var hintBase = 0f
     private var titleBase = 0f
@@ -286,7 +285,7 @@ class ClipboardPanelView(
 
     private fun relayout() {
         if (width == 0) return
-        val baseTextW = width - 2 * padX - 2 * cardPad - (if (selecting) checkW else 0f)
+        val baseTextW = width - 2 * padX - 2 * cardPad - accentW - (if (selecting) checkW else 0f)
         // 一屏仍按 7 个位置计算:剪贴板页小字行固定高度,6 张卡片平分剩余高度;回收箱 7 张卡片平分。
         val total = contentBottom() - (padTop + barH + barGap)
         val n = ROWS_PER_SCREEN.toInt()
@@ -375,34 +374,6 @@ class ClipboardPanelView(
         return out
     }
 
-    /**
-     * 卡片底部保留 accentW 高度的彩色边。外层保持完整圆角,白色主体只保留顶部圆角,
-     * 底边为直线,避免白色主体的下圆角吃掉彩边。
-     */
-    private fun drawCard(
-        canvas: Canvas,
-        left: Float,
-        top: Float,
-        right: Float,
-        bottom: Float,
-        color: Int,
-        radius: Float,
-    ) {
-        tmp.set(left, top, right, bottom)
-        fill.color = color
-        canvas.drawRoundRect(tmp, radius, radius, fill)
-
-        tmp.set(left, top, right, bottom - accentW)
-        cardPath.reset()
-        cardPath.addRoundRect(
-            tmp,
-            floatArrayOf(radius, radius, radius, radius, 0f, 0f, 0f, 0f),
-            Path.Direction.CW,
-        )
-        fill.color = palette.key
-        canvas.drawPath(cardPath, fill)
-    }
-
     override fun contentHeight(): Float = totalH
 
     /** 标题行:左边是标题和条数,右边是按键(由基类排)。条数放不下就不画,免得压到按键。 */
@@ -428,11 +399,16 @@ class ClipboardPanelView(
         if (hasSensitiveRow()) {
             val top = 0f
             val h = sensitiveCardH
-            drawCard(canvas, left, top, right, top + h, palette.accent, cardR)
+            tmp.set(left, top, right, top + h)
+            fill.color = palette.accent
+            canvas.drawRoundRect(tmp, cardR, cardR, fill)
+            tmp.left = left + accentW
+            fill.color = palette.key
+            canvas.drawRoundRect(tmp, cardR, cardR, fill)
             textPaint.color = palette.text
             canvas.drawText(
                 sensitiveLabel,
-                left + cardPad,
+                left + accentW + cardPad,
                 top + curPad + lineH * 0.5f + textBase,
                 textPaint,
             )
@@ -450,15 +426,20 @@ class ClipboardPanelView(
         }
         if (lines.size != items.size) return
 
-        val textLeft = left + cardPad + (if (selecting) checkW else 0f)
+        val textLeft = left + accentW + cardPad + (if (selecting) checkW else 0f)
         for (i in items.indices) {
             val top = tops[i]
             val h = cardH[i]
             if (top + h < visTop) continue
             if (top > visBottom) break
 
-            // 扁平:先画整张圆角彩色底,再盖白色主体;底部露出 4dp 彩边,白色主体下边保持平直。
-            drawCard(canvas, left, top, right, top + h, palette.accent, cardR)
+            // 扁平:不画下方的立体阴影。先画一整块竖线颜色的圆角底(隔条换色),再把白色卡片从竖线右边盖上去,左边就留出一条细竖线
+            tmp.set(left, top, right, top + h)
+            fill.color = if (i % 2 == 0) palette.clipBarA else palette.clipBarB
+            canvas.drawRoundRect(tmp, cardR, cardR, fill)
+            tmp.left = left + accentW
+            fill.color = palette.key
+            canvas.drawRoundRect(tmp, cardR, cardR, fill)
 
             textPaint.color = palette.text
             for (li in lines[i].indices) {
@@ -476,7 +457,7 @@ class ClipboardPanelView(
             }
 
             if (selecting && items[i] !in locked) {   // 上了锁的选不了,不画圆圈
-                val cx = left + cardPad + checkW * 0.4f
+                val cx = left + accentW + cardPad + checkW * 0.4f
                 val cy = top + h / 2f
                 val r = context.dpf(10f)
                 if (items[i] in selected) {
