@@ -141,7 +141,7 @@ class ClipboardPanelView(
         headerBtnH = h
         padX = context.dpf(8f)   // 左右只留一小条边,长条几乎占满输入法两边(平板上基类默认留得很宽)
         padTop = context.dpf(3f)
-        padBottom = context.dpf(4f)   // 底下只留一点点,9 条才能铺满
+        padBottom = context.dpf(4f)   // 底下只留一点点,7 个位置才能铺满
         barH = h + context.dpf(4f)
         barGap = context.dpf(3f)
     }
