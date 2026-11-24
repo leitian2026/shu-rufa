@@ -162,7 +162,7 @@ class ClipboardPanelView(
         ring.strokeWidth = context.dpf(1.8f)
         lineH = textPaint.fontSpacing
         cardPad = context.dpf(if (wide) 14f else 10f)
-        cardGap = context.dpf(if (wide) 22f else 14f)   // 条与条之间的缝隙(以前 10 / 6),长条才分得开
+        cardGap = context.dpf(if (wide) 11f else 7f)   // 条与条之间的缝隙:宽屏 11dp,窄屏 7dp
         accentW = context.dpf(4f)
         checkW = context.dpf(if (wide) 40f else 34f)
         lockW = context.dpf(if (wide) 48f else 42f)
